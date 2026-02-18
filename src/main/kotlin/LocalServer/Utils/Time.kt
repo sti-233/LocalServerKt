@@ -1,5 +1,6 @@
 package LocalServer.Utils
 
+import java.time.Duration
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -8,17 +9,25 @@ import java.time.format.DateTimeFormatter
 object Time {
     public fun getCurrentTime(): String {
         val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-        return currentTime(formatter)
+        return currentTime().format(formatter)
     }
 
     public fun getCurrentDate(): String {
         val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
-        return currentTime(formatter)
+        return currentTime().format(formatter)
     }
 
-    private fun currentTime(formatter: DateTimeFormatter): String {
+    public fun withinTwoMin(givenTimeStr: String): Boolean {
+        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        val givenDateTime = LocalDateTime.parse(givenTimeStr, formatter)
+        val currentZonedDateTime = LocalDateTime.parse(getCurrentTime(), formatter)
+        val duration = Duration.between(givenDateTime, currentZonedDateTime)
+        val minutes = duration.toMinutes()
+        return minutes <= 1
+    }
+
+    private fun currentTime(): ZonedDateTime {
         val now = LocalDateTime.now()
-        val zonedDateTime = now.atZone(ZoneId.systemDefault()).withZoneSameInstant(ZoneId.of("Asia/Shanghai"))
-        return zonedDateTime.format(formatter)
+        return now.atZone(ZoneId.systemDefault()).withZoneSameInstant(ZoneId.of("Asia/Shanghai"))
     }
 }

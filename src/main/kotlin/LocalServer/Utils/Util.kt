@@ -7,6 +7,8 @@ import kotlinx.serialization.json.*
 import java.io.File
 
 object Util {
+    private val prettyJson = Json { prettyPrint = true }
+
     public fun getUserList(): MutableList<User> {
         val userFile = File("userList.json")
         if (!userFile.exists()) {
@@ -21,7 +23,7 @@ object Util {
         if (!userFile.exists()) {
             userFile.createNewFile()
         }
-        userFile.writeText(Json { prettyPrint = true }.encodeToString(userList))
+        userFile.writeText(prettyJson.encodeToString(userList))
     }
 
     public fun getHistory(target: String? = null): String {
@@ -29,19 +31,30 @@ object Util {
         if (!historyFile.exists()) {
             if (!historyFile.parentFile.exists()) historyFile.parentFile.mkdirs()
             historyFile.createNewFile()
-            historyFile.writeText(Json { prettyPrint = true }.encodeToString(listOf(Message("System", Time.getCurrentTime(), "New file created."))))
+            historyFile.writeText(prettyJson.encodeToString(listOf(Message("System", Time.getCurrentTime(), "New file created."))))
         }
         return historyFile.readText()
     }
 
-    public fun addHistory(history: Message, target: String? = null) {
-        val historyFile = File("message/history_${target ?: Time.getCurrentDate()}.json")
-        val historyList: MutableList<Message> = Json.decodeFromString<MutableList<Message>>(getHistory(target))
-        historyList.add(history)
-        historyFile.writeText(Json { prettyPrint = true }.encodeToString(historyList))
+    public fun getHistoryList(target: String? = null): MutableList<Message> {
+        return Json.decodeFromString<MutableList<Message>>(getHistory(target))
     }
 
-    public fun getTarget(current: String, targetUser: String): String? {
+    public fun addHistory(history: Message, target: String? = null) {
+        val historyFile = File("message/history_${target ?: Time.getCurrentDate()}.json")
+        val historyList = getHistoryList(target)
+        historyList.add(history)
+        historyFile.writeText(prettyJson.encodeToString(historyList))
+    }
+
+    public fun delHistory(name: String, time: String, target: String? = null) {
+        val historyFile = File("message/history_${target ?: Time.getCurrentDate()}.json")
+        val historyList = getHistoryList(target)
+        historyList.removeIf { (it.name == name) && (it.time == time) && Time.withinTwoMin(it.time)}
+        historyFile.writeText(prettyJson.encodeToString(historyList))
+    }
+
+    public fun getTarget(current: String, targetUser: String): String {
         val list = listOf(current, targetUser).sorted()
         return list[0] + "-" + list[1]
     }

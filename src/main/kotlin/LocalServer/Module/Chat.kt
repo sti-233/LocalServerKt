@@ -21,6 +21,7 @@ object Chat {
         chatPage()
         setName()
         history()
+        delHistory()
         message()
         
         websocket()
@@ -50,6 +51,14 @@ object Chat {
         call.respondText(Util.getHistory(target))
     }
 
+    private fun Route.delHistory() = get("/delHistory") {
+        val time = call.parameters["time"] ?: return@get
+        val targetUser = call.parameters["targetuser"]
+        val current = Util.getUserName(call.request.local.remoteAddress)
+        val target = if (!targetUser.isNullOrEmpty()) Util.getTarget(current, targetUser) else null
+        Util.delHistory(current, time, target)
+    }
+
     private fun Route.message() = webSocket("/message") {
         val clientId = call.request.local.remoteAddress
         clients[clientId] = this
@@ -64,18 +73,35 @@ object Chat {
                         println("[$clientId] Received: $text")
                         val json = Json.decodeFromString<Content>(text)
                         val current = Util.getUserName(clientId)
-                        val message = Message(current, Time.getCurrentTime(), json.text, json.target)
-                        val response = Json.encodeToString(message)
-                        if (json.target.isNullOrEmpty()) {
-                            clients.forEach { (_, session) -> 
-                                session.send(response)
+                        if (json.type == "send") {
+                            val content = Content("send", current, Time.getCurrentTime(), json.text, json.sendTo)
+                            val message = Message(current, Time.getCurrentTime(), json.text)
+                            val response = Json.encodeToString(content)
+                            if (json.sendTo.isNullOrEmpty()) {
+                                clients.forEach { (_, session) -> 
+                                    session.send(response)
+                                }
+                                Util.addHistory(message)
+                            } else {
+                                listOf(clients[Util.getUserIp(json.sendTo)], this).forEach { session ->
+                                    session?.send(response)
+                                }
+                                Util.addHistory(message, Util.getTarget(current, json.sendTo))
                             }
-                            Util.addHistory(message)
-                        } else {
-                            listOf(clients[Util.getUserIp(json.target)], this).forEach { session ->
-                                session?.send(response)
+                        } else if (json.type == "del") {
+                            val content = Content("del", current, json.time, json.text, json.sendTo)
+                            val response = Json.encodeToString(content)
+                            if (json.sendTo.isNullOrEmpty()) {
+                                clients.forEach { (_, session) -> 
+                                    session.send(response)
+                                }
+                                Util.delHistory(current, json.time)
+                            } else {
+                                listOf(clients[Util.getUserIp(json.sendTo)], this).forEach { session ->
+                                    session?.send(response)
+                                }
+                                Util.delHistory(current, json.time, Util.getTarget(current, json.sendTo))
                             }
-                            Util.addHistory(message, Util.getTarget(current, json.target))
                         }
                     }
                     else -> {
