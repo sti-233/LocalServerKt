@@ -32,3 +32,4 @@ replay_pid*
 bin
 build
 .old
+src/main/kotlin/localserver/utils/Secrets.kt
