@@ -1,0 +1,18 @@
+<html>
+    <head>
+        <title>Go</title>
+        <script>
+            function go(){
+                res = document.getElementById("inp").value;
+                if (!res.startsWith("http://") && !res.startsWith("https://")) {
+                    res = "http://192.168.40.99/" + res;
+                }
+                window.location.replace(encodeURI(res));
+            }
+        </script>
+    </head>
+    <body>
+        <input id="inp" type="text"/>
+        <button onclick="go()">go</button>
+    </body>
+</html>

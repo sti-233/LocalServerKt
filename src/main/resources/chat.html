@@ -1,0 +1,182 @@
+﻿<html>
+    <head>
+        <title>Chat</title>
+        <script>
+            let nowTarget = null;
+
+            let websocket = null;
+            function connect() {
+                const url = "ws://192.168.40.99/message";
+                websocket = new WebSocket(url);
+                
+                websocket.onopen = function(event) {
+                    console.log("Connected to WebSocket server");
+                };
+                
+                websocket.onmessage = function(event) {
+                    resp = JSON.parse(event.data)
+                    if (resp.type == "send") {
+                        addMessage(resp);
+                    } else if (resp.type == "del" && (document.getElementById('user').value == resp.sendTo || document.getElementById('user').value == resp.name)) {
+                        delMessage(resp.name, resp.time);
+                    }
+                };
+                
+                websocket.onclose = function(event) {
+                    console.log("Disconnected from WebSocket server");
+                };
+                
+                websocket.onerror = function(error) {
+                    console.log("Error: " + error);
+                };
+            }
+
+            document.addEventListener('DOMContentLoaded',function() {
+                renderHistory()
+                connect()
+            })
+
+            async function announce() {
+                if (document.getElementById('user').value != "") {return}
+                ann = await fetch('/announce')
+                ann = await ann.json()
+                console.log(ann)
+                annc = document.getElementById('ann')
+                annc.appendChild(crtMsg(ann.sender,ann.time,ann.content))
+            }
+
+            function crtMsg(sender, time, content) {
+                box = document.createElement('div')
+                box.className = 'message-box'
+                senderh = document.createElement('h2')
+                senderh.className = 'sender'
+                timeh = document.createElement('p')
+                timeh.className = 'time'
+                contenth = document.createElement('p')
+                senderh.textContent = sender
+                timeh.textContent = time
+                contenth.textContent = content
+                revokeBtn = document.createElement('button')
+                revokeBtn.className = 'revoke-btn'
+                revokeBtn.textContent = '撤回'
+                revokeBtn.addEventListener('click', function() {
+                    delMsg(sender, time);
+                });
+                box.appendChild(senderh)
+                box.appendChild(timeh)
+                box.appendChild(contenth)
+                box.appendChild(revokeBtn)
+                return box
+            }
+
+            function addMessage(msg) {
+                const Msgcontainer = document.getElementById("MsgBox");
+                if (document.getElementById('user').value == msg.sendTo || document.getElementById('user').value == msg.name) {
+                    newmsg = crtMsg(msg.name, msg.time, msg.text)
+                    Msgcontainer.appendChild(newmsg)
+                }
+            }
+
+            function delMessage(user, time) {
+                const Msgcontainer = document.getElementById("MsgBox");
+                const messages = Msgcontainer.getElementsByClassName('message-box');
+                for (let i = 0; i < messages.length; i++) {
+                    const message = messages[i];
+                    const userElement = message.getElementsByClassName('sender');
+                    const timeElement = message.getElementsByClassName('time');
+                    if (timeElement[0].innerText === time && userElement[0].innerText === user) {
+                        message.remove();
+                    }
+                }
+            }
+
+            async function renderHistory() {
+                MsgJson = await fetch('/history?targetuser='+document.getElementById('user').value)
+                MsgJson = await MsgJson.json()
+                Msgcontainer = document.getElementById("MsgBox")
+                for (msg of MsgJson) {
+                    newmsg = crtMsg(msg.name, msg.time, msg.text)
+                    Msgcontainer.appendChild(newmsg)
+                }
+                end = document.getElementById('end')
+                end.scrollIntoView({behavious: "smooth"})
+            }
+            
+            async function sendMsg() {
+                if (document.getElementById('user').value != nowTarget) {
+                    await refresh()
+                }
+                text = document.getElementById('content').value
+                user = document.getElementById('user').value
+                if (text == "") {return}
+                json = '{ "type": "send", "name": "unused", "time": "unused", "text": "' + text + '", "sendTo": "' + user + '" }'
+                if (json && websocket && websocket.readyState === WebSocket.OPEN) {
+                    websocket.send(json);
+                    document.getElementById('content').value = "";
+                }
+            }
+
+            async function delMsg(name, time) {
+                if (document.getElementById('user').value != nowTarget) {
+                    await refresh()
+                }
+                text = document.getElementById('content').value
+                user = document.getElementById('user').value
+                json = '{ "type": "del", "name": "' + name + '", "time": "' + time + '", "text": "unused", "sendTo": "' + user + '" }'
+                if (json && websocket && websocket.readyState === WebSocket.OPEN) {
+                    websocket.send(json);
+                    document.getElementById('content').value = "";
+                }
+            }
+
+            async function refresh() {
+                box = document.getElementById('MsgBox')
+                box.innerHTML = ''
+                nowTarget = document.getElementById('user').value
+                await renderHistory()
+            }
+        </script>
+        <style>
+            .scrollable{
+                x:90%;
+                overflow-y: auto;
+                word-wrap: break-word;
+            }
+            .message-box {
+                position: relative;
+                border: 1px solid #ddd;
+                padding: 10px;
+                margin-bottom: 10px;
+                border-radius: 5px;
+                background-color: #f9f9f9;
+            }
+            
+            .revoke-btn {
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                background-color: #ff4d4d;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 5px 10px;
+                cursor: pointer;
+                font-size: 12px;
+            }
+            
+            .revoke-btn:hover {
+                background-color: #ff1a1a;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Chat</h1>
+        <div id="ann" style="position: fixed;background-color: grey;"></div>
+        <div id="MsgBox" class="scrollable"></div>
+        <input type="text" id="content" placeholder="message...">
+        <input type="text" id="user" placeholder="私聊对象，留空以在班级群发送">
+        <button onclick="sendMsg()">send</button>
+        <button onclick="refresh()">刷新私聊对象</button>
+        <div id="end"></div>
+    </body>
+</html>
