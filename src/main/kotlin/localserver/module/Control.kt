@@ -16,6 +16,7 @@ object Control {
         log()
         control()
         user()
+        link()
     }
 
     private fun Route.user() = authenticate("control") {
@@ -23,6 +24,10 @@ object Control {
         addUser()
         removeUser()
         resetName()
+    }
+    
+    private fun Route.link() = authenticate("control") {
+        get("/vnc") { call.respondRedirect("http://192.168.125.200:5901") }
     }
 
     private fun Route.control() = authenticate("control") {

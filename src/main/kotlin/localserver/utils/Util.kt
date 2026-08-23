@@ -60,7 +60,7 @@ object Util {
     }
 
     fun getUserName(ip: String): String {
-        return Util.getUserList().firstOrNull { it.ip.equals(ip).and(!it.name.isNullOrEmpty()) }?.name ?: throw Exception("User name is null!")
+        return Util.getUserList().firstOrNull { (it.ip == ip).and(!it.name.isNullOrEmpty()) }?.name ?: throw Exception("User name is null!")
     }
 
     fun getUserIp(name: String): String {
@@ -68,6 +68,6 @@ object Util {
     }
 
     fun userExists(key: String): Boolean {
-        return Util.getUserList().firstOrNull { it.ip.equals(key).or(it.name.equals(key)) } != null
+        return Util.getUserList().firstOrNull { (it.ip == key).or(it.name.equals(key)) } != null
     }
 }

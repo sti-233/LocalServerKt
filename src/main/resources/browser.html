@@ -5,7 +5,10 @@
             function go(){
                 res = document.getElementById("inp").value;
                 if (!res.startsWith("http://") && !res.startsWith("https://")) {
-                    res = "http://192.168.40.99/" + res;
+                    res = "http://192.168.125.200/" + res;
+                }
+                if (res === "http://192.168.125.200:5901") {
+                    return
                 }
                 window.location.replace(encodeURI(res));
             }
@@ -14,5 +17,11 @@
     <body>
         <input id="inp" type="text"/>
         <button onclick="go()">go</button>
+        <br>
+        <button onclick="window.location.replace('http://192.168.125.1')">ap</button>
+        <button onclick="window.location.replace('http://192.168.125.200/vnc')">vnc</button>
+        <button onclick="window.location.replace('https://cn.bing.com')">bing</button>
+        <button onclick="window.location.replace('https://www.geogebra.org/classic')">geogebra classic</button>
+        <button onclick="window.location.replace('https://www.geogebra.org/graphing')">geogebra graphing</button>
     </body>
 </html>
