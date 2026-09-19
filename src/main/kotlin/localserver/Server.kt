@@ -1,5 +1,6 @@
 package localserver
 
+import localserver.module.Ai.aiRoute
 import localserver.module.Chat.chatRoute
 import localserver.module.Control
 import localserver.module.Control.controlRoute
@@ -19,11 +20,14 @@ import io.ktor.server.response.*
 import io.ktor.server.websocket.*
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.plugins.NotFoundException
+import io.ktor.server.sse.*
 import io.ktor.http.HttpStatusCode
 import kotlin.time.Duration.Companion.seconds
 
 private const val chunkSize = 8192
 
+// "192.168.100.17" "192.168.125.200"
+const val serverIp = "192.168.125.200"
 private const val password = "114514"
 
 fun main() {
@@ -32,7 +36,7 @@ fun main() {
             form("auth") {
                 challenge("https://h5.lezhiyun.com/multi_wjdc/?host=www.lezhiyun.com&token=")
                 skipWhen { call ->
-                    call.parameters["p"]?.equals(password) ?: false || call.request.local.remoteAddress.startsWith("192.168.20.10") || !call.request.local.remoteAddress.startsWith("192.168.125.202") && if (!Control.state) {
+                    call.parameters["p"]?.equals(password) ?: false || call.request.local.remoteAddress.startsWith("192.168.20.1") || if (!Control.state) {
                         Logger.error("${call.request.local.remoteAddress} request when server is closing.")
                         false
                     } else if (Util.getUserList().any { it.ip == call.request.local.remoteAddress }) {
@@ -45,7 +49,7 @@ fun main() {
             }
             basic("control") {
                 skipWhen { call ->
-                    call.parameters["p"]?.equals(password) ?: false || call.request.local.remoteAddress.startsWith("192.168.20.10")
+                    call.parameters["p"]?.equals(password) ?: false || call.request.local.remoteAddress.startsWith("192.168.20.1")
                 }
             }
         }
@@ -63,8 +67,10 @@ fun main() {
             maxFrameSize = Long.MAX_VALUE
             masking = false
         }
+        install(SSE)
         routing {
             staticResources("/resources", "")
+            aiRoute()
             chatRoute()
             controlRoute()
             musicRoute()

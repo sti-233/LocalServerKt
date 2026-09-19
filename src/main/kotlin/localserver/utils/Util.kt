@@ -13,15 +13,24 @@ object Util {
         val userFile = File("userList.json")
         if (!userFile.exists()) {
             userFile.createNewFile()
+            userFile.writeText(prettyJson.encodeToString(mutableListOf<User>()))
             return mutableListOf<User>()
         }
-        return Json.decodeFromString<MutableList<User>>(userFile.readText().trimStart('\uFEFF'))
+        val text = userFile.readText().trimStart('\uFEFF').trim()
+        if (text.isEmpty()) return mutableListOf<User>()
+        return try {
+            Json.decodeFromString<MutableList<User>>(text)
+        } catch (e: Exception) {
+            Logger.error("Failed to parse userList.json: ${e.message}. Returning empty list.")
+            mutableListOf<User>()
+        }
     }
 
     fun setUserList(userList: List<User>) {
         val userFile = File("userList.json")
         if (!userFile.exists()) {
             userFile.createNewFile()
+            userFile.writeText(prettyJson.encodeToString(userList))
         }
         userFile.writeText(prettyJson.encodeToString(userList))
     }

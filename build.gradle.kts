@@ -40,6 +40,7 @@ dependencies {
     implementation("io.ktor:ktor-server-websockets-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-resources:$ktorVersion")
     implementation("io.ktor:ktor-server-auth:$ktorVersion")
+    implementation("io.ktor:ktor-server-sse:$ktorVersion")
     implementation("io.ktor:ktor-server-status-pages:$ktorVersion")
     implementation("io.ktor:ktor-client-core:$ktorVersion")
     implementation("io.ktor:ktor-client-cio:$ktorVersion")

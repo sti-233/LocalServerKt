@@ -7,8 +7,8 @@ object Logger {
 
     private val logFile by lazy {
         File("logs.txt").apply {
-            if (!exists()) createNewFile()
-            deleteOnExit()
+            if (exists()) delete()
+            createNewFile()
         }
     }
 
@@ -18,10 +18,12 @@ object Logger {
 
     fun debug(message: String) {
         if (!debug) return
+        println("[Debug] ${Time.getCurrentTimeWithDate()}\n$message\n\n")
         logFile.appendText("[Debug] ${Time.getCurrentTimeWithDate()}\n$message\n\n")
     }
 
     fun error(message: String) {
+        println("[Error] ${Time.getCurrentTimeWithDate()}\n$message\n\n")
         logFile.appendText("[Error] ${Time.getCurrentTimeWithDate()}\n$message\n\n")
     }
 }

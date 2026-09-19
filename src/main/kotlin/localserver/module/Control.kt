@@ -1,5 +1,6 @@
 package localserver.module
 
+import localserver.serverIp
 import localserver.types.User
 import localserver.utils.Logger
 import localserver.utils.Util
@@ -17,17 +18,17 @@ object Control {
         control()
         user()
         link()
+        userList()
     }
 
     private fun Route.user() = authenticate("control") {
-        userList()
         addUser()
         removeUser()
         resetName()
     }
     
     private fun Route.link() = authenticate("control") {
-        get("/vnc") { call.respondRedirect("http://192.168.125.200:5901") }
+        get("/vnc") { call.respondRedirect("http://${serverIp}:5901") }
     }
 
     private fun Route.control() = authenticate("control") {
@@ -54,7 +55,7 @@ object Control {
     }
 
     private fun Route.userList() = get("/userList") {
-        call.respondText(Json.encodeToString(Util.getUserList()))
+        call.respondText(Util.prettyJson.encodeToString(Util.getUserList()))
     }
 
     private fun Route.addUser() = get("/addUser") {

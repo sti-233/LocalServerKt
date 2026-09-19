@@ -1,12 +1,13 @@
 ﻿<html>
     <head>
         <title>Chat</title>
+        <script src="/resources/config.js"></script>
         <script>
             let nowTarget = null;
 
             let websocket = null;
             function connect() {
-                const url = "ws://192.168.40.99/message";
+                const url = "ws://" + SERVER_IP + "/message";
                 websocket = new WebSocket(url);
                 
                 websocket.onopen = function(event) {
@@ -177,6 +178,7 @@
         <input type="text" id="user" placeholder="私聊对象，留空以在班级群发送">
         <button onclick="sendMsg()">send</button>
         <button onclick="refresh()">刷新私聊对象</button>
+        <button onclick="window.location.replace('/userList')">查看用户列表</button>
         <div id="end"></div>
     </body>
 </html>
