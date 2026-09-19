@@ -1,184 +1,395 @@
-﻿<html>
-    <head>
-        <title>Chat</title>
-        <script src="/resources/config.js"></script>
-        <script>
-            let nowTarget = null;
+﻿<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chat</title>
+    <script src="/resources/config.js"></script>
+    <script>
+        // ===== 全局状态 =====
+        let websocket = null;
+        let nowTarget = null; // 当前私聊对象，与输入框不一致时先刷新再发送
+        let me = null;        // 自己的用户名，来自 /whoami；路由未实现时为 null
 
-            let websocket = null;
-            function connect() {
-                const url = "ws://" + SERVER_IP + "/message";
-                websocket = new WebSocket(url);
-                
-                websocket.onopen = function(event) {
-                    console.log("Connected to WebSocket server");
-                };
-                
-                websocket.onmessage = function(event) {
-                    resp = JSON.parse(event.data)
-                    if (resp.type == "send") {
-                        addMessage(resp);
-                    } else if (resp.type == "del" && (document.getElementById('user').value == resp.sendTo || document.getElementById('user').value == resp.name)) {
-                        delMessage(resp.name, resp.time);
-                    }
-                };
-                
-                websocket.onclose = function(event) {
-                    console.log("Disconnected from WebSocket server");
-                };
-                
-                websocket.onerror = function(error) {
-                    console.log("Error: " + error);
-                };
-            }
-
-            document.addEventListener('DOMContentLoaded',function() {
-                renderHistory()
-                connect()
-            })
-
-            async function announce() {
-                if (document.getElementById('user').value != "") {return}
-                ann = await fetch('/announce')
-                ann = await ann.json()
-                console.log(ann)
-                annc = document.getElementById('ann')
-                annc.appendChild(crtMsg(ann.sender,ann.time,ann.content))
-            }
-
-            function crtMsg(sender, time, content) {
-                box = document.createElement('div')
-                box.className = 'message-box'
-                senderh = document.createElement('h2')
-                senderh.className = 'sender'
-                timeh = document.createElement('p')
-                timeh.className = 'time'
-                contenth = document.createElement('p')
-                senderh.textContent = sender
-                timeh.textContent = time
-                contenth.textContent = content
-                revokeBtn = document.createElement('button')
-                revokeBtn.className = 'revoke-btn'
-                revokeBtn.textContent = '撤回'
-                revokeBtn.addEventListener('click', function() {
-                    delMsg(sender, time);
-                });
-                box.appendChild(senderh)
-                box.appendChild(timeh)
-                box.appendChild(contenth)
-                box.appendChild(revokeBtn)
-                return box
-            }
-
-            function addMessage(msg) {
-                const Msgcontainer = document.getElementById("MsgBox");
-                if (document.getElementById('user').value == msg.sendTo || document.getElementById('user').value == msg.name) {
-                    newmsg = crtMsg(msg.name, msg.time, msg.text)
-                    Msgcontainer.appendChild(newmsg)
+        document.addEventListener('DOMContentLoaded', async function () {
+            document.getElementById('sendBtn').addEventListener('click', sendMsg);
+            document.getElementById('refreshBtn').addEventListener('click', refresh);
+            // Enter 换行（textarea 默认行为），Ctrl/Cmd+Enter 快捷发送
+            document.getElementById('content').addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    sendMsg();
                 }
-            }
+            });
+            await loadMe();
+            await refresh();
+            connect();
+        });
 
-            function delMessage(user, time) {
-                const Msgcontainer = document.getElementById("MsgBox");
-                const messages = Msgcontainer.getElementsByClassName('message-box');
-                for (let i = 0; i < messages.length; i++) {
-                    const message = messages[i];
-                    const userElement = message.getElementsByClassName('sender');
-                    const timeElement = message.getElementsByClassName('time');
-                    if (timeElement[0].innerText === time && userElement[0].innerText === user) {
-                        message.remove();
+        // 获取自己的用户名（依赖 Chat.kt 的 /whoami 路由；失败时 me 保持 null，页面照常可用）
+        async function loadMe() {
+            try {
+                const resp = await fetch('/whoami');
+                if (resp.ok) {
+                    const name = (await resp.text()).trim();
+                    if (name !== '') {
+                        me = name;
+                        document.getElementById('meName').textContent = me;
                     }
                 }
+            } catch (e) {
+                console.warn('获取当前用户名失败:', e);
             }
+        }
 
-            async function renderHistory() {
-                MsgJson = await fetch('/history?targetuser='+document.getElementById('user').value)
-                MsgJson = await MsgJson.json()
-                Msgcontainer = document.getElementById("MsgBox")
-                for (msg of MsgJson) {
-                    newmsg = crtMsg(msg.name, msg.time, msg.text)
-                    Msgcontainer.appendChild(newmsg)
-                }
-                end = document.getElementById('end')
-                end.scrollIntoView({behavious: "smooth"})
-            }
-            
-            async function sendMsg() {
-                if (document.getElementById('user').value != nowTarget) {
-                    await refresh()
-                }
-                text = document.getElementById('content').value
-                user = document.getElementById('user').value
-                if (text == "") {return}
-                json = '{ "type": "send", "name": "unused", "time": "unused", "text": "' + text + '", "sendTo": "' + user + '" }'
-                if (json && websocket && websocket.readyState === WebSocket.OPEN) {
-                    websocket.send(json);
-                    document.getElementById('content').value = "";
-                }
-            }
+        function connect() {
+            const url = 'ws://' + SERVER_IP + '/message';
+            websocket = new WebSocket(url);
 
-            async function delMsg(name, time) {
-                if (document.getElementById('user').value != nowTarget) {
-                    await refresh()
-                }
-                text = document.getElementById('content').value
-                user = document.getElementById('user').value
-                json = '{ "type": "del", "name": "' + name + '", "time": "' + time + '", "text": "unused", "sendTo": "' + user + '" }'
-                if (json && websocket && websocket.readyState === WebSocket.OPEN) {
-                    websocket.send(json);
-                    document.getElementById('content').value = "";
-                }
-            }
+            websocket.onopen = function () {
+                console.log('Connected to WebSocket server');
+            };
 
-            async function refresh() {
-                box = document.getElementById('MsgBox')
-                box.innerHTML = ''
-                nowTarget = document.getElementById('user').value
-                await renderHistory()
+            websocket.onmessage = function (event) {
+                const resp = JSON.parse(event.data);
+                if (resp.type === 'send') {
+                    addMessage(resp);
+                } else if (resp.type === 'del' && isRelevant(resp)) {
+                    delMessage(resp.name, resp.time);
+                } else if (resp.type === 'err') {
+                    showError(resp.text);
+                }
+            };
+
+            websocket.onclose = function () {
+                console.log('Disconnected from WebSocket server');
+            };
+
+            websocket.onerror = function (error) {
+                console.log('Error: ' + error);
+            };
+        }
+
+        // 判断一条消息是否应在当前面板显示
+        // 群聊（输入框留空）：只显示群消息；私聊：只显示"我 ↔ 对方"之间的消息
+        function isRelevant(msg) {
+            const target = document.getElementById('user').value;
+            if (me === null) {
+                // 拿不到自己的用户名时退化为旧的宽松匹配
+                return target === msg.sendTo || target === msg.name;
             }
-        </script>
-        <style>
-            .scrollable{
-                x:90%;
-                overflow-y: auto;
-                word-wrap: break-word;
+            if (target === '') {
+                return msg.sendTo === '';
             }
-            .message-box {
-                position: relative;
-                border: 1px solid #ddd;
-                padding: 10px;
-                margin-bottom: 10px;
-                border-radius: 5px;
-                background-color: #f9f9f9;
+            return (msg.name === me && msg.sendTo === target) ||
+                   (msg.name === target && msg.sendTo === me);
+        }
+
+        function addMessage(msg) {
+            if (!isRelevant(msg)) return;
+            document.getElementById('MsgBox').appendChild(crtMsg(msg.name, msg.time, msg.text));
+            scrollToBottom();
+        }
+
+        function crtMsg(sender, time, content) {
+            const box = document.createElement('div');
+            box.className = 'message-box' + (sender === me ? ' own' : '');
+
+            const senderEl = document.createElement('h2');
+            senderEl.className = 'sender';
+            senderEl.textContent = sender;
+
+            const timeEl = document.createElement('p');
+            timeEl.className = 'time';
+            timeEl.textContent = time;
+
+            const contentEl = document.createElement('p');
+            contentEl.className = 'content';
+            contentEl.textContent = content; // 用 textContent，防 XSS
+
+            box.appendChild(senderEl);
+            box.appendChild(timeEl);
+            box.appendChild(contentEl);
+
+            // 服务端只允许撤回自己的消息（历史删除按当前用户匹配），所以按钮只挂在自己消息上
+            if (sender === me) {
+                const revokeBtn = document.createElement('button');
+                revokeBtn.className = 'revoke-btn';
+                revokeBtn.textContent = '撤回';
+                revokeBtn.addEventListener('click', function () { delMsg(sender, time); });
+                box.appendChild(revokeBtn);
             }
-            
-            .revoke-btn {
-                position: absolute;
-                top: 10px;
-                right: 10px;
-                background-color: #ff4d4d;
-                color: white;
-                border: none;
-                border-radius: 3px;
-                padding: 5px 10px;
-                cursor: pointer;
-                font-size: 12px;
+            return box;
+        }
+
+        function delMessage(user, time) {
+            const messages = document.getElementById('MsgBox').getElementsByClassName('message-box');
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const senderEl = messages[i].getElementsByClassName('sender')[0];
+                const timeEl = messages[i].getElementsByClassName('time')[0];
+                if (senderEl && timeEl && senderEl.innerText === user && timeEl.innerText === time) {
+                    messages[i].remove();
+                }
             }
-            
-            .revoke-btn:hover {
-                background-color: #ff1a1a;
+        }
+
+        // 服务端返回的 err 类型消息（如私聊对象不存在），显示 4 秒后自动消失
+        function showError(text) {
+            let toast = document.getElementById('errToast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'errToast';
+                toast.className = 'error-toast';
+                document.body.appendChild(toast);
             }
-        </style>
-    </head>
-    <body>
+            toast.textContent = text;
+            toast.classList.add('show');
+            clearTimeout(toast._hideTimer);
+            toast._hideTimer = setTimeout(function () { toast.classList.remove('show'); }, 4000);
+        }
+
+        async function renderHistory() {
+            const target = document.getElementById('user').value;
+            const resp = await fetch('/history?targetuser=' + encodeURIComponent(target));
+            let history = [];
+            if (resp.ok) {
+                history = await resp.json();
+            } else {
+                // 服务端返回 400（如私聊对象不存在于用户列表）时给出提示，不渲染旧消息
+                showError(await resp.text());
+            }
+            const container = document.getElementById('MsgBox');
+            for (const msg of history) {
+                container.appendChild(crtMsg(msg.name, msg.time, msg.text));
+            }
+            scrollToBottom();
+        }
+
+        async function sendMsg() {
+            if (document.getElementById('user').value !== nowTarget) {
+                await refresh();
+            }
+            const text = document.getElementById('content').value;
+            if (text.trim() === '') return; // 纯换行/空白不发送
+            const user = document.getElementById('user').value;
+            const json = JSON.stringify({ type: 'send', name: 'unused', time: 'unused', text, sendTo: user });
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(json);
+                document.getElementById('content').value = '';
+                autoGrow(); // 发送后把输入框高度还原
+            }
+        }
+
+        async function delMsg(name, time) {
+            if (document.getElementById('user').value !== nowTarget) {
+                await refresh();
+            }
+            const user = document.getElementById('user').value;
+            const json = JSON.stringify({ type: 'del', name, time, text: 'unused', sendTo: user });
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(json);
+            }
+        }
+
+        async function refresh() {
+            document.getElementById('MsgBox').innerHTML = '';
+            nowTarget = document.getElementById('user').value;
+            await renderHistory();
+        }
+
+        function scrollToBottom() {
+            document.getElementById('end').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // 输入框随内容自动增高（有上限），发送后重置
+        function autoGrow() {
+            const ta = document.getElementById('content');
+            ta.style.height = 'auto';
+            ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+        }
+    </script>
+    <style>
+        :root {
+            --bg: #f4f6fb;
+            --card: #ffffff;
+            --accent: #4f7cff;
+            --accent-soft: #e9efff;
+            --text: #232a3b;
+            --muted: #8b91a5;
+            --border: #e4e7f0;
+            --danger: #ff4d4d;
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        /* 顶栏 */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 18px;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+        }
+        .topbar h1 { margin: 0; font-size: 18px; }
+        .topbar .meta { display: flex; align-items: center; gap: 14px; }
+        .topbar .me { font-size: 13px; font-weight: 600; color: var(--muted); }
+        .topbar .me:empty { display: none; }
+        .topbar a { color: var(--accent); font-size: 13px; text-decoration: none; }
+        .topbar a:hover { text-decoration: underline; }
+
+        /* 消息区 */
+        .chat-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .message-box {
+            position: relative;
+            align-self: flex-start;
+            max-width: 72%;
+            padding: 8px 12px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+        }
+        .message-box.own {
+            align-self: flex-end;
+            background: var(--accent-soft);
+            border-color: #cdd9ff;
+        }
+        .sender { margin: 0; font-size: 12px; font-weight: 700; color: var(--accent); }
+        .message-box.own .sender { color: #7a8bb0; }
+        .time { margin: 1px 0 4px; font-size: 11px; color: var(--muted); }
+        /* pre-wrap 保留消息里的换行 */
+        .content { margin: 0; font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+        /* 撤回按钮：只出现在自己消息上，悬停才显示 */
+        .revoke-btn {
+            position: absolute;
+            top: -9px;
+            right: 10px;
+            padding: 2px 10px;
+            background: var(--danger);
+            color: #fff;
+            border: none;
+            border-radius: 999px;
+            font-size: 11px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity .15s;
+        }
+        .message-box:hover .revoke-btn { opacity: 1; }
+        .revoke-btn:hover { background: #e63535; }
+
+        /* 错误提示浮层（服务端 err 消息，如私聊对象不存在） */
+        .error-toast {
+            position: fixed;
+            bottom: 90px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            max-width: 80vw;
+            padding: 10px 18px;
+            background: #ff4d4d;
+            color: #fff;
+            border-radius: 10px;
+            font-size: 13px;
+            box-shadow: 0 4px 16px rgba(255, 77, 77, .35);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s, transform .2s;
+            z-index: 10;
+        }
+        .error-toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        /* 底部输入栏 */
+        .inputbar {
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+            padding: 12px 16px;
+            background: var(--card);
+            border-top: 1px solid var(--border);
+        }
+        .inputbar input,
+        .inputbar textarea {
+            flex: 1;
+            min-width: 0;
+            padding: 9px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            line-height: 1.4;
+            outline: none;
+            background: var(--bg);
+            color: var(--text);
+        }
+        .inputbar input:focus,
+        .inputbar textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(79, 124, 255, .15);
+            background: var(--card);
+        }
+        .inputbar #user { flex: 0 0 180px; }
+        .inputbar textarea {
+            resize: none;      /* 高度由 autoGrow 自动控制 */
+            overflow-y: auto;
+            max-height: 120px;
+        }
+        .inputbar button {
+            padding: 9px 16px;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .inputbar button:hover { background: #3f68e8; }
+        .inputbar button.ghost { background: #eef1f8; color: var(--text); }
+        .inputbar button.ghost:hover { background: #e2e6f2; }
+
+        /* 小屏适配 */
+        @media (max-width: 600px) {
+            .message-box { max-width: 88%; }
+            .inputbar { flex-wrap: wrap; }
+            .inputbar #user { flex: 1 1 100%; }
+        }
+    </style>
+</head>
+<body>
+    <header class="topbar">
         <h1>Chat</h1>
-        <div id="ann" style="position: fixed;background-color: grey;"></div>
-        <div id="MsgBox" class="scrollable"></div>
-        <input type="text" id="content" placeholder="message...">
-        <input type="text" id="user" placeholder="私聊对象，留空以在班级群发送">
-        <button onclick="sendMsg()">send</button>
-        <button onclick="refresh()">刷新私聊对象</button>
-        <button onclick="window.location.replace('/userList')">查看用户列表</button>
-        <div id="end"></div>
-    </body>
+        <div class="meta">
+            <span id="meName" class="me"></span>
+            <a href="/userList">查看用户列表</a>
+        </div>
+    </header>
+
+    <main id="MsgBox" class="chat-area"></main>
+
+    <footer class="inputbar">
+        <input type="text" id="user" placeholder="私聊对象，留空发到群里">
+        <textarea id="content" rows="1" placeholder="输入消息，Enter 换行，Ctrl+Enter 发送"></textarea>
+        <button id="sendBtn">发送</button>
+        <button id="refreshBtn" class="ghost">刷新</button>
+    </footer>
+    <div id="end"></div>
+</body>
 </html>

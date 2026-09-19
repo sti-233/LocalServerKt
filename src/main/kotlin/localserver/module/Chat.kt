@@ -11,6 +11,7 @@ import io.ktor.server.routing.*
 import io.ktor.server.response.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
+import io.ktor.http.*
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.serialization.json.*
 import java.util.concurrent.ConcurrentHashMap
@@ -25,6 +26,7 @@ object Chat {
         
         websocket()
         clients()
+        whoami()
     }
 
     private fun Route.chatPage() = authenticate("auth") {
@@ -36,8 +38,18 @@ object Chat {
     private fun Route.history() = get("/history") {
         val targetUser = call.parameters["targetuser"]
         val current = Util.getUserName(call.request.local.remoteAddress)
+        if (!targetUser.isNullOrEmpty() && !Util.userExists(targetUser)) {
+            call.respondText("私聊对象 '$targetUser' 不存在于用户列表，请确认名字正确或先添加该用户", status = HttpStatusCode.BadRequest)
+            return@get
+        }
         val target = if (!targetUser.isNullOrEmpty()) Util.getTarget(current, targetUser) else null
         call.respondText(Util.getHistory(target))
+    }
+    
+    private fun Route.whoami() = authenticate("auth") {
+        get("/whoami") {
+            call.respondText(Util.getUserName(call.request.local.remoteAddress))
+        }
     }
 
     private fun Route.message() = webSocket("/message") {
@@ -55,29 +67,48 @@ object Chat {
                         val json = Json.decodeFromString<Content>(text)
                         val current = Util.getUserName(clientId)
                         if (json.type == "send") {
+                            // 私聊对象不在用户列表时直接回 err，避免 getUserIp 抛异常导致整个连接被断开
+                            if (!json.sendTo.isNullOrEmpty() && !Util.userExists(json.sendTo)) {
+                                send(Json.encodeToString(
+                                    Content("err", current, Time.getCurrentTimeWithDate(),
+                                        "私聊对象 '$json.sendTo' 不存在于用户列表，请确认名字正确或先添加该用户",
+                                        json.sendTo)
+                                ))
+                                continue
+                            }
                             val content = Content("send", current, Time.getCurrentTimeWithDate(), json.text, json.sendTo)
                             val message = Message(current, Time.getCurrentTimeWithDate(), json.text)
                             val response = Json.encodeToString(content)
                             if (json.sendTo.isNullOrEmpty()) {
-                                clients.forEach { (_, session) -> 
+                                clients.forEach { (_, session) ->
                                     session.send(response)
                                 }
                                 Util.addHistory(message)
                             } else {
+                                // sendTo 非空时已确认存在于用户列表
                                 listOf(clients[Util.getUserIp(json.sendTo)], this).forEach { session ->
                                     session?.send(response)
                                 }
                                 Util.addHistory(message, Util.getTarget(current, json.sendTo))
                             }
                         } else if (json.type == "del" && Time.withinTwoMin(json.time)) {
+                            if (!json.sendTo.isNullOrEmpty() && !Util.userExists(json.sendTo)) {
+                                send(Json.encodeToString(
+                                    Content("err", current, Time.getCurrentTimeWithDate(),
+                                        "私聊对象 '$json.sendTo' 不存在于用户列表，无法撤回",
+                                        json.sendTo)
+                                ))
+                                continue
+                            }
                             val content = Content("del", current, json.time, json.text, json.sendTo)
                             val response = Json.encodeToString(content)
                             if (json.sendTo.isNullOrEmpty()) {
-                                clients.forEach { (_, session) -> 
+                                clients.forEach { (_, session) ->
                                     session.send(response)
                                 }
                                 Util.delHistory(current, json.time)
                             } else {
+                                // sendTo 非空时已确认存在于用户列表
                                 listOf(clients[Util.getUserIp(json.sendTo)], this).forEach { session ->
                                     session?.send(response)
                                 }
