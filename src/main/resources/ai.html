@@ -228,6 +228,45 @@
         }
         .thinking-content.collapsed { display: none; }
 
+        /* ===== AI 回复单元 .ai-wrap：思考块（可选）+ 气泡 + 右下角 ✨ 重渲染按钮 ===== */
+        .ai-wrap {
+            position: relative;
+            align-self: flex-start;
+            max-width: 75%;
+            min-width: 240px; /* 流式早期气泡为空时保持 ✨ 按钮有稳定的停靠位置 */
+            width: fit-content;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .ai-wrap .thinking-container {
+            align-self: stretch;
+            max-width: 100%;
+            margin-bottom: 0; /* 间距交给 .ai-wrap 的 gap */
+        }
+        .ai-wrap .message.ai {
+            align-self: stretch;
+            max-width: 100%;
+        }
+        .rerender-btn {
+            position: absolute;
+            right: -8px;
+            bottom: -8px;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 1px solid #e0e0e0;
+            background: #fff;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+            font-size: 13px;
+            line-height: 26px;
+            text-align: center;
+            padding: 0;
+            cursor: pointer;
+            transition: border-color 0.15s, background 0.15s;
+        }
+        .rerender-btn:hover { background: #eef2ff; border-color: #4f46e5; }
+
         /* ===== Debug 窗口样式 ===== */
         #debugPanel {
             position: fixed;
@@ -305,7 +344,8 @@
     <div class="header">
         <h1>AI 助手</h1>
         <span class="badge">!?AI?!</span>
-        <button class="clear-btn" onclick="clearHistory()" style="margin-left:auto;">清除对话</button>
+        <button class="clear-btn" id="debugToggleBtn" onclick="debugToggle()" style="margin-left:auto; display:none;">🐛 Debug</button>
+        <button class="clear-btn" onclick="clearHistory()" style="margin-left:8px;">清除对话</button>
     </div>
     <div class="chat-container" id="chatContainer">
         <div class="message system">你好！我是 AI 助手，有什么可以帮你的？</div>
@@ -327,7 +367,7 @@
     </div>
 
     <script>
-        /* ===== Debug 开关：设为 true 时展开调试窗口并记录所有 console ===== */
+        /* ===== Debug 开关：设为 true 时显示 Debug 按钮，点击按钮打开调试窗口 ===== */
         var DEBUG = false;
 
         const chatContainer = document.getElementById('chatContainer');
@@ -336,15 +376,19 @@
         const debugPanel = document.getElementById('debugPanel');
         const debugLog = document.getElementById('debugLog');
         const debugCount = document.getElementById('debugCount');
+        const debugToggleBtn = document.getElementById('debugToggleBtn');
         let debugEntryCount = 0;
         let isProcessing = false;
         let autoScrollEnabled = true;
 
-        /* ===== Debug 日志核心 ===== */
+        /* ===== DEBUG 开启时显示 Debug 按钮，由用户手动打开面板 ===== */
+        if (DEBUG) {
+            debugToggleBtn.style.display = '';
+        }
+
+        /* ===== Debug 日志核心：DEBUG 开启时记录日志（面板关闭时也在后台累积，打开后可见），不再自动展开面板 ===== */
         function debugLogWrite(level, args) {
             if (!DEBUG) return;
-            // 展开面板（首次自动展开）
-            debugPanel.classList.add('open');
             // 组装文本（把对象转成 JSON 便于查看）
             var parts = [];
             for (var i = 0; i < args.length; i++) {
@@ -404,7 +448,7 @@
             });
         })();
 
-        debugLogWrite('info', '[init] Debug 模式已开启，marked 版本:',
+        debugLogWrite('info', '[init] Debug 模式已开启，点击顶部 🐛 按钮打开 Debug 面板。marked 版本:',
             (typeof marked !== 'undefined' && marked.version) || 'unknown');
 
         /* ===== 输入框自适应高度 ===== */
@@ -427,16 +471,56 @@
             return div;
         }
 
-        function addThinkingContainer() {
-            const container = document.createElement('div');
-            container.className = 'thinking-container';
-            container.innerHTML = '<div class="thinking-toggle" onclick="toggleThinking(this)">' +
-                '<span class="arrow">▼</span>' +
-                '<span class="thinking-label">思考中...</span>' +
-            '</div>' +
-            '<div class="thinking-content"></div>';
-            chatContainer.appendChild(container);
-            return container;
+        /* 创建一条 AI 回复单元：.ai-wrap 包裹 思考块（可选）+ ✨ 重渲染按钮；
+           气泡 (.message.ai) 由调用方 insertBefore 按钮之前。 */
+        function addAiUnit(withThinking) {
+            const unit = document.createElement('div');
+            unit.className = 'ai-wrap';
+            let html = '';
+            if (withThinking) {
+                html += '<div class="thinking-container">' +
+                    '<div class="thinking-toggle" onclick="toggleThinking(this)">' +
+                    '<span class="arrow">▼</span>' +
+                    '<span class="thinking-label">思考中...</span>' +
+                    '</div>' +
+                    '<div class="thinking-content"></div>' +
+                    '</div>';
+            }
+            html += '<button class="rerender-btn" title="重新渲染 markdown 与公式">✨</button>';
+            unit.innerHTML = html;
+            chatContainer.appendChild(unit);
+            const thinking = unit.querySelector('.thinking-container');
+            return {
+                unit,
+                thinking,
+                thinkingContent: thinking ? thinking.querySelector('.thinking-content') : null,
+                thinkingToggle: thinking ? thinking.querySelector('.thinking-toggle') : null,
+                thinkingLabel: thinking ? thinking.querySelector('.thinking-label') : null,
+                rerenderBtn: unit.querySelector('.rerender-btn')
+            };
+        }
+
+        /* ===== ✨ 重渲染：按单元上保存的原始文本 (el._thinkingText / _contentText) 重新渲染 markdown + 公式 ===== */
+        function rerenderUnit(unitEl) {
+            const thinking = unitEl.querySelector('.thinking-content');
+            if (thinking && unitEl._thinkingText) {
+                renderMarkdown(thinking, unitEl._thinkingText);
+                renderMath(thinking);
+            }
+            const aiMsg = unitEl.querySelector('.message.ai');
+            if (aiMsg && unitEl._contentText) {
+                renderMarkdown(aiMsg, unitEl._contentText);
+                renderMath(aiMsg);
+                // 重渲染会重建 innerHTML，需补回"传输中断"提示
+                if (unitEl._interrupted) {
+                    const note = document.createElement('div');
+                    note.textContent = '（回答在传输中断开）';
+                    note.style.color = '#9ca3af';
+                    note.style.fontSize = '12px';
+                    aiMsg.appendChild(note);
+                }
+            }
+            debugLogWrite('log', '[rerenderUnit] 已重新渲染 markdown 与公式');
         }
 
         function toggleThinking(el) {
@@ -477,17 +561,21 @@
                             return;
                         }
                         if (role !== 'assistant') return;
-                        // 思考过程：折叠展示
+                        // 一条 AI 回复单元（.ai-wrap）：思考块（可选）+ 气泡 + 右下角 ✨ 重渲染按钮
+                        const unitEl = addAiUnit(!!item.reasoning_content).unit;
                         if (item.reasoning_content) {
-                            const tc = addThinkingContainer();
-                            const tcBody = tc.querySelector('.thinking-content');
+                            unitEl._thinkingText = item.reasoning_content;
+                            const tcBody = unitEl.querySelector('.thinking-content');
                             renderMarkdown(tcBody, item.reasoning_content);
                             renderMath(tcBody);
-                            tc.querySelector('.thinking-label').textContent = '已折叠的思考';
-                            tc.querySelector('.thinking-toggle').classList.add('collapsed');
+                            unitEl.querySelector('.thinking-label').textContent = '已折叠的思考';
+                            unitEl.querySelector('.thinking-toggle').classList.add('collapsed');
                             tcBody.classList.add('collapsed');
                         }
                         const div = addMessage('', 'ai');
+                        unitEl.insertBefore(div, unitEl.querySelector('.rerender-btn'));
+                        unitEl._contentText = content;
+                        unitEl._interrupted = !!item.interrupted;
                         if (content) {
                             // 历史消息与实时回复一致：markdown + 数学公式渲染
                             renderMarkdown(div, content);
@@ -500,6 +588,7 @@
                             note.style.fontSize = '12px';
                             div.appendChild(note);
                         }
+                        unitEl.querySelector('.rerender-btn').addEventListener('click', () => rerenderUnit(unitEl));
                     });
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                     debugLogWrite('log', '[loadHistory] 已恢复', items.length, '条消息');
@@ -549,13 +638,37 @@
 
             addMessage(text, 'user');
 
-            const thinkingContainer = addThinkingContainer();
-            const thinkingContent = thinkingContainer.querySelector('.thinking-content');
-            const thinkingToggle = thinkingContainer.querySelector('.thinking-toggle');
-            const thinkingLabel = thinkingContainer.querySelector('.thinking-label');
+            /* AI 回复单元：先创建 .ai-wrap（含 ✨ 按钮），气泡插入其中；
+               思考块保留到流结束时再按需挂入（保证 ✨ 始终贴在气泡右下角） */
+            const aiWrap = document.createElement('div');
+            aiWrap.className = 'ai-wrap';
+            aiWrap.innerHTML = '<button class="rerender-btn" title="重新渲染 markdown 与公式">✨</button>';
+            chatContainer.appendChild(aiWrap);
+            const rerenderBtn = aiWrap.querySelector('.rerender-btn');
 
             const aiMessageDiv = addMessage('', 'ai');
             aiMessageDiv.classList.add('typing');
+            aiWrap.insertBefore(aiMessageDiv, rerenderBtn);
+            rerenderBtn.addEventListener('click', () => rerenderUnit(aiWrap));
+
+            let thinkingContainer = null;
+            let thinkingContent = null;
+            let thinkingToggle = null;
+            let thinkingLabel = null;
+            function ensureThinking() {
+                if (thinkingContainer) return;
+                thinkingContainer = document.createElement('div');
+                thinkingContainer.className = 'thinking-container';
+                thinkingContainer.innerHTML = '<div class="thinking-toggle" onclick="toggleThinking(this)">' +
+                    '<span class="arrow">▼</span>' +
+                    '<span class="thinking-label">思考中...</span>' +
+                '</div>' +
+                '<div class="thinking-content"></div>';
+                aiWrap.insertBefore(thinkingContainer, aiMessageDiv);
+                thinkingContent = thinkingContainer.querySelector('.thinking-content');
+                thinkingToggle = thinkingContainer.querySelector('.thinking-toggle');
+                thinkingLabel = thinkingContainer.querySelector('.thinking-label');
+            }
 
             let thinkingBuffer = '';
             let responseBuffer = '';
@@ -575,7 +688,7 @@
             function renderPending() {
                 if (!pendingRender) return;
                 pendingRender = false;
-                if (thinkingBuffer) {
+                if (thinkingBuffer && thinkingContent) {
                     renderMarkdown(thinkingContent, thinkingBuffer);
                     renderMath(thinkingContent);
                     thinkingContent.scrollTop = thinkingContent.scrollHeight;
@@ -592,14 +705,16 @@
 
             function finalize() {
                 renderPending();
-                if (!thinkingBuffer.trim()) {
-                    if (thinkingContainer.parentNode) {
-                        thinkingContainer.parentNode.removeChild(thinkingContainer);
-                    }
-                } else {
+                if (thinkingBuffer.trim()) {
+                    // 保留思考块并展开，记录原始思考文本供 ✨ 重渲染
+                    aiWrap._thinkingText = thinkingBuffer;
                     thinkingContent.classList.remove('collapsed');
                     thinkingToggle.classList.remove('collapsed');
+                } else if (thinkingContainer && thinkingContainer.parentNode) {
+                    thinkingContainer.parentNode.removeChild(thinkingContainer);
                 }
+                // 成功完成（或中断）的回复记录原始文本；网络错误/服务端错误不记录
+                aiWrap._contentText = responseBuffer;
                 if (!responseBuffer && !thinkingBuffer) {
                     aiMessageDiv.textContent = '(空响应：请检查 Debug 窗口原始 data)';
                 }
@@ -650,6 +765,7 @@
                 var delta = choices[0].delta;
 
                 if (delta && delta.reasoning_content) {
+                    ensureThinking();
                     thinkingBuffer += delta.reasoning_content;
                     // 文本逐字即时显示；markdown 渲染延迟到 heartbeat / 结束时进行
                     thinkingContent.textContent = thinkingBuffer;
@@ -661,7 +777,7 @@
                 if (delta && delta.content) {
                     if (isThinking) {
                         isThinking = false;
-                        thinkingLabel.textContent = '思考完毕';
+                        if (thinkingLabel) thinkingLabel.textContent = '思考完毕';
                     }
                     responseBuffer += delta.content;
                     // 文本逐字即时显示；markdown 渲染延迟到 heartbeat / 结束时进行
@@ -683,7 +799,6 @@
             };
             es.addEventListener('heartbeat', renderPending);
             es.onmessage = function(e) {
-                debugLogWrite('debug', '[SSE] onmessage raw:', e.data);
                 if (typeof e.data === 'string') {
                     processChunk(e.data);
                 }
