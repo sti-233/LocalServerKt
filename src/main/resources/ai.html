@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 助手</title>
+    <link rel="stylesheet" href="/download?url=https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css&inline=1">
+    <script src="/download?url=https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js&inline=1"></script>
+    <script src="/download?url=https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js&inline=1"></script>
+    <script src="/download?url=https://cdn.jsdelivr.net/npm/marked@0.8.2/marked.min.js&inline=1"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: #fff;
+            padding: 16px 24px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .header h1 { font-size: 20px; font-weight: 600; }
+        .header .badge {
+            background: #4f46e5;
+            color: #fff;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+        .chat-container {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .message {
+            max-width: 75%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .message.user {
+            align-self: flex-end;
+            background: #4f46e5;
+            color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+        .message.ai {
+            align-self: flex-start;
+            background: #fff;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 4px;
+        }
+        .message.ai pre {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 13px;
+            line-height: 1.5;
+            margin: 8px 0;
+        }
+        .message.ai code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: "Consolas", "Monaco", monospace;
+        }
+        .message.ai pre code {
+            background: none;
+            padding: 0;
+        }
+        .message.ai ul, .message.ai ol {
+            margin: 8px 0;
+            padding-left: 24px;
+        }
+        .message.ai li { margin: 4px 0; }
+        .message.ai p { margin: 8px 0; }
+        .message.ai p:first-child { margin-top: 0; }
+        .message.ai p:last-child { margin-bottom: 0; }
+        .message.ai blockquote {
+            border-left: 3px solid #4f46e5;
+            margin: 8px 0;
+            padding: 4px 12px;
+            color: #6b7280;
+            background: #f9fafb;
+        }
+        .message.ai h1, .message.ai h2, .message.ai h3,
+        .message.ai h4, .message.ai h5, .message.ai h6 {
+            margin: 12px 0 6px;
+            font-weight: 600;
+        }
+        .message.ai h1 { font-size: 1.4em; }
+        .message.ai h2 { font-size: 1.25em; }
+        .message.ai h3 { font-size: 1.1em; }
+        .message.ai table {
+            border-collapse: collapse;
+            margin: 8px 0;
+            width: auto;
+        }
+        .message.ai th, .message.ai td {
+            border: 1px solid #d1d5db;
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+        .message.ai th { background: #f3f4f6; }
+        .math-block {
+            text-align: center;
+            margin: 10px 0;
+            overflow-x: auto;
+        }
+        .katex-display { margin: 0 !important; }
+        .message.ai .katex { font-size: 1.1em; }
+        .message.system {
+            align-self: center;
+            background: #fef3c7;
+            color: #92400e;
+            font-size: 13px;
+            padding: 8px 16px;
+            border-radius: 8px;
+        }
+        .input-area {
+            background: #fff;
+            padding: 16px 24px;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        .input-area textarea {
+            flex: 1;
+            resize: none;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 14px;
+            line-height: 1.5;
+            min-height: 44px;
+            max-height: 120px;
+            font-family: inherit;
+            outline: none;
+        }
+        .input-area textarea:focus { border-color: #4f46e5; }
+        .input-area button {
+            background: #4f46e5;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 0 20px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .input-area button:hover { background: #4338ca; }
+        .input-area button:disabled { background: #9ca3af; cursor: not-allowed; }
+        .clear-btn {
+            background: none;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            color: #6b7280;
+            cursor: pointer;
+        }
+        .clear-btn:hover { border-color: #ef4444; color: #ef4444; }
+        .typing::after {
+            content: '▋';
+            animation: blink 1s infinite;
+        }
+        .typing:empty::after {
+            content: '▋';
+            animation: blink 1s infinite;
+        }
+        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+        .thinking-container {
+            max-width: 75%;
+            align-self: flex-start;
+            margin-bottom: 8px;
+        }
+        .thinking-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #f3f4f6;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #6b7280;
+            user-select: none;
+            transition: background 0.15s;
+        }
+        .thinking-toggle:hover { background: #e5e7eb; }
+        .thinking-toggle .arrow { transition: transform 0.2s; font-size: 10px; }
+        .thinking-toggle.collapsed .arrow { transform: rotate(-90deg); }
+        .thinking-content {
+            display: block;
+            margin-top: 8px;
+            padding: 12px;
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #4b5563;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 250px;
+            overflow-y: auto;
+        }
+        .thinking-content.collapsed { display: none; }
+
+        /* ===== Debug 窗口样式 ===== */
+        #debugPanel {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 280px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: "Consolas", "Monaco", monospace;
+            font-size: 12px;
+            display: none;
+            flex-direction: column;
+            z-index: 1000;
+            border-top: 2px solid #4f46e5;
+        }
+        #debugPanel.open { display: flex; }
+        .debug-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: #2d2d2d;
+            border-bottom: 1px solid #444;
+            flex-shrink: 0;
+        }
+        .debug-header .debug-title {
+            font-weight: 600;
+            color: #fff;
+            font-size: 12px;
+        }
+        .debug-header .debug-count {
+            color: #9ca3af;
+            font-size: 11px;
+        }
+        .debug-header button {
+            margin-left: auto;
+            background: #444;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            padding: 3px 10px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .debug-header button:hover { background: #555; }
+        .debug-header .debug-close {
+            background: #ef4444;
+        }
+        .debug-header .debug-close:hover { background: #dc2626; }
+        #debugLog {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 12px;
+        }
+        .debug-line {
+            padding: 2px 0;
+            border-bottom: 1px solid #2a2a2a;
+            word-break: break-all;
+            white-space: pre-wrap;
+        }
+        .debug-line .time {
+            color: #6b7280;
+            margin-right: 6px;
+        }
+        .debug-line.log .level { color: #93c5fd; }
+        .debug-line.info .level { color: #6ee7b7; }
+        .debug-line.warn .level { color: #fcd34d; }
+        .debug-line.error .level { color: #fca5a5; }
+        .debug-line.debug .level { color: #c4b5fd; }
+        .debug-line .msg { color: #d4d4d4; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>AI 助手</h1>
+        <span class="badge">!?AI?!</span>
+        <button class="clear-btn" onclick="clearHistory()" style="margin-left:auto;">清除对话</button>
+    </div>
+    <div class="chat-container" id="chatContainer">
+        <div class="message system">你好！我是 AI 助手，有什么可以帮你的？</div>
+    </div>
+    <div class="input-area">
+        <textarea id="msgInput" placeholder="输入消息…" rows="1"></textarea>
+        <button id="sendBtn" onclick="sendMessage()">发送</button>
+    </div>
+
+    <!-- ===== Debug 窗口 DOM ===== -->
+    <div id="debugPanel">
+        <div class="debug-header">
+            <span class="debug-title">🐛 Debug Console</span>
+            <span class="debug-count" id="debugCount">0 条</span>
+            <button onclick="debugClear()">清空</button>
+            <button class="debug-close" onclick="debugToggle(false)">关闭 ✕</button>
+        </div>
+        <div id="debugLog"></div>
+    </div>
+
+    <script>
+        /* ===== Debug 开关：设为 true 时展开调试窗口并记录所有 console ===== */
+        var DEBUG = false;
+
+        const chatContainer = document.getElementById('chatContainer');
+        const msgInput = document.getElementById('msgInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const debugPanel = document.getElementById('debugPanel');
+        const debugLog = document.getElementById('debugLog');
+        const debugCount = document.getElementById('debugCount');
+        let debugEntryCount = 0;
+        let isProcessing = false;
+        let autoScrollEnabled = true;
+
+        /* ===== Debug 日志核心 ===== */
+        function debugLogWrite(level, args) {
+            if (!DEBUG) return;
+            // 展开面板（首次自动展开）
+            debugPanel.classList.add('open');
+            // 组装文本（把对象转成 JSON 便于查看）
+            var parts = [];
+            for (var i = 0; i < args.length; i++) {
+                var a = args[i];
+                if (typeof a === 'object') {
+                    try { parts.push(JSON.stringify(a)); } catch (e) { parts.push(String(a)); }
+                } else {
+                    parts.push(String(a));
+                }
+            }
+            var text = parts.join(' ');
+            var now = new Date();
+            var time = now.toLocaleTimeString('zh-CN', { hour12: false }) + '.' +
+                String(now.getMilliseconds()).padStart(3, '0');
+
+            var line = document.createElement('div');
+            line.className = 'debug-line ' + level;
+            line.innerHTML = '<span class="time">' + time + '</span>' +
+                '<span class="level">[' + level.toUpperCase() + ']</span> ' +
+                '<span class="msg"></span>';
+            line.querySelector('.msg').textContent = text;
+            debugLog.appendChild(line);
+
+            // 限制条数，防止内存膨胀
+            while (debugLog.childNodes.length > 500) {
+                debugLog.removeChild(debugLog.firstChild);
+            }
+            debugEntryCount++;
+            debugCount.textContent = debugEntryCount + ' 条';
+            // 自动滚动到最新
+            debugLog.scrollTop = debugLog.scrollHeight;
+        }
+
+        function debugToggle(force) {
+            if (typeof force === 'boolean') {
+                debugPanel.classList.toggle('open', force);
+            } else {
+                debugPanel.classList.toggle('open');
+            }
+        }
+        function debugClear() {
+            debugLog.innerHTML = '';
+            debugEntryCount = 0;
+            debugCount.textContent = '0 条';
+        }
+
+        /* ===== 劫持原生 console，把日志同步到 Debug 窗口 ===== */
+        (function hijackConsole() {
+            if (!DEBUG) return;
+            var levels = ['log', 'info', 'warn', 'error', 'debug'];
+            levels.forEach(function (lvl) {
+                var original = console[lvl].bind(console);
+                console[lvl] = function () {
+                    debugLogWrite(lvl, arguments);
+                    original.apply(console, arguments);
+                };
+            });
+        })();
+
+        debugLogWrite('info', '[init] Debug 模式已开启，marked 版本:',
+            (typeof marked !== 'undefined' && marked.version) || 'unknown');
+
+        /* ===== 输入框自适应高度 ===== */
+        msgInput.addEventListener('input', () => {
+            msgInput.style.height = 'auto';
+            msgInput.style.height = Math.min(msgInput.scrollHeight, 120) + 'px';
+        });
+
+        chatContainer.addEventListener('scroll', () => {
+            const threshold = 80;
+            const distanceFromBottom = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight;
+            autoScrollEnabled = distanceFromBottom <= threshold;
+        });
+
+        function addMessage(text, role) {
+            const div = document.createElement('div');
+            div.className = 'message ' + role;
+            div.textContent = text;
+            chatContainer.appendChild(div);
+            return div;
+        }
+
+        function addThinkingContainer() {
+            const container = document.createElement('div');
+            container.className = 'thinking-container';
+            container.innerHTML = '<div class="thinking-toggle" onclick="toggleThinking(this)">' +
+                '<span class="arrow">▼</span>' +
+                '<span class="thinking-label">思考中...</span>' +
+            '</div>' +
+            '<div class="thinking-content"></div>';
+            chatContainer.appendChild(container);
+            return container;
+        }
+
+        function toggleThinking(el) {
+            const content = el.nextElementSibling;
+            el.classList.toggle('collapsed');
+            content.classList.toggle('collapsed');
+        }
+
+        function clearHistory() {
+            debugLogWrite('log', '[clearHistory] 清除对话');
+            fetch('/ai/clear', { method: 'POST' })
+                .then(() => {
+                    chatContainer.innerHTML = '<div class="message system">对话已清除。</div>';
+                    autoScrollEnabled = true;
+                })
+                .catch(err => debugLogWrite('error', '[clearHistory] 失败:', err));
+        }
+
+        /* ===== 页面加载时从服务端恢复历史对话 ===== */
+        function loadHistory() {
+            fetch('/ai/history')
+                .then(r => {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(items => {
+                    if (!Array.isArray(items) || items.length === 0) return;
+                    // 有历史时移除默认欢迎语
+                    const welcome = chatContainer.querySelector('.message.system');
+                    if (welcome && welcome.textContent.indexOf('AI 助手') !== -1) {
+                        chatContainer.removeChild(welcome);
+                    }
+                    items.forEach(item => {
+                        const role = item.role;
+                        const content = item.content || '';
+                        if (role === 'user') {
+                            addMessage(content, 'user');
+                            return;
+                        }
+                        if (role !== 'assistant') return;
+                        // 思考过程：折叠展示
+                        if (item.reasoning_content) {
+                            const tc = addThinkingContainer();
+                            const tcBody = tc.querySelector('.thinking-content');
+                            renderMarkdown(tcBody, item.reasoning_content);
+                            renderMath(tcBody);
+                            tc.querySelector('.thinking-label').textContent = '已折叠的思考';
+                            tc.querySelector('.thinking-toggle').classList.add('collapsed');
+                            tcBody.classList.add('collapsed');
+                        }
+                        const div = addMessage('', 'ai');
+                        if (content) {
+                            // 历史消息与实时回复一致：markdown + 数学公式渲染
+                            renderMarkdown(div, content);
+                            renderMath(div);
+                        }
+                        if (item.interrupted) {
+                            const note = document.createElement('div');
+                            note.textContent = '（回答在传输中断开）';
+                            note.style.color = '#9ca3af';
+                            note.style.fontSize = '12px';
+                            div.appendChild(note);
+                        }
+                    });
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    debugLogWrite('log', '[loadHistory] 已恢复', items.length, '条消息');
+                })
+                .catch(err => debugLogWrite('error', '[loadHistory] 失败:', err));
+        }
+
+        function renderMath(el) {
+            if (typeof renderMathInElement === 'undefined') return;
+            try {
+                renderMathInElement(el, {
+                    delimiters: [
+                        {left: '$$', right: '$$', display: true},
+                        {left: '$', right: '$', display: false}
+                    ],
+                    throwOnError: false
+                });
+            } catch (e) {
+                debugLogWrite('warn', '[renderMath] 渲染失败:', e.message);
+            }
+        }
+
+        function renderMarkdown(el, text) {
+            if (typeof marked !== 'undefined') {
+                try {
+                    el.innerHTML = marked.parse(text);
+                    return;
+                } catch (err) {
+                    debugLogWrite('warn', '[renderMarkdown] marked 抛错，降级为文本:', err.message);
+                }
+            }
+            el.textContent = text;
+        }
+
+        function sendMessage() {
+            if (isProcessing) return;
+            const text = msgInput.value.trim();
+            if (!text) return;
+
+            debugLogWrite('log', '[sendMessage] 用户发送:', text);
+
+            msgInput.value = '';
+            msgInput.style.height = 'auto';
+            isProcessing = true;
+            sendBtn.disabled = true;
+            autoScrollEnabled = true;
+
+            addMessage(text, 'user');
+
+            const thinkingContainer = addThinkingContainer();
+            const thinkingContent = thinkingContainer.querySelector('.thinking-content');
+            const thinkingToggle = thinkingContainer.querySelector('.thinking-toggle');
+            const thinkingLabel = thinkingContainer.querySelector('.thinking-label');
+
+            const aiMessageDiv = addMessage('', 'ai');
+            aiMessageDiv.classList.add('typing');
+
+            let thinkingBuffer = '';
+            let responseBuffer = '';
+            let isThinking = true;
+            let pendingRender = false;
+            let es = null;
+
+            function cleanup() {
+                if (es) {
+                    debugLogWrite('log', '[cleanup] 关闭 EventSource');
+                    es.close();
+                    es = null;
+                }
+            }
+
+            /* ===== 渲染节流：chunk 只累积到 buffer，实际渲染交给 heartbeat 与结束事件触发 ===== */
+            function renderPending() {
+                if (!pendingRender) return;
+                pendingRender = false;
+                if (thinkingBuffer) {
+                    renderMarkdown(thinkingContent, thinkingBuffer);
+                    renderMath(thinkingContent);
+                    thinkingContent.scrollTop = thinkingContent.scrollHeight;
+                }
+                if (responseBuffer) {
+                    aiMessageDiv.classList.remove('typing');
+                    renderMarkdown(aiMessageDiv, responseBuffer);
+                    renderMath(aiMessageDiv);
+                }
+                if (autoScrollEnabled) {
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+            }
+
+            function finalize() {
+                renderPending();
+                if (!thinkingBuffer.trim()) {
+                    if (thinkingContainer.parentNode) {
+                        thinkingContainer.parentNode.removeChild(thinkingContainer);
+                    }
+                } else {
+                    thinkingContent.classList.remove('collapsed');
+                    thinkingToggle.classList.remove('collapsed');
+                }
+                if (!responseBuffer && !thinkingBuffer) {
+                    aiMessageDiv.textContent = '(空响应：请检查 Debug 窗口原始 data)';
+                }
+                aiMessageDiv.classList.remove('typing');
+                isProcessing = false;
+                sendBtn.disabled = false;
+                msgInput.focus();
+                if (autoScrollEnabled) {
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+                debugLogWrite('log', '[finalize] 完成，思考长度:', thinkingBuffer.length, '正文长度:', responseBuffer.length);
+            }
+
+            let streamEnded = false;
+
+            function processChunk(data) {
+                if (data === '[DONE]') {
+                    debugLogWrite('info', '[processChunk] 收到 [DONE]');
+                    streamEnded = true;
+                    cleanup();
+                    finalize();
+                    return;
+                }
+
+                var jsonData;
+                try {
+                    jsonData = JSON.parse(data);
+                } catch (ex) {
+                    debugLogWrite('warn', '[processChunk] 非 JSON，忽略:', data);
+                    return;
+                }
+
+                if (jsonData.error) {
+                    debugLogWrite('error', '[processChunk] 服务端错误:', jsonData.error);
+                    aiMessageDiv.textContent = '请求失败: ' + jsonData.error;
+                    cleanup();
+                    isProcessing = false;
+                    sendBtn.disabled = false;
+                    msgInput.focus();
+                    return;
+                }
+
+                var choices = jsonData.choices;
+                if (!choices || !choices[0]) {
+                    debugLogWrite('warn', '[processChunk] 无 choices:', data);
+                    return;
+                }
+                var delta = choices[0].delta;
+
+                if (delta && delta.reasoning_content) {
+                    thinkingBuffer += delta.reasoning_content;
+                    // 文本逐字即时显示；markdown 渲染延迟到 heartbeat / 结束时进行
+                    thinkingContent.textContent = thinkingBuffer;
+                    thinkingContent.scrollTop = thinkingContent.scrollHeight;
+                    pendingRender = true;
+                    thinkingLabel.textContent = '思考中...';
+                }
+
+                if (delta && delta.content) {
+                    if (isThinking) {
+                        isThinking = false;
+                        thinkingLabel.textContent = '思考完毕';
+                    }
+                    responseBuffer += delta.content;
+                    // 文本逐字即时显示；markdown 渲染延迟到 heartbeat / 结束时进行
+                    aiMessageDiv.textContent = responseBuffer;
+                    aiMessageDiv.classList.remove('typing');
+                    pendingRender = true;
+                    if (autoScrollEnabled) {
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    }
+                }
+            }
+
+            var url = '/ai/chat?text=' + encodeURIComponent(text);
+            debugLogWrite('log', '[EventSource] 建立连接:', url);
+            es = new EventSource(url);
+
+            es.onopen = function() {
+                debugLogWrite('info', '[SSE] onopen 连接已建立');
+            };
+            es.addEventListener('heartbeat', renderPending);
+            es.onmessage = function(e) {
+                debugLogWrite('debug', '[SSE] onmessage raw:', e.data);
+                if (typeof e.data === 'string') {
+                    processChunk(e.data);
+                }
+            };
+            es.addEventListener('error', function(e) {
+                if (e.data) {
+                    debugLogWrite('warn', '[SSE] 自定义 error 事件:', e.data);
+                    processChunk(e.data);
+                }
+            });
+            es.onerror = function(ev) {
+                debugLogWrite('error', '[SSE] onerror readyState=', es.readyState, 'url=', es.url);
+                if (streamEnded) return;
+                aiMessageDiv.textContent = '网络错误: SSE 连接失败（详见 Debug）';
+                aiMessageDiv.classList.remove('typing');
+                cleanup();
+                isProcessing = false;
+                sendBtn.disabled = false;
+                msgInput.focus();
+            };
+        }
+        loadHistory();
+    </script>
+</body>
+</html>
