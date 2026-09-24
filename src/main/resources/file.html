@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文件浏览</title>
+    <script src="/resources/config.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: #fff;
+            padding: 14px 24px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        .header h1 { font-size: 18px; font-weight: 600; }
+        .header .path {
+            flex: 1;
+            background: #f3f4f6;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 13px;
+            font-family: Consolas, Monaco, monospace;
+            color: #374151;
+            white-space: nowrap;
+            overflow-x: auto;
+        }
+        .header .path input {
+            width: 100%;
+            border: none;
+            outline: none;
+            background: transparent;
+            font: inherit;
+            color: inherit;
+        }
+        .header button {
+            background: #4f46e5;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 16px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .header button:hover { background: #4338ca; }
+        .header .up-btn { background: #6b7280; }
+        .header .up-btn:hover { background: #4b5563; }
+
+        .list-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 24px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        th, td {
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 13px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        th {
+            background: #f9fafb;
+            color: #6b7280;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        tbody tr:hover { background: #eef2ff; cursor: pointer; }
+        .name {
+            font-family: Consolas, Monaco, monospace;
+            word-break: break-all;
+        }
+        .dir .name { font-weight: 600; color: #4f46e5; }
+        .size, .modified { color: #6b7280; white-space: nowrap; }
+        .empty { text-align: center; color: #9ca3af; padding: 40px; font-size: 14px; }
+
+        .status {
+            padding: 8px 24px;
+            font-size: 12px;
+            color: #6b7280;
+            background: #fff;
+            border-top: 1px solid #e0e0e0;
+            flex-shrink: 0;
+            white-space: nowrap;
+            overflow-x: auto;
+        }
+        .status.error { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📂 文件浏览</h1>
+        <div class="path">
+            <input id="pathInput" value="" placeholder="输入路径，如 D:\或 /，留空为磁盘列表">
+        </div>
+        <button class="up-btn" id="upBtn" onclick="goUp()" style="display:none;">↑ 上级</button>
+        <button onclick="gotoPath()">跳转</button>
+    </div>
+
+    <div class="list-container" id="listContainer">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width:50%;">名称</th>
+                    <th>大小</th>
+                    <th>修改时间</th>
+                </tr>
+            </thead>
+            <tbody id="fileList">
+                <tr><td colspan="3" class="empty">加载中...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="status" id="statusBar"></div>
+
+    <script>
+        const API = () => location.protocol === 'file:' ? 'http://' + SERVER_IP : '';
+        const fileList = document.getElementById('fileList');
+        const pathInput = document.getElementById('pathInput');
+        const upBtn = document.getElementById('upBtn');
+        const statusBar = document.getElementById('statusBar');
+        let currentPath = ''; // 当前目录；空字符串 = 磁盘列表
+        let showHidden = localStorage.getItem('fileShowHidden') === '1';
+
+        function status(msg, isError) {
+            statusBar.textContent = msg || '';
+            statusBar.classList.toggle('error', !!isError);
+        }
+
+        function formatSize(n) {
+            if (n === 0) return '';
+            if (n < 1024) return n + ' B';
+            if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+            if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+            return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+        }
+
+        function formatTime(ts) {
+            if (!ts) return '';
+            return new Date(ts).toLocaleString('zh-CN', { hour12: false });
+        }
+
+        function isHidden(entry) {
+            if (!showHidden) return entry.name.startsWith('.');
+            return false;
+        }
+
+        function renderRow(entry) {
+            const tr = document.createElement('tr');
+            tr.className = entry.isDirectory ? 'dir' : 'file';
+            tr.onclick = () => entry.isDirectory ? loadDir(entry.path) : download(entry.path);
+            const isRoot = entry.path.length === 2; // 如 "D:\"，无法取父级
+            tr.innerHTML =
+                '<td class="name">' + (entry.isDirectory ? '📁 ' : '📄 ') + entry.name + '</td>' +
+                '<td class="size">' + (entry.isDirectory ? '—' : formatSize(entry.size)) + '</td>' +
+                '<td class="modified">' + (isRoot ? '—' : formatTime(entry.modified)) + '</td>';
+            return tr;
+        }
+
+        async function loadDir(path) {
+            currentPath = path || '';
+            pathInput.value = currentPath;
+            upBtn.style.display = currentPath && currentPath.length > 2 ? '' : 'none';
+            fileList.innerHTML = '<tr><td colspan="3" class="empty">加载中...</td></tr>';
+            status('');
+            try {
+                const res = await fetch(API() + '/listFile?path=' + encodeURIComponent(path));
+                if (!res.ok) throw new Error((await res.text()) || ('HTTP ' + res.status));
+                const data = await res.json();
+                render(data.entries);
+            } catch (err) {
+                fileList.innerHTML = '<tr><td colspan="3" class="empty">加载失败</td></tr>';
+                status('加载失败: ' + err.message, true);
+            }
+        }
+
+        function render(entries) {
+            const visible = entries.filter(e => !isHidden(e));
+            fileList.innerHTML = '';
+            if (visible.length === 0) {
+                fileList.innerHTML = '<tr><td colspan="3" class="empty">空目录</td></tr>';
+            } else {
+                visible.forEach(e => fileList.appendChild(renderRow(e)));
+            }
+            if (!showHidden && entries.some(e => e.name.startsWith('.'))) {
+                const toggle = document.createElement('tr');
+                toggle.innerHTML = '<td colspan="3" class="empty" style="cursor:pointer;color:#4f46e5;">显示隐藏文件（. 开头）</td>';
+                toggle.onclick = () => {
+                    showHidden = true;
+                    localStorage.setItem('fileShowHidden', '1');
+                    location.reload();
+                };
+                fileList.appendChild(toggle);
+            }
+        }
+
+        function download(path) {
+            // 直接跳页到 /fileContent：服务端带 attachment 响应头，浏览器下载后页面保持不变
+            status('正在下载 ' + path + ' ...');
+            location.href = API() + '/fileContent?path=' + encodeURIComponent(path);
+        }
+
+        function gotoPath() {
+            const p = pathInput.value.trim();
+            loadDir(p);
+        }
+
+        function goUp() {
+            if (!currentPath || currentPath.length <= 2) {
+                loadDir(''); // 回到磁盘列表
+                return;
+            }
+            const norm = currentPath.endsWith('\\') ? currentPath : currentPath + '\\';
+            const idx = norm.lastIndexOf('\\', norm.length - 2);
+            loadDir(idx > 0 ? norm.slice(0, idx + 1) : '');
+        }
+
+        pathInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') gotoPath();
+        });
+
+        // 默认打开服务端运行 jar 所在的目录；失败则回退到磁盘列表
+        fetch(API() + '/defaultFileDir')
+            .then(r => r.ok ? r.text() : '')
+            .then(p => loadDir(p.trim() || ''))
+            .catch(() => loadDir(''));
+    </script>
+</body>
+</html>

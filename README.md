@@ -1,6 +1,6 @@
 # LocalServerKt
 
-LocalServerKt 是使用 Ktor 对 [LocalServer](https://github.com/dfc2333/LocalServer) 的部分重写，额外扩展了聊天、控制、音乐、视频搜索、AI 对话与浏览器等模块。服务器运行在 `0.0.0.0:80`。
+LocalServerKt 是使用 Ktor 对 [LocalServer](https://github.com/dfc2333/LocalServer) 的部分重写，额外扩展了聊天、控制、音乐、视频搜索、AI 对话、文件浏览与浏览器等模块。服务器运行在 `0.0.0.0:80`。
 
 ## 端点
 
@@ -65,6 +65,17 @@ LocalServerKt 是使用 Ktor 对 [LocalServer](https://github.com/dfc2333/LocalS
 - `/ai/clear`
   - 清除当前 IP 的会话历史（POST）
 
+### File
+
+- `/file`
+  - 重定向至文件浏览页面（`control` 验证）
+- `/listFile?path={?}`
+  - 列出目录内容（文件夹排前、按名称忽略大小写排序）；`path` 缺省或 `/` 时返回本地磁盘列表（`control` 验证）
+- `/fileContent?path={}`
+  - 以 `attachment` 响应头原样返回文件，由浏览器直接下载（`control` 验证）
+- `/defaultFileDir`
+  - 返回运行中 jar 所在的目录，供前端作为默认浏览目录（`control` 验证）
+
 ### 浏览器 / 下载
 
 - `/`、`/client-lzysso/h5-sso`
@@ -100,6 +111,7 @@ LocalServerKt 是使用 Ktor 对 [LocalServer](https://github.com/dfc2333/LocalS
   - `/start?p={}`
   - `/exit?p={}`
   - `/addUser`、`/removeUser`、`/resetName`、`/vnc`
+  - `/file`
 
 ## Thanks
 
