@@ -9,10 +9,21 @@
         let websocket = null;
         let nowTarget = null; // 当前私聊对象，与输入框不一致时先刷新再发送
         let me = null;        // 自己的用户名，来自 /whoami；路由未实现时为 null
+        let currentDay = null; // 群聊当前查看的历史日期（null 表示今天）
+        let serverToday = null; // 服务端今天（Asia/Shanghai），来自 /conversations 的 today 字段
+        let convLast = {}; // 各会话最后一条消息 {time, by}（按 history 文件名），来自 /conversations，未读判断用
+        let privLastMap = {}; // "对方" -> {time, by}：同一对方可能对应新旧多份归档，取最新一条
+        let privPartners = new Set(); // 侧边栏已渲染的私聊对象，用于判断是否需要重新拉取会话列表
+        let lastConvNames = null; // 上次拉取到的会话名单（拼接串）；重连后重拉时名单没变就只重算红点、不重建列表
+        let lastRead = {}; // 各会话已读到的时间戳 {键: 时间}，存 localStorage；私聊键 'p:对方'，群聊键 'g:'
 
         document.addEventListener('DOMContentLoaded', async function () {
             document.getElementById('sendBtn').addEventListener('click', sendMsg);
             document.getElementById('refreshBtn').addEventListener('click', refresh);
+            // 侧边栏展开/收起
+            document.getElementById('sidebarToggle').addEventListener('click', function () {
+                document.getElementById('sidebar').classList.toggle('open');
+            });
             // 图片缩略图双击可全屏查看（lightbox：滚轮/捏合缩放、拖拽平移、右上角 ✕ 关闭）
             document.getElementById('MsgBox').addEventListener('dblclick', function (e) {
                 const img = e.target.closest('img.img-message');
@@ -30,6 +41,10 @@
                 const file = e.target.files[0];
                 e.target.value = '';
                 if (!file) return;
+                if (inOldGroupDay()) {
+                    showError('正在浏览旧日群聊记录，该日不可发送图片');
+                    return;
+                }
                 if (!file.type.startsWith('image/')) {
                     showError('请选择图片文件');
                     return;
@@ -55,10 +70,300 @@
                     sendMsg();
                 }
             });
+            // 手动改私聊对象时退出"浏览某日群聊记录"模式；直接填入日期（yyyy-MM-dd）则切换为该日群聊记录
+            document.getElementById('user').addEventListener('input', function () {
+                if (isDateStr(this.value)) {
+                    currentDay = this.value;
+                    refresh();
+                } else {
+                    currentDay = null; // 改回人名或清空时由后续"刷新"/发送/侧边栏点击重新载入
+                }
+                syncSidebarActive();
+            });
             await loadMe();
             await refresh();
             connect();
+            // 宽屏默认展开侧边栏，窄屏收起，顶栏按钮可手动切换
+            if (window.innerWidth > 600) document.getElementById('sidebar').classList.add('open');
         });
+
+        // ===== 会话侧边栏 =====
+        // 群聊按日期（history_yyyy-MM-dd.json）归档，私聊按 "名A-名B"（getTarget 排序后命名）归档
+        // 加载 message/ 下所有 history 文件名，分组渲染；点击切换对应对话并刷新
+        // 未读小红点：按"会话最后消息晚于已读时间且非自己/系统发送"计算（数据来自 /conversations 的 last 字段）
+        function lastReadKey() { return 'chatLastRead:' + (me || 'unknown'); }
+
+        function loadLastRead() {
+            try { lastRead = JSON.parse(localStorage.getItem(lastReadKey()) || '{}'); }
+            catch (e) { lastRead = {}; }
+        }
+
+        function saveLastRead() {
+            try { localStorage.setItem(lastReadKey(), JSON.stringify(lastRead)); }
+            catch (e) { /* 隐私模式等场景下 localStorage 不可用，未读点仍能基于会话列表刷新显示 */ }
+        }
+
+        function markRead(key, time) {
+            if (time && (!lastRead[key] || time > lastRead[key])) {
+                lastRead[key] = time;
+                saveLastRead();
+            }
+        }
+
+        // 判断一个"最后消息"是否构成未读：晚于已读时间，且发送者不是我（System 归档创建消息也不算）
+        function isUnread(last, readTime) {
+            if (!last || !last.time || !last.by || last.by === 'System') return false;
+            if (me && last.by === me) return false;
+            return last.time > (readTime || '');
+        }
+
+        async function loadConversations() {
+            let names = [];
+            let today = null;
+            convLast = {};
+            privLastMap = {}; // 等拿到 me 后再把各私聊归档按"对方"归并取最新
+            try {
+                const resp = await fetch('/conversations');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    names = data.names || [];
+                    today = data.today || null; // 服务端 Asia/Shanghai 的今天，避免前端时区偏差
+                    convLast = data.last || {}; // 各会话最后一条消息 {time, by}
+                }
+            } catch (e) {
+                console.warn('获取会话列表失败:', e);
+                return;
+            }
+            if (today) serverToday = today;
+            const dayRe = /^\d{4}-\d{2}-\d{2}$/;
+            const todayLabel = today || todayStr(); // 服务端今天的日期，失败时退回本地
+            const days = names.filter(n => dayRe.test(n)).reverse(); // 最近的日期在前
+            const privs = names.filter(n => !dayRe.test(n) && n.includes('-'));
+            // 私聊归档按"对方"归并取最新（同一对方可能对应新旧多份归档，换用户名产生）；
+            // 无条件缓存，供 onWsUnread/switchPrivate 实时判断未读
+            for (const p of privs) {
+                const parts = p.split('-');
+                const other = me ? parts.find(x => x !== me && x !== '') : null;
+                const last = convLast[p];
+                if (other && last) {
+                    const cur = privLastMap[other];
+                    if (!cur || last.time > cur.time) privLastMap[other] = last;
+                }
+            }
+
+            // 轻路径：会话名单没变（典型场景=WS 重连后的补拉）就只重算红点，
+            // 不重建列表，避免把用户刚点的项/高亮冲掉
+            const namesKey = names.join('|');
+            if (lastConvNames !== null && lastConvNames === namesKey) {
+                updateUnreadState();
+                return;
+            }
+            lastConvNames = namesKey;
+
+            const dayList = document.getElementById('dayList');
+            dayList.innerHTML = '';
+            for (const d of days) {
+                const item = document.createElement('button');
+                item.className = 'conv-item';
+                item.dataset.day = d; // 供 syncSidebarActive 判断高亮
+                item.textContent = d === todayLabel ? '今天（' + d + '）' : d;
+                // 红点只挂在"今天"项上：旧日归档是只读历史，新消息只会进当天的文件
+                if (d === todayLabel && isUnread(convLast[d], lastRead['g:'])) addUnreadDot(item);
+                item.addEventListener('click', function () { switchGroupDay(d); });
+                dayList.appendChild(item);
+            }
+            if (days.length === 0) dayList.innerHTML = '<p class="conv-empty">暂无群聊记录</p>';
+
+            const privList = document.getElementById('privList');
+            privList.innerHTML = '';
+            let privShown = 0;
+            const shownOthers = new Set(); // 按"对方"去重：新旧归档（换用户名后产生）可能映射到同一对象
+            privPartners = new Set();
+            for (const p of privs) {
+                const parts = p.split('-');
+                let other = null;
+                if (me) {
+                    if (!parts.includes(me)) continue; // 归档里没有自己（旧用户名残留），跳过
+                    other = parts.find(x => x !== me && x !== '');
+                    if (!other || shownOthers.has(other)) continue; // 无法解析或已有同一对象的项，跳过
+                    shownOthers.add(other);
+                }
+                const item = document.createElement('button');
+                item.className = 'conv-item';
+                if (other !== null) {
+                    item.dataset.other = other; // 供 syncSidebarActive 判断高亮
+                    item.textContent = other;
+                    privPartners.add(other);
+                    if (isUnread(privLastMap[other], lastRead['p:' + other])) addUnreadDot(item);
+                    item.addEventListener('click', function () { switchPrivate(other); });
+                    privShown++;
+                } else {
+                    // 拿不到自己的用户名时无法确定私聊对象，先禁用
+                    item.textContent = p;
+                    item.disabled = true;
+                    item.title = '无法确定当前用户，请刷新页面';
+                    privShown++;
+                }
+                privList.appendChild(item);
+            }
+            if (privShown === 0) privList.innerHTML = '<p class="conv-empty">暂无私聊记录</p>';
+            updateUnreadState(); // 重建列表后按实时缓存（convLast/lastRead）同步红点
+            syncSidebarActive();
+        }
+
+        function addUnreadDot(item) {
+            const dot = document.createElement('span');
+            dot.className = 'unread-dot';
+            item.appendChild(dot);
+        }
+
+        // 实时维护未读状态：WS 消息到达时更新各会话"最后消息"缓存，
+        // 当前正在看该会话则记为已读；新私聊对象还会动态补一个侧边栏项
+        function onWsUnread(msg) {
+            if (!msg.time) return;
+            const userVal = document.getElementById('user').value;
+            const today = serverToday || todayStr();
+            if (msg.sendTo === '') {
+                const day = msg.time.slice(0, 10); // 群消息按天归档
+                convLast[day] = { time: msg.time, by: msg.name };
+                ensureDayItem(day); // 当天归档刚创建时侧边栏可能还没有"今天"项，补上才能挂红点
+                // 正在看"今天的群聊"（对象框为空且未浏览旧日，或填的就是今天）才算已读；
+                // 浏览旧日归档时新群消息仍算未读
+                const viewingTodayGroup = userVal === '' ? currentDay === null : (isDateStr(userVal) && userVal === today);
+                if (viewingTodayGroup && day === today) markRead('g:', msg.time);
+            } else if (me) {
+                // 对方：我发的消息时是 sendTo，我收到时是 name
+                const partner = msg.name === me ? msg.sendTo : msg.name;
+                // 文件名与服务端 getTarget 一致：两人名字排序后以 - 连接
+                const pair = [msg.name, msg.sendTo].sort().join('-');
+                convLast[pair] = { time: msg.time, by: msg.name };
+                privLastMap[partner] = convLast[pair];
+                ensurePrivItem(partner);
+                if (isRelevant(msg)) markRead('p:' + partner, msg.time);
+            }
+            updateUnreadState();
+        }
+
+        // 对方还没出现在侧边栏（第一次私聊）时补一个可点击的项
+        function ensurePrivItem(other) {
+            if (!me || !other || other === me || privPartners.has(other)) return;
+            privPartners.add(other);
+            const list = document.getElementById('privList');
+            const empty = list.querySelector('.conv-empty');
+            if (empty) empty.remove();
+            const item = document.createElement('button');
+            item.className = 'conv-item';
+            item.dataset.other = other;
+            item.textContent = other;
+            item.addEventListener('click', function () { switchPrivate(other); });
+            list.appendChild(item);
+        }
+
+        // 某天的群聊项不在侧边栏时（例如页面加载后当天第一份归档文件才刚创建）补一个；
+        // 没有这项的话当天的未读红点无处可挂，"实时不亮"多半就是这个原因
+        function ensureDayItem(day) {
+            const list = document.getElementById('dayList');
+            if (list.querySelector('.conv-item[data-day="' + day + '"]')) return;
+            const empty = list.querySelector('.conv-empty');
+            if (empty) empty.remove();
+            const item = document.createElement('button');
+            item.className = 'conv-item';
+            item.dataset.day = day;
+            const today = serverToday || todayStr();
+            item.textContent = day === today ? '今天（' + day + '）' : day;
+            item.addEventListener('click', function () { switchGroupDay(day); });
+            // 日期按新→旧排序：插到第一个"比它旧"的项之前
+            const items = Array.prototype.slice.call(list.querySelectorAll('.conv-item'));
+            const idx = items.findIndex(function (el) { return el.dataset.day < day; });
+            if (idx === -1) list.appendChild(item);
+            else items[idx].before(item);
+        }
+
+        // 让侧边栏高亮跟随当前视图，且同一时刻只高亮一组：
+        // 群聊/日期模式下高亮"群聊记录"项，私聊模式下高亮"私聊"项
+        function syncSidebarActive() {
+            const userVal = document.getElementById('user').value;
+            const todayLabel = serverToday || todayStr();
+            const inGroupMode = userVal === '' || isDateStr(userVal);
+            document.querySelectorAll('#dayList .conv-item').forEach(function (el) {
+                el.classList.toggle('active', inGroupMode && (currentDay || todayLabel) === el.dataset.day);
+            });
+            document.querySelectorAll('#privList .conv-item').forEach(function (el) {
+                el.classList.toggle('active', !inGroupMode && el.dataset.other !== undefined && userVal === el.dataset.other);
+            });
+        }
+
+        // 切到某天的群聊记录（今天的文件默认就是不带参数；历史日期走 date 参数）
+        function switchGroupDay(day) {
+            document.getElementById('user').value = '';
+            const today = serverToday || todayStr();
+            currentDay = day === today ? null : day;
+            // 只有切到"今天"的群聊视图才把今天的群消息记为已读；浏览旧日归档不影响今天的红点
+            if (currentDay === null) {
+                markRead('g:', convLast[today]?.time || today);
+            }
+            syncSidebarActive();
+            updateUnreadState();
+            refresh();
+        }
+
+        // 切到与某人的私聊
+        function switchPrivate(other) {
+            document.getElementById('user').value = other;
+            currentDay = null;
+            markRead('p:' + other, privLastMap[other]?.time || null); // 进入该私聊即已读
+            syncSidebarActive();
+            updateUnreadState();
+            refresh();
+        }
+
+        // ===== 未读小红点 =====
+        // 数据：convLast（服务端 /conversations 的 last 字段，按会话文件），已读：localStorage 的 lastRead
+        // 实时：收到 WS 消息后更新 convLast 并刷新红点；切换会话时把对应"已读时间"记到 lastRead
+
+        // 根据 convLast 与 lastRead 重算侧边栏所有红点（不重建列表，只增删 dot）
+        // 注意：me 为 null（/whoami 失败）时不能整体跳过——群聊红点照样可算，
+        // 否则 WS 实时链路全废，红点只能靠轮询慢速补上
+        function updateUnreadState() {
+            document.querySelectorAll('#dayList .conv-item').forEach(function (el) {
+                // 红点只可能在"今天"项上：旧日归档是只读历史，新消息只会进当天的文件
+                const isToday = el.dataset.day === (serverToday || todayStr());
+                setDot(el, isToday && isUnread(convLast[el.dataset.day], lastRead['g:']));
+            });
+            document.querySelectorAll('#privList .conv-item[data-other]').forEach(function (el) {
+                setDot(el, isUnread(privLastMap[el.dataset.other], lastRead['p:' + el.dataset.other]));
+            });
+        }
+
+        // 在按钮上增/删小红点
+        function setDot(el, show) {
+            const dot = el.querySelector('.unread-dot');
+            if (show && !dot) addUnreadDot(el);
+            else if (!show && dot) dot.remove();
+        }
+
+        function todayStr() {
+            // 本地日历日期（不能用 toISOString，那是 UTC，跨时区会差一天）
+            const d = new Date();
+            const p = n => String(n).padStart(2, '0');
+            return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+        }
+
+        // 私聊对象框填 yyyy-MM-dd 时进入"浏览该日群聊记录"模式
+        function isDateStr(v) {
+            return /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+        }
+
+        // 群聊模式（对象框为空或填日期）下正在浏览非今天的记录；
+        // 此时发消息只会写进今天的存档，不应混入旧日视图，禁止发送
+        function inOldGroupDay() {
+            const userVal = document.getElementById('user').value;
+            if (userVal !== '' && !isDateStr(userVal)) return false; // 私聊模式，允许发送
+            const today = serverToday || todayStr();
+            if (currentDay !== null) return currentDay !== today; // 侧边栏选了某日
+            if (isDateStr(userVal)) return userVal !== today; // 对象框填了某日
+            return false; // 对象框为空：正在看今天的记录，允许发送
+        }
 
         // 获取自己的用户名（依赖 Chat.kt 的 /whoami 路由；失败时 me 保持 null，页面照常可用）
         async function loadMe() {
@@ -71,10 +376,20 @@
                         document.getElementById('meName').textContent = me;
                     }
                 }
+                // 侧边栏依赖自己的用户名与已读记录，成功后加载会话列表
+                loadLastRead();
+                loadConversations();
             } catch (e) {
                 console.warn('获取当前用户名失败:', e);
             }
         }
+
+        // ===== WebSocket 连接（自动重连）=====
+        // 断线（服务器重启/网络抖动/服务端超时）后指数退避重连：3s -> 6s -> 12s -> 30s（封顶）；
+        // 重连成功后补拉一次会话列表与当前历史，兜住断线期间错过的消息（未读红点也一并补齐）
+        let wsWasConnected = false;
+        let wsReconnectTimer = null;
+        let wsReconnectDelay = 3000;
 
         function connect() {
             const url = 'ws://' + SERVER_IP + '/message';
@@ -82,32 +397,57 @@
 
             websocket.onopen = function () {
                 console.log('Connected to WebSocket server');
+                if (wsWasConnected) {
+                    // 非首次连接（重连成功）：刷新当前视图的历史并同步会话列表/红点
+                    refresh();
+                    loadConversations();
+                }
+                wsWasConnected = true;
+                wsReconnectDelay = 3000; // 连接正常后重置退避间隔
             };
 
             websocket.onmessage = function (event) {
                 const resp = JSON.parse(event.data);
                 if (resp.type === 'send') {
                     addMessage(resp);
+                    onWsUnread(resp);
                 } else if (resp.type === 'del' && isRelevant(resp)) {
                     delMessage(resp.name, resp.time);
+                    // 被撤回的会话：消息在我方可见过，记为已读到该时刻，避免小红点误亮
+                    if (resp.sendTo === '') markRead('g:', resp.time);
+                    else if (me && resp.name === me) markRead('p:' + resp.sendTo, resp.time);
                 } else if (resp.type === 'err') {
                     showError(resp.text);
                 }
             };
 
             websocket.onclose = function () {
-                console.log('Disconnected from WebSocket server');
+                console.log('Disconnected from WebSocket server, auto-reconnecting');
+                scheduleReconnect();
             };
 
             websocket.onerror = function (error) {
-                console.log('Error: ' + error);
+                console.log('WebSocket error: ' + error);
+                // onerror 之后必然跟一个 onclose，重连逻辑统一放 onclose 里
             };
+        }
+
+        function scheduleReconnect() {
+            clearTimeout(wsReconnectTimer);
+            wsReconnectTimer = setTimeout(function () {
+                connect();
+                wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000); // 指数退避，封顶 30s
+            }, wsReconnectDelay);
         }
 
         // 判断一条消息是否应在当前面板显示
         // 群聊（输入框留空）：只显示群消息；私聊：只显示"我 ↔ 对方"之间的消息
         function isRelevant(msg) {
             const target = document.getElementById('user').value;
+            if (isDateStr(target)) {
+                // 输入框填的是日期：浏览该日群聊记录，只显示当天的群消息
+                return msg.sendTo === '' && ((msg.time || '').slice(0, 10) === target);
+            }
             if (me === null) {
                 // 拿不到自己的用户名时退化为旧的宽松匹配
                 return target === msg.sendTo || target === msg.name;
@@ -194,7 +534,11 @@
 
         async function renderHistory() {
             const target = document.getElementById('user').value;
-            const resp = await fetch('/history?targetuser=' + encodeURIComponent(target));
+            // 日期不是用户名：浏览某日群聊记录时 targetuser 留空，只带 date 参数，避免服务端 400
+            const userParam = isDateStr(target) ? '' : target;
+            // 群聊模式下 currentDay 非空时查看该日期的历史文件，否则由服务端默认今天
+            const dateParam = currentDay ? '&date=' + encodeURIComponent(currentDay) : '';
+            const resp = await fetch('/history?targetuser=' + encodeURIComponent(userParam) + dateParam);
             let history = [];
             if (resp.ok) {
                 history = await resp.json();
@@ -203,6 +547,7 @@
                 showError(await resp.text());
             }
             const container = document.getElementById('MsgBox');
+            container.innerHTML = '';
             for (const msg of history) {
                 container.appendChild(crtMsg(msg.name, msg.time, msg.text));
             }
@@ -210,6 +555,17 @@
         }
 
         async function sendMsg() {
+            // 私聊对象填的是日期时处于"浏览群聊记录"模式，不能发消息
+            if (isDateStr(document.getElementById('user').value)) {
+                showError('正在浏览某日群聊记录，请先清空对象框再发送消息');
+                return;
+            }
+            // 浏览非今天的群聊记录（侧边栏日期项或对象框填日期）时禁止发送：
+            // 新消息只会写入今天的存档，发到群里也不属于正在查看的旧日
+            if (inOldGroupDay()) {
+                showError('正在浏览旧日群聊记录，该日不可发送消息；点"今天"或改选私聊对象后可发送');
+                return;
+            }
             if (document.getElementById('user').value !== nowTarget) {
                 await refresh();
             }
@@ -244,7 +600,6 @@
         }
 
         async function refresh() {
-            document.getElementById('MsgBox').innerHTML = '';
             nowTarget = document.getElementById('user').value;
             await renderHistory();
         }
@@ -441,12 +796,105 @@
             background: var(--card);
             border-bottom: 1px solid var(--border);
         }
-        .topbar h1 { margin: 0; font-size: 18px; }
         .topbar .meta { display: flex; align-items: center; gap: 14px; }
         .topbar .me { font-size: 13px; font-weight: 600; color: var(--muted); }
         .topbar .me:empty { display: none; }
         .topbar a { color: var(--accent); font-size: 13px; text-decoration: none; }
         .topbar a:hover { text-decoration: underline; }
+        .topbar-left { display: flex; align-items: center; gap: 12px; }
+        .topbar h1 { margin: 0; font-size: 18px; }
+        .topbar .icon-btn {
+            width: 34px; height: 34px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+            color: var(--text);
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .topbar .icon-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+
+        /* 主布局：左侧可收起的会话侧边栏 + 右侧消息/输入区 */
+        .layout { flex: 1; display: flex; min-height: 0; }
+        .right-col {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        /* 会话侧边栏：默认宽 230px，收起时贴左边框 */
+        #sidebar {
+            width: 230px;
+            flex: 0 0 230px;
+            background: var(--card);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            padding: 12px 10px;
+            transition: margin-left .2s ease;
+        }
+        #sidebar:not(.open) { margin-left: -230px; }
+        .conv-section { margin-bottom: 14px; }
+        .conv-section h3 {
+            margin: 0 0 8px;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: .4px;
+            padding: 0 8px;
+        }
+        .conv-item {
+            display: block;
+            position: relative;
+            width: 100%;
+            text-align: left;
+            padding: 8px 10px;
+            margin-bottom: 2px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text);
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .conv-item:hover { background: var(--bg); }
+        .conv-item.active {
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-weight: 600;
+        }
+        .conv-item:disabled { opacity: .5; cursor: not-allowed; }
+        .conv-empty {
+            margin: 0;
+            padding: 4px 8px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+        /* 未读小红点（absolute 定位，不挤压文本） */
+        .unread-dot {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--danger);
+        }
+        /* 未读小红点：absolute 定位在项右上角，避免挤压文本 */
+        .conv-item { position: relative; }
+        .unread-dot {
+            position: absolute;
+            top: 6px;
+            right: 8px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--danger);
+        }
 
         /* 消息区 */
         .chat-area {
@@ -660,23 +1108,42 @@
 </head>
 <body>
     <header class="topbar">
-        <h1>Chat</h1>
+        <div class="topbar-left">
+            <button id="sidebarToggle" class="icon-btn" title="显示/收起会话">☰</button>
+            <h1>Chat</h1>
+        </div>
         <div class="meta">
             <span id="meName" class="me"></span>
             <a href="/userList">查看用户列表</a>
         </div>
     </header>
 
-    <main id="MsgBox" class="chat-area"></main>
+    <div class="layout">
+        <!-- 会话侧边栏：按 message/history_*.json 文件名分组（私聊 "名A-名B"、群聊 yyyy-MM-dd），点击切换 -->
+        <aside id="sidebar">
+            <div class="conv-section">
+                <h3>私聊</h3>
+                <div id="privList"></div>
+            </div>
+            <div class="conv-section">
+                <h3>群聊记录</h3>
+                <div id="dayList"></div>
+            </div>
+        </aside>
 
-    <footer class="inputbar">
-        <input type="text" id="user" placeholder="私聊对象，留空发到群里">
-        <textarea id="content" rows="1" placeholder="输入消息，Enter 换行，Ctrl+Enter 发送"></textarea>
-        <button id="imgBtn" class="ghost" title="发送图片（≤10MB）">🖼️</button>
-        <input type="file" id="imgInput" accept="image/*" style="display:none">
-        <button id="sendBtn">发送</button>
-        <button id="refreshBtn" class="ghost">刷新</button>
-    </footer>
+        <div class="right-col">
+            <main id="MsgBox" class="chat-area"></main>
+
+            <footer class="inputbar">
+                <input type="text" id="user" placeholder="私聊对象，留空发到群里；填日期(yyyy-MM-dd)浏览该日群聊">
+                <textarea id="content" rows="1" placeholder="输入消息，Enter 换行，Ctrl+Enter 发送"></textarea>
+                <button id="imgBtn" class="ghost" title="发送图片（≤10MB）">🖼️</button>
+                <input type="file" id="imgInput" accept="image/*" style="display:none">
+                <button id="sendBtn">发送</button>
+                <button id="refreshBtn" class="ghost">刷新</button>
+            </footer>
+        </div>
+    </div>
     <!-- 图片全屏查看遮罩：右上角 ✕ 关闭；+ − 缩放按钮；滚轮/双指捏合缩放；拖拽平移 -->
     <div id="lightbox">
         <img alt="全屏查看">

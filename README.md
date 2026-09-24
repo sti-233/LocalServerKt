@@ -10,10 +10,13 @@ LocalServerKt 是使用 Ktor 对 [LocalServer](https://github.com/dfc2333/LocalS
   - 重定向至聊天页面（`auth` 验证）
 - `/whoami`
   - 返回当前请求 IP 对应的用户名（`auth` 验证）
-- `/history?targetuser={?}`
-  - 获取聊天记录；参数缺省时获取群聊记录，否则获取与指定用户的私聊记录；私聊对象不在用户列表时返回 400
+- `/history?targetuser={?}&date={?}`
+  - 获取聊天记录；参数缺省时获取群聊记录，`targetuser` 非空时获取与指定用户的私聊记录（不在用户列表时返回 400）；`date=yyyy-MM-dd` 查看指定日期的群聊记录
+- `/conversations`
+  - 获取会话列表：返回 `{today, names, last}`。`names` 为 `message/` 下各 history 文件名（群聊为日期、私聊为"名A-名B"）；`last` 为各会话最后一条消息的 `{time, by}`；供聊天页侧边栏快速切换会话与未读小红点
 - `/message`
   - WebSocket 接口，支持群聊与私聊（消息 `sendTo` 字段）；私聊对象不在用户列表时回 `err` 事件；消息 2 分钟内可撤回；图片消息以 `ImageB64:` 前缀 + data URL 发送（限 10MB），页面支持双击放大查看（滚轮/捏合缩放、拖拽平移）
+  - 聊天页特性：可收起的会话侧边栏（按私聊对象/群聊日期分组切换，私聊对象框填 `yyyy-MM-dd` 可浏览该日群聊记录）；未读小红点（基于 `/conversations` 的 `last` 与本地 localStorage 已读时间戳）；断线后自动重连（指数退避 3s~30s），重连成功后补拉历史与会话列表
 - `/clients`
   - 查看所有在线 WebSocket 客户端 IP
 - `/wsSever`
