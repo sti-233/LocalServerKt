@@ -63,7 +63,6 @@ object Chat {
                 when (frame) {
                     is Frame.Text -> {
                         val text = frame.readText()
-                        println("[$clientId] Received: $text")
                         val json = Json.decodeFromString<Content>(text)
                         val current = Util.getUserName(clientId)
                         if (json.type == "send") {
@@ -75,6 +74,20 @@ object Chat {
                                         json.sendTo)
                                 ))
                                 continue
+                            }
+                            // 图片消息：参考 talk.html 的 ImageB64: 前缀协议，服务端按 10MB 校验后原样转发/存档
+                            if (json.text.startsWith("ImageB64:")) {
+                                val dataUrl = json.text.removePrefix("ImageB64:")
+                                val ok = dataUrl.length <= 10 * 1024 * 1024 &&
+                                        Regex("^data:image/[a-z]+;base64,[A-Za-z0-9+/=]+$").matches(dataUrl)
+                                if (!ok) {
+                                    send(Json.encodeToString(
+                                        Content("err", current, Time.getCurrentTimeWithDate(),
+                                            "图片消息无效：需为 data:image/...;base64, 形式且不超过 10MB",
+                                            json.sendTo)
+                                    ))
+                                    continue
+                                }
                             }
                             val content = Content("send", current, Time.getCurrentTimeWithDate(), json.text, json.sendTo)
                             val message = Message(current, Time.getCurrentTimeWithDate(), json.text)
