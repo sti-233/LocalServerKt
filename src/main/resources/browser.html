@@ -1,29 +1,107 @@
-<html>
-    <head>
-        <title>Go</title>
-        <script src="/resources/config.js"></script>
-        <script>
-            function go(){
-                res = document.getElementById("inp").value;
-                if (!res.startsWith("http://") && !res.startsWith("https://")) {
-                    res = "http://" + SERVER_IP + "/" + res;
-                }
-                if (res === VNC_URL) {
-                    return
-                }
-                window.location.replace(encodeURI(res));
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Go</title>
+    <script src="/resources/config.js"></script>
+    <style>
+        :root {
+            --bg: #f4f6fb;
+            --card: #ffffff;
+            --accent: #4f7cff;
+            --accent-soft: #e9efff;
+            --text: #232a3b;
+            --muted: #8b91a5;
+            --border: #e4e7f0;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 20px;
+            font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+        .card {
+            max-width: 440px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+            padding: 18px;
+        }
+        h1 { margin: 0 0 12px; font-size: 18px; }
+        .row { display: flex; gap: 8px; margin-bottom: 14px; }
+        input {
+            flex: 1;
+            min-width: 0;
+            padding: 9px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            background: var(--bg);
+            color: var(--text);
+            outline: none;
+        }
+        input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(79, 124, 255, .15);
+            background: var(--card);
+        }
+        button {
+            padding: 9px 16px;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        button:hover { background: #3f68e8; }
+        button.ghost { background: var(--accent-soft); color: var(--text); }
+        button.ghost:hover { background: #dbe5ff; }
+        .links { display: flex; gap: 8px; overflow-x: auto; }
+        .links + .links { margin-top: 8px; }
+    </style>
+    <script>
+        function go(){
+            res = document.getElementById("inp").value;
+            if (!res.startsWith("http://") && !res.startsWith("https://")) {
+                res = "http://" + SERVER_IP + "/" + res;
             }
-        </script>
-
-    </head>
-    <body>
-        <input id="inp" type="text"/>
-        <button onclick="go()">go</button>
-        <br>
-        <button onclick="window.location.replace('http://192.168.125.1')">ap</button>
-        <button onclick="window.location.replace('http://' + SERVER_IP + '/vnc')">vnc</button>
-        <button onclick="window.location.replace('https://cn.bing.com')">bing</button>
-        <button onclick="window.location.replace('https://www.geogebra.org/classic')">geogebra classic</button>
-        <button onclick="window.location.replace('https://www.geogebra.org/graphing')">geogebra graphing</button>
-    </body>
+            if (res === VNC_URL) {
+                return
+            }
+            location.href = encodeURI(res);
+        }
+        // 客户端 IP 不在 control 白名单（见 Control.kt 的 /canControl）时隐藏 control 端按钮
+        fetch("/canControl").then(r => r.text()).then(t => {
+            document.querySelectorAll("[data-control]").forEach(b => b.style.display = t === "true" ? "" : "none");
+        });
+    </script>
+</head>
+<body>
+    <div class="card">
+        <h1>跳转</h1>
+        <div class="row">
+            <input id="inp" type="text" placeholder="输入地址">
+            <button onclick="go()">Go</button>
+        </div>
+        <div class="links">
+            <button class="ghost" onclick="location.href = 'http://' + SERVER_IP + '/chat'">chat</button>
+            <button class="ghost" onclick="location.href = 'http://' + SERVER_IP + '/ai'">ai</button>
+            <button class="ghost" onclick="location.href = 'http://' + SERVER_IP + '/music'">music</button>
+            <button class="ghost" data-control onclick="location.href = 'http://' + SERVER_IP + '/terminal'">terminal</button>
+            <button class="ghost" data-control onclick="location.href = 'http://' + SERVER_IP + '/file'">file</button>
+        </div>
+        <div class="links">
+            <button class="ghost" onclick="location.href = 'http://192.168.125.1'">ap</button>
+            <button class="ghost" data-control onclick="location.href = 'http://' + SERVER_IP + '/vnc'">vnc</button>
+            <button class="ghost" data-control onclick="location.href = 'https://cn.bing.com'">bing</button>
+            <button class="ghost" data-control onclick="location.href = 'https://www.geogebra.org/classic'">geogebra classic</button>
+            <button class="ghost" data-control onclick="location.href = 'https://www.geogebra.org/graphing'">geogebra graphing</button>
+        </div>
+    </div>
+</body>
 </html>
