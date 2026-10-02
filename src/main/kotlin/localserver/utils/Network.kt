@@ -8,14 +8,30 @@ import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import java.io.File
 import java.nio.file.Path
 import java.nio.file.Files
 import java.nio.file.StandardOpenOption
+
+// 运行中 jar 所在的目录（gradlew run 时为 classes 目录），供 /defaultFileDir 与 Terminal 默认目录使用；失败返回空串
+fun defaultDir(): String = runCatching {
+    val f = File(Network::class.java.protectionDomain.codeSource.location.toURI())
+    if (f.isFile) f.parentFile else f
+}.getOrNull()?.absolutePath ?: ""
 
 object Network {
     fun Route.network() {
         download()
         browser()
+        fileDir()
+    }
+
+    private fun Route.fileDir() = authenticate("control") {
+        get("/defaultFileDir") {
+            val dir = defaultDir()
+            if (dir.isEmpty()) call.respondText("", status = HttpStatusCode.InternalServerError)
+            else call.respondText(dir)
+        }
     }
 
     private fun Route.browser() = authenticate("auth") {

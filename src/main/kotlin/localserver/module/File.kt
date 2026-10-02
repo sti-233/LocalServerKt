@@ -13,7 +13,6 @@ object File {
         page()
         list()
         content()
-        defaultDir()
     }
 
     @Serializable
@@ -75,22 +74,6 @@ object File {
                 "attachment; filename=\"${file.name}\""
             )
             call.respondFile(file)
-        }
-    }
-
-    // 返回运行中 jar 所在的目录（gradlew run 时为展开的 classes 目录），
-    // 供前端作为默认浏览目录；失败时返回空串，前端回退到磁盘列表
-    private fun Route.defaultDir() = authenticate("control") {
-        get("/defaultFileDir") {
-            val dir = runCatching {
-                val f = JFile(File::class.java.protectionDomain.codeSource.location.toURI())
-                if (f.isFile) f.parentFile else f
-            }.getOrNull()
-            if (dir == null || !dir.exists() || !dir.isDirectory) {
-                call.respondText("", status = HttpStatusCode.InternalServerError)
-                return@get
-            }
-            call.respondText(dir.absolutePath)
         }
     }
 

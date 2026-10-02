@@ -39,10 +39,24 @@ object Util {
         val historyFile = File("message/history_${target ?: Time.getCurrentDate()}.json")
         if (!historyFile.exists()) {
             if (!historyFile.parentFile.exists()) historyFile.parentFile.mkdirs()
+            deleteEmptyHistory()
             historyFile.createNewFile()
             historyFile.writeText(prettyJson.encodeToString(listOf(Message("System", Time.getCurrentTimeWithDate(), "New file created."))))
         }
         return historyFile.readText().trimStart('\uFEFF')
+    }
+
+    // 清理空归档：只含一条 System 占位消息（"New file created."）的 history 文件直接删除。
+    // 在创建新文件之前调用，新文件尚不存在，无需排除；解析失败的文件跳过，不误删
+    private fun deleteEmptyHistory() {
+        File("message").listFiles { f -> f.isFile && f.name.startsWith("history_") && f.name.endsWith(".json") }?.forEach { f ->
+            val list = try {
+                Json.decodeFromString<MutableList<Message>>(f.readText().trimStart('\uFEFF'))
+            } catch (e: Exception) {
+                return@forEach
+            }
+            if (list.size == 1 && list[0].name == "System") f.delete()
+        }
     }
 
     fun getHistoryList(target: String? = null): MutableList<Message> {

@@ -4,7 +4,9 @@ import localserver.module.Ai.aiRoute
 import localserver.module.Chat.chatRoute
 import localserver.module.Control
 import localserver.module.Control.controlRoute
+import localserver.module.File.fileRoute
 import localserver.module.Music.musicRoute
+import localserver.module.Terminal.terminalRoute
 import localserver.module.Video.videoRoute
 import localserver.utils.Logger
 import localserver.utils.Network.network
@@ -26,8 +28,10 @@ import kotlin.time.Duration.Companion.seconds
 
 private const val chunkSize = 8192
 
-// "192.168.100.17" "192.168.125.200"
-const val serverIp = "192.168.125.200"
+// "192.168.100.17"
+// "192.168.3.32"
+// "192.168.125.200"
+const val serverIp = "192.168.3.32"
 private const val password = "114514"
 
 fun main() {
@@ -42,14 +46,19 @@ fun main() {
                     } else if (Util.getUserList().any { it.ip == call.request.local.remoteAddress }) {
                         true
                     } else {
-                        Logger.debug("${call.request.local.remoteAddress} was blocked.")
+                        Logger.debug("${call.request.local.remoteAddress} was blocked by auth.")
                         false
                     }
                 }
             }
             basic("control") {
                 skipWhen { call ->
-                    call.parameters["p"]?.equals(password) ?: false || call.request.local.remoteAddress.startsWith("192.168.20.1")
+                    if (call.parameters["p"]?.equals(password) ?: false || Control.allowed(call.request.local.remoteAddress)) {
+                        true
+                    } else {
+                        Logger.debug("${call.request.local.remoteAddress} was blocked by control.")
+                        false
+                    }
                 }
             }
         }
@@ -75,6 +84,8 @@ fun main() {
             controlRoute()
             musicRoute()
             videoRoute()
+            fileRoute()
+            terminalRoute()
             network()
         }
     }.start(wait = true)

@@ -13,12 +13,25 @@ import kotlinx.serialization.json.*
 object Control {
     var state: Boolean = true
 
+    // control realm 的 IP 白名单，/canControl 与 Authentication 共用，避免前缀列表两份
+    fun allowed(remoteAddress: String) =
+        remoteAddress.startsWith("192.168.20.1") ||
+        remoteAddress.startsWith("192.168.100") ||
+        remoteAddress.startsWith("192.168.3.") ||
+        remoteAddress.startsWith("127.0.0.1")
+
     fun Route.controlRoute() {
         log()
         control()
         user()
         link()
         userList()
+        canControl()
+    }
+
+    // 前端（如 browser.html）据此隐藏需要 control 鉴权的按钮
+    private fun Route.canControl() = get("/canControl") {
+        call.respondText(allowed(call.request.local.remoteAddress).toString())
     }
 
     private fun Route.user() = authenticate("control") {
