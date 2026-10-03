@@ -22,30 +22,42 @@
             font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
             background: var(--bg);
             color: var(--text);
-            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
         }
 
-        /* 顶栏：搜索框内置，视觉与 chat.html 的 topbar 一致 */
+        /* 顶栏：☰ + 标题靠左，搜索框在整个顶栏宽度上居中 */
         .topbar {
-            position: sticky;
-            top: 0;
-            z-index: 100;
+            position: relative;
             display: flex;
             align-items: center;
             gap: 12px;
             padding: 10px 18px;
             background: var(--card);
             border-bottom: 1px solid var(--border);
-            box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
             flex-wrap: wrap;
         }
+        .topbar-left { display: flex; align-items: center; gap: 12px; }
         .topbar h1 { margin: 0; font-size: 18px; white-space: nowrap; }
         .search-container {
-            flex: 1;
-            max-width: 600px;
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(600px, calc(100% - 280px));
             min-width: 180px;
-            position: relative;
         }
+        .topbar .icon-btn {
+            width: 34px;
+            height: 34px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+            color: var(--text);
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .topbar .icon-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
         .search-box {
             width: 100%;
             padding: 9px 44px 9px 12px;
@@ -63,7 +75,7 @@
         }
         .search-btn {
             position: absolute;
-            right: 5px;
+            right: 3px;
             top: 50%;
             transform: translateY(-50%);
             background: var(--accent);
@@ -78,32 +90,98 @@
             justify-content: center;
         }
         .search-btn:hover { background: #3f68e8; }
-        .settings-icon {
-            width: 34px;
-            height: 34px;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            background: var(--card);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 16px;
-            cursor: pointer;
-        }
-        .settings-icon:hover { background: var(--accent-soft); border-color: var(--accent); }
 
-        /* 主区域：居中卡片 */
-        .main-container {
-            max-width: 900px;
-            margin: 0 auto;
+        /* 主布局：左侧可收起的设置侧边栏 + 右侧内容区，与 chat.html 的会话侧边栏同构 */
+        .layout { flex: 1; display: flex; min-height: 0; }
+        .right-col {
+            flex: 1;
+            min-width: 0;
+            overflow-y: auto;
             padding: 20px;
         }
+
+        /* 设置侧边栏：默认宽 230px，收起时贴左边框 */
+        #sidebar {
+            width: 230px;
+            flex: 0 0 230px;
+            background: var(--card);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            padding: 12px 10px;
+            transition: margin-left .2s ease;
+        }
+        #sidebar:not(.open) { margin-left: -230px; }
+        .setting-section { margin-bottom: 14px; }
+        .setting-section h3 {
+            margin: 0 0 8px;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: .4px;
+            padding: 0 8px;
+        }
+        .setting-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 6px 8px;
+            font-size: 13px;
+        }
+        .number-input {
+            width: 70px;
+            height: 30px;
+            padding: 0 8px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 13px;
+            outline: none;
+            background: var(--bg);
+            color: var(--text);
+        }
+        .number-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(79, 124, 255, .15);
+            background: var(--card);
+        }
+        .setting-tip {
+            margin: 0 0 8px;
+            padding: 6px 8px;
+            font-size: 12px;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+        .quality-options { display: flex; flex-direction: column; gap: 6px; padding: 0 8px; }
+        .quality-option { display: flex; align-items: center; gap: 8px; }
+        .quality-option input[type="radio"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent);
+        }
+        .quality-label { font-size: 13px; color: var(--text); }
+        .save-btn {
+            width: 100%;
+            padding: 9px 0;
+            margin: 4px 8px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .save-btn:hover { background: #3f68e8; }
+
+        /* 内容区：居中卡片 */
         .content {
             background: var(--card);
             border: 1px solid var(--border);
             border-radius: 12px;
             box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
             padding: 20px;
+            max-width: 900px;
+            margin: 0 auto;
         }
         .content-header { margin-bottom: 20px; }
         .content-title { font-size: 20px; }
@@ -232,164 +310,113 @@
         .close-player:hover { color: var(--text); }
         .loading-text { font-size: 12px; color: var(--muted); margin-top: 4px; }
 
-        /* 设置窗口：卡片样式 */
-        .modal-overlay {
+        /* 提示浮层（与 chat.html 的 error-toast 同款，默认信息色、.error 红色） */
+        .toast {
             position: fixed;
-            inset: 0;
-            background-color: rgba(0, 0, 0, 0.4);
-            display: none;
-            justify-content: center;
-            align-items: center;
+            bottom: 90px;
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            max-width: 80vw;
+            padding: 10px 18px;
+            background: var(--accent);
+            color: #fff;
+            border-radius: 10px;
+            font-size: 13px;
+            box-shadow: 0 4px 16px rgba(79, 124, 255, .35);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s, transform .2s;
             z-index: 1000;
         }
-        .modal-overlay.show { display: flex; }
-        .modal {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            width: 90%;
-            max-width: 460px;
-            max-height: 80vh;
-            overflow-y: auto;
-            padding: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
-        }
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-        }
-        .modal-title { font-size: 18px; font-weight: 600; }
-        .close-btn {
-            background: none;
-            border: none;
-            font-size: 22px;
-            color: var(--muted);
-            cursor: pointer;
-        }
-        .close-btn:hover { color: var(--text); }
-        .settings-options { display: flex; flex-direction: column; gap: 16px; }
-        .setting-group {
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 14px;
-        }
-        .group-title {
-            font-size: 15px;
-            font-weight: 600;
-            margin-bottom: 12px;
-            padding-bottom: 8px;
-            border-bottom: 2px solid var(--accent);
-        }
-        .setting-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 0;
-        }
-        .setting-label { font-size: 14px; color: var(--text); }
-        .number-input {
-            width: 90px;
-            height: 36px;
-            padding: 0 10px;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            font-size: 14px;
-            outline: none;
-            background: var(--bg);
-            color: var(--text);
-        }
-        .number-input:focus {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(79, 124, 255, .15);
-            background: var(--card);
-        }
-        .quality-options { display: flex; flex-direction: column; gap: 8px; }
-        .quality-option { display: flex; align-items: center; gap: 8px; }
-        .quality-option input[type="radio"] {
-            width: 16px;
-            height: 16px;
-            accent-color: var(--accent);
-        }
-        .quality-label { font-size: 14px; color: var(--text); }
-        .switch { position: relative; display: inline-block; width: 50px; height: 24px; }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            inset: 0;
-            background-color: #ccc;
-            transition: .4s;
-            border-radius: 24px;
-        }
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 16px;
-            width: 16px;
-            left: 4px;
-            bottom: 4px;
-            background-color: white;
-            transition: .4s;
-            border-radius: 50%;
-        }
-        input:checked + .slider { background-color: var(--accent); }
-        input:checked + .slider:before { transform: translateX(26px); }
-        .save-button { margin-top: 16px; text-align: right; }
-        .save-btn {
-            background: var(--accent);
-            color: white;
-            border: none;
-            padding: 9px 20px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        .save-btn:hover { background: #3f68e8; }
+        .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        .toast.error { background: var(--danger); box-shadow: 0 4px 16px rgba(255, 77, 77, .35); }
 
-        /* 小屏适配 */
+        /* 小屏适配：绝对定位的搜索框与标题组会重叠，改为独立整行 */
         @media (max-width: 600px) {
             .topbar { gap: 8px; }
-            .search-container { min-width: 140px; }
+            .search-container {
+                position: static;
+                left: auto;
+                transform: none;
+                width: 100%;
+            }
             .music-item { flex-wrap: wrap; }
             .music-actions { width: 100%; justify-content: flex-end; }
         }
     </style>
 </head>
 <body>
-    <!-- 头部：标题 + 搜索 + 设置 -->
+    <!-- 头部：☰ 切换设置 + 标题 + 搜索 -->
     <header class="topbar">
+        <button id="sidebarToggle" class="icon-btn" title="显示/收起设置">☰</button>
         <h1>🎵 音乐搜索</h1>
         <div class="search-container">
             <input type="text" class="search-box" placeholder="搜索歌曲..." id="searchInput">
             <button class="search-btn" onclick="performSearch()">🔍</button>
         </div>
-        <div class="settings-icon" onclick="openSettings()" title="设置">⚙️</div>
     </header>
 
-    <!-- 主要内容区域 -->
-    <div class="main-container">
-        <main class="content">
-            <div class="content-header">
-                <h2 class="content-title">发现音乐</h2>
-            </div>
-
-            <!-- 搜索结果 -->
-            <div class="search-results" id="searchResults">
-                <h3 class="search-results-title">搜索结果</h3>
-                <div class="music-list" id="musicList">
-                    <!-- 搜索结果将在这里动态生成 -->
+    <div class="layout">
+        <!-- 设置侧边栏：与 chat.html 的会话侧边栏同构（宽 230px、可收起） -->
+        <aside id="sidebar">
+            <div class="setting-section">
+                <h3>搜索设置</h3>
+                <div class="setting-row">
+                    <span>偏移量</span>
+                    <input type="number" class="number-input" id="offset" min="0" value="0">
+                </div>
+                <div class="setting-row">
+                    <span>搜索个数</span>
+                    <input type="number" class="number-input" id="limit" min="1" max="20" value="10">
                 </div>
             </div>
-
-            <!-- 基础功能区域 -->
-            <div class="basic-function" id="basicFunction">
-                <h3>音乐搜索</h3>
-                <p>在顶部搜索框中输入歌曲名或歌手名进行搜索</p>
+            <div class="setting-section">
+                <h3>音乐设置</h3>
+                <p class="setting-tip">下载无损或HiRes报错可尝试先下一次高品质后重试</p>
+                <div class="quality-options">
+                    <div class="quality-option">
+                        <input type="radio" id="standard" name="quality" value="standard" checked>
+                        <label for="standard" class="quality-label">标准</label>
+                    </div>
+                    <div class="quality-option">
+                        <input type="radio" id="exhigh" name="quality" value="exhigh">
+                        <label for="exhigh" class="quality-label">高品质</label>
+                    </div>
+                    <div class="quality-option">
+                        <input type="radio" id="lossless" name="quality" value="lossless">
+                        <label for="lossless" class="quality-label">无损</label>
+                    </div>
+                    <div class="quality-option">
+                        <input type="radio" id="hires" name="quality" value="hires">
+                        <label for="hires" class="quality-label">HiRes</label>
+                    </div>
+                </div>
             </div>
-        </main>
+            <button class="save-btn" onclick="saveSettings()">保存设置</button>
+        </aside>
+
+        <!-- 右侧内容区 -->
+        <div class="right-col">
+            <main class="content">
+                <div class="content-header">
+                    <h2 class="content-title">发现音乐</h2>
+                </div>
+
+                <!-- 搜索结果 -->
+                <div class="search-results" id="searchResults">
+                    <h3 class="search-results-title">搜索结果</h3>
+                    <div class="music-list" id="musicList">
+                        <!-- 搜索结果将在这里动态生成 -->
+                    </div>
+                </div>
+
+                <!-- 基础功能区域 -->
+                <div class="basic-function" id="basicFunction">
+                    <h3>音乐搜索</h3>
+                    <p>在顶部搜索框中输入歌曲名或歌手名进行搜索；左侧设置可调整搜索个数与音质</p>
+                </div>
+            </main>
+        </div>
     </div>
 
     <!-- 音乐播放器 -->
@@ -408,63 +435,6 @@
         <div class="loading-text" id="loadingText"></div>
     </div>
 
-    <!-- 设置窗口 -->
-    <div class="modal-overlay" id="settingsModal">
-        <div class="modal">
-            <div class="modal-header">
-                <h3 class="modal-title">设置</h3>
-                <button class="close-btn" onclick="closeSettings()">×</button>
-            </div>
-            <div class="settings-options">
-                <!-- 搜索设置 -->
-                <div class="setting-group">
-                    <h4 class="group-title">搜索设置</h4>
-                    <div class="setting-item">
-                        <span class="setting-label">偏移量</span>
-                        <input type="number" class="number-input" id="offset" min="0" value="0">
-                    </div>
-                    <div class="setting-item">
-                        <span class="setting-label">搜索个数</span>
-                        <input type="number" class="number-input" id="limit" min="1" max="20" value="10">
-                    </div>
-                </div>
-
-                <!-- 音乐设置 -->
-                <div class="setting-group">
-                    <h4 class="group-title">音乐设置</h4>
-                    <div class="setting-item" style="display:block;">
-                        <span class="setting-label">下载无损或HiRes报错可尝试先下一次高品质后重试</span>
-                    </div>
-                    <div class="setting-item" style="display:block;">
-                        <span class="setting-label">音质选择</span>
-                        <div class="quality-options">
-                            <div class="quality-option">
-                                <input type="radio" id="standard" name="quality" value="standard" checked>
-                                <label for="standard" class="quality-label">标准</label>
-                            </div>
-                            <div class="quality-option">
-                                <input type="radio" id="exhigh" name="quality" value="exhigh">
-                                <label for="exhigh" class="quality-label">高品质</label>
-                            </div>
-                            <div class="quality-option">
-                                <input type="radio" id="lossless" name="quality" value="lossless">
-                                <label for="lossless" class="quality-label">无损</label>
-                            </div>
-                            <div class="quality-option">
-                                <input type="radio" id="hires" name="quality" value="hires">
-                                <label for="hires" class="quality-label">HiRes</label>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="save-button">
-                    <button class="save-btn" onclick="saveSettings()">保存设置</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <script>
         // 设置数据
         let settings = {
@@ -479,25 +449,50 @@
         // 音乐缓存 - 存储歌曲的Blob对象
         const musicCache = new Map();
 
+        document.addEventListener('DOMContentLoaded', function () {
+            loadSettings();
+            // 设置侧边栏展开/收起（与 chat.html 同款），默认收起
+            document.getElementById('sidebarToggle').addEventListener('click', function () {
+                document.getElementById('sidebar').classList.toggle('open');
+            });
+        });
+
         // 加载保存的设置
         function loadSettings() {
             const savedSettings = localStorage.getItem('musicSearchSettings');
             if (savedSettings) {
-                settings = JSON.parse(savedSettings);
+                try { settings = JSON.parse(savedSettings); } catch (e) { return; }
                 document.getElementById('offset').value = settings.offset;
                 document.getElementById('limit').value = settings.limit;
-                document.querySelector(`input[name="quality"][value="${settings.quality}"]`).checked = true;
+                const q = document.querySelector(`input[name="quality"][value="${settings.quality}"]`);
+                if (q) q.checked = true;
             }
         }
 
-        // 保存设置
+        // 保存设置（直接写 localStorage，侧边栏收起不影响已保存值）
         function saveSettings() {
             settings.offset = parseInt(document.getElementById('offset').value) || 0;
-            settings.limit = parseInt(document.getElementById('limit').value) || 10;
+            settings.limit = Math.min(20, Math.max(1, parseInt(document.getElementById('limit').value) || 10));
             settings.quality = document.querySelector('input[name="quality"]:checked').value;
 
             localStorage.setItem('musicSearchSettings', JSON.stringify(settings));
-            closeSettings();
+            showToast('设置已保存');
+        }
+
+        // 提示浮层（替代 alert，与 chat.html 的 toast 风格一致）
+        function showToast(text, isError) {
+            let toast = document.getElementById('toast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'toast';
+                toast.className = 'toast';
+                document.body.appendChild(toast);
+            }
+            toast.textContent = text;
+            toast.classList.toggle('error', !!isError);
+            toast.classList.add('show');
+            clearTimeout(toast._hideTimer);
+            toast._hideTimer = setTimeout(function () { toast.classList.remove('show'); }, 3000);
         }
 
         // 搜索音乐
@@ -511,7 +506,7 @@
                 return await response.json();
             } catch (error) {
                 console.error('搜索音乐时出错:', error);
-                alert('搜索失败，请检查服务器连接');
+                showToast('搜索失败，请检查服务器连接', true);
                 return [];
             }
         }
@@ -787,6 +782,7 @@
             } catch (error) {
                 console.error('下载音乐时出错:', error);
                 document.getElementById('loadingText').textContent = '下载失败';
+                showToast('下载失败', true);
                 throw error;
             }
         }
@@ -826,12 +822,12 @@
                 // 尝试播放
                 audioPlayer.play().catch(e => {
                     console.error('播放失败:', e);
-                    alert(`播放失败: ${e.message}`);
+                    showToast('播放失败: ' + e.message, true);
                 });
 
             } catch (error) {
                 console.error('播放音乐时出错:', error);
-                alert(`播放失败: ${error.message}`);
+                showToast('播放失败: ' + error.message, true);
                 document.getElementById('loadingText').textContent = '播放失败';
             }
         }
@@ -844,30 +840,6 @@
             audioPlayer.src = '';
             document.getElementById('loadingText').textContent = '';
         }
-
-        // 打开设置窗口
-        function openSettings() {
-            loadSettings();
-            document.getElementById('settingsModal').classList.add('show');
-        }
-
-        // 关闭设置窗口
-        function closeSettings() {
-            document.getElementById('settingsModal').classList.remove('show');
-        }
-
-        // 点击模态框外部关闭
-        document.getElementById('settingsModal').addEventListener('click', function(e) {
-            if (e.target === this) {
-                saveSettings();
-                closeSettings();
-            }
-        });
-
-        // 页面加载完成后的初始化
-        document.addEventListener('DOMContentLoaded', function() {
-            loadSettings();
-        });
     </script>
 </body>
 </html>
