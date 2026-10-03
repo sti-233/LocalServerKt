@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI 助手</title>
-    <link rel="stylesheet" href="/download?url=https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css&inline=1">
-    <script src="/download?url=https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js&inline=1"></script>
-    <script src="/download?url=https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js&inline=1"></script>
-    <script src="/download?url=https://cdn.jsdelivr.net/npm/marked@0.8.2/marked.min.js&inline=1"></script>
+    <link rel="stylesheet" href="/download?url=https://unpkg.com/katex@0.16.21/dist/katex.min.css&inline=1">
+    <script src="/download?url=https://unpkg.com/katex@0.16.21/dist/katex.min.js&inline=1"></script>
+    <script src="/download?url=https://unpkg.com/katex@0.16.21/dist/contrib/auto-render.min.js&inline=1"></script>
+    <script src="/download?url=https://unpkg.com/marked@0.8.2/marked.min.js&inline=1"></script>
     <style>
         :root {
             --bg: #f4f6fb;
@@ -616,6 +616,11 @@
                             note.style.fontSize = '12px';
                             div.appendChild(note);
                         }
+                        // 纯工具调用轮：有 tool_calls 但无正文/思考，跳过不渲染空气泡
+                        if (item.tool_calls && !content && !item.reasoning_content) {
+                            unitEl.parentNode.removeChild(unitEl);
+                            return;
+                        }
                         unitEl.querySelector('.rerender-btn').addEventListener('click', () => rerenderUnit(unitEl));
                     });
                     chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -661,7 +666,10 @@
             msgInput.value = '';
             msgInput.style.height = 'auto';
             isProcessing = true;
-            sendBtn.disabled = true;
+            sendBtn.disabled = false;
+            /* 中断：处理中按钮变为"■ 停止"，点击即关闭 SSE（服务端检测断开并标记 interrupted） */
+            sendBtn.textContent = '■ 停止';
+            sendBtn.onclick = stop;
             autoScrollEnabled = true;
 
             addMessage(text, 'user');
@@ -704,12 +712,49 @@
             let pendingRender = false;
             let es = null;
 
+            /* 工具调用提示行：模型给出 delta.tool_calls 时在气泡下方显示
+               “⚙ 调用 get_time(...)”，最终正文开始后标记为“已调用” */
+            let toolCallDiv = null;
+            let toolCallBuf = {};
+            let toolCallDone = false;
+            function ensureToolLine() {
+                if (toolCallDiv) return;
+                toolCallDiv = document.createElement('div');
+                toolCallDiv.className = 'tool-note';
+                toolCallDiv.style.color = '#9ca3af';
+                toolCallDiv.style.fontSize = '12px';
+                aiWrap.insertBefore(toolCallDiv, rerenderBtn);
+            }
+
             function cleanup() {
                 if (es) {
                     debugLogWrite('log', '[cleanup] 关闭 EventSource');
                     es.close();
                     es = null;
                 }
+            }
+
+            /* 处理中按钮是"■ 停止"（onclick 指向 stop）；流程结束后还原为"发送" */
+            function restoreBtn() {
+                sendBtn.textContent = '发送';
+                sendBtn.onclick = sendMessage;
+            }
+
+            /* 手动停止：关 SSE（服务端检测断开、记录 interrupted），标记本条并追加提示 */
+            let stoppedByUser = false;
+            function stop() {
+                if (!isProcessing) return;
+                debugLogWrite('log', '[stop] 用户手动停止');
+                stoppedByUser = true;
+                streamEnded = true;
+                cleanup();
+                aiWrap._interrupted = true;
+                finalize();
+                const note = document.createElement('div');
+                note.textContent = '（已手动停止）';
+                note.style.color = '#9ca3af';
+                note.style.fontSize = '12px';
+                aiMessageDiv.appendChild(note);
             }
 
             /* ===== 渲染节流：chunk 只累积到 buffer，实际渲染交给 heartbeat 与结束事件触发 ===== */
@@ -733,6 +778,11 @@
 
             function finalize() {
                 renderPending();
+                // 工具提示行补上"已调用"（若最终正文没触发）
+                if (toolCallDiv && !toolCallDone) {
+                    toolCallDone = true;
+                    toolCallDiv.textContent = toolCallDiv.textContent + '（已调用）';
+                }
                 if (thinkingBuffer.trim()) {
                     // 保留思考块并展开，记录原始思考文本供 ✨ 重渲染
                     aiWrap._thinkingText = thinkingBuffer;
@@ -748,7 +798,7 @@
                 }
                 aiMessageDiv.classList.remove('typing');
                 isProcessing = false;
-                sendBtn.disabled = false;
+                restoreBtn();
                 msgInput.focus();
                 if (autoScrollEnabled) {
                     chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -759,6 +809,7 @@
             let streamEnded = false;
 
             function processChunk(data) {
+                console.log(data);
                 if (data === '[DONE]') {
                     debugLogWrite('info', '[processChunk] 收到 [DONE]');
                     streamEnded = true;
@@ -780,7 +831,7 @@
                     aiMessageDiv.textContent = '请求失败: ' + jsonData.error;
                     cleanup();
                     isProcessing = false;
-                    sendBtn.disabled = false;
+                    restoreBtn();
                     msgInput.focus();
                     return;
                 }
@@ -816,6 +867,33 @@
                         chatContainer.scrollTop = chatContainer.scrollHeight;
                     }
                 }
+
+                // 工具调用：delta.tool_calls 分片（id/name 首片、arguments 逐片拼接）
+                if (delta && delta.tool_calls && delta.tool_calls.length) {
+                    delta.tool_calls.forEach(tc => {
+                        if (!tc) return;
+                        var idx = (tc.index === undefined || tc.index === null) ? 0 : tc.index;
+                        var entry = toolCallBuf[idx] || { id: '', name: '', arguments: '' };
+                        if (tc.id) entry.id = tc.id;
+                        if (tc.function && tc.function.name) entry.name = tc.function.name;
+                        if (tc.function && tc.function.arguments) entry.arguments += tc.function.arguments;
+                        toolCallBuf[idx] = entry;
+                    });
+                    ensureToolLine();
+                    toolCallDiv.textContent = '⚙ 调用 ' + Object.keys(toolCallBuf)
+                        .map(i => toolCallBuf[i].name || ('tool#' + i))
+                        .join(', ');
+                    pendingRender = false;
+                    if (autoScrollEnabled) {
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    }
+                }
+
+                if (delta && delta.content && toolCallDiv && !toolCallDone) {
+                    // 正文开始 = 工具轮已结束，标记提示行为“已调用”
+                    toolCallDone = true;
+                    toolCallDiv.textContent = toolCallDiv.textContent + '（已调用）';
+                }
             }
 
             var url = '/ai/chat?text=' + encodeURIComponent(text);
@@ -839,7 +917,7 @@
             });
             es.onerror = function(ev) {
                 debugLogWrite('error', '[SSE] onerror readyState=', es.readyState, 'url=', es.url);
-                if (streamEnded) return;
+                if (streamEnded) return; /* 含手动停止：关连接触发的 onerror 不是错误 */
                 aiMessageDiv.textContent = '网络错误: SSE 连接失败（详见 Debug）';
                 aiMessageDiv.classList.remove('typing');
                 cleanup();
