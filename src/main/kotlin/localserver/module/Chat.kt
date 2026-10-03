@@ -15,6 +15,8 @@ import io.ktor.http.*
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.serialization.json.*
 import java.io.File
+import java.security.MessageDigest
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 
 object Chat {
@@ -25,7 +27,9 @@ object Chat {
         history()
         conversations()
         message()
-        
+        imageCache()
+        migrateImages()
+
         websocket()
         clients()
         whoami()
@@ -89,6 +93,76 @@ object Chat {
         }
     }
 
+    // 图片懒加载端点：/img/<sha256>.<ext> → cache/ 目录下的文件
+    // 路径必须严格匹配 64 位十六进制 + 短扩展名，防路径穿越；respondFile 自带 ETag/Range
+    private fun Route.imageCache() = get("/img/{*}") {
+        // 尾段参数名即 "*"（路径里 /img/ 后的整段）
+        val name = call.parameters["*"].orEmpty()
+        if (!name.matches(Regex("^[a-f0-9]{64}\\.[a-z]{1,10}$"))) {
+            call.respondText("image not found", status = HttpStatusCode.NotFound)
+            return@get
+        }
+        val file = File("cache", name)
+        if (!file.exists()) {
+            call.respondText("image not found", status = HttpStatusCode.NotFound)
+            return@get
+        }
+        // respondFile 默认按文件扩展名（.png/.jpeg/.webp/.gif）推断 Content-Type，
+        // Ktor 内置 mime 映射能正确识别这些图片类型，无需手动设
+        call.respondFile(file)
+    }
+
+    // 一次性迁移端点（control 鉴权）：/migrateImages
+    // 扫描 message/history_*.json 里的 ImageB64:dataURL 旧消息，把 base64 图片落盘 cache/<sha256>.<ext>，
+    // 并把存档 text 改写为 ImageRef:/img/<sha256>.<ext>。幂等：已 ImageRef: 的不重复处理，
+    // 同一 base64 去重只落盘一次；只回写有改动的文件。跑完可不再访问。
+    private fun Route.migrateImages() = authenticate("control") {
+        get("/migrateImages") {
+            val result = doMigrate()
+            call.respondText(Json.encodeToString(result))
+        }
+    }
+
+    // 迁移实现（供端点调用）：返回 {files, migrated} 统计
+    private fun doMigrate(): Map<String, Int> {
+        val files = File("message")
+            .listFiles { f -> f.isFile && f.name.startsWith("history_") && f.name.endsWith(".json") }
+            .orEmpty()
+        var migrated = 0
+        for (f in files) {
+            val text = f.readText().trimStart('﻿')
+            if (text.isBlank()) continue
+            val original = Util.prettyJson.decodeFromString<MutableList<Message>>(text)
+            var changed = false
+            val result = original.map { m ->
+                if (m.text.startsWith("ImageB64:")) {
+                    extractAndCache(m.text.removePrefix("ImageB64:"))?.let { ref ->
+                        changed = true
+                        migrated++
+                        Message(m.name, m.time, ref)
+                    } ?: m // 解析不出 mime 保持原样
+                } else m
+            }
+            if (changed) f.writeText(Util.prettyJson.encodeToString(result))
+        }
+        return mapOf("files" to files.size, "migrated" to migrated)
+    }
+
+    // 解码 dataURL → 落盘 cache/<sha256>.<ext>（去重），返回 "ImageRef:/img/<sha256>.<ext>"；
+    // 格式不合法返回 null
+    private fun extractAndCache(dataUrl: String): String? {
+        val mimeMatch = Regex("^data:([a-z+/]+);base64,([A-Za-z0-9+/=]+)$").find(dataUrl) ?: return null
+        val mime = mimeMatch.groupValues[1]
+        val bytes = Base64.getDecoder().decode(mimeMatch.groupValues[2])
+        val hex = MessageDigest.getInstance("SHA-256").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        val ext = mime.substringAfter('/', "")
+        val cacheDir = File("cache").apply { if (!exists()) mkdirs() }
+        val cacheFile = File(cacheDir, "$hex.$ext")
+        if (!cacheFile.exists()) cacheFile.writeBytes(bytes)
+        return "ImageRef:/img/$hex.$ext"
+    }
+
     private fun Route.message() = webSocket("/message") {
         val clientId = call.request.local.remoteAddress
         clients[clientId] = this
@@ -112,22 +186,46 @@ object Chat {
                                 ))
                                 continue
                             }
-                            // 图片消息：参考 talk.html 的 ImageB64: 前缀协议，服务端按 10MB 校验后原样转发/存档
+                            // 图片消息：ImageB64: 前缀 → 解码 base64 落盘 cache/<sha256>.<ext>，
+                            // 存档与广播只用短引用 ImageRef:/cache/<sha256>.<ext>（前端经 /img/ 懒加载）
+                            var imageRef: String? = null
                             if (json.text.startsWith("ImageB64:")) {
                                 val dataUrl = json.text.removePrefix("ImageB64:")
-                                val ok = dataUrl.length <= 10 * 1024 * 1024 &&
-                                        Regex("^data:image/[a-z]+;base64,[A-Za-z0-9+/=]+$").matches(dataUrl)
-                                if (!ok) {
+                                val mimeMatch = Regex("^data:([a-z+/]+);base64,([A-Za-z0-9+/=]+)$").find(dataUrl)
+                                if (mimeMatch == null) {
                                     send(Json.encodeToString(
                                         Content("err", current, Time.getCurrentTimeWithDate(),
-                                            "图片消息无效：需为 data:image/...;base64, 形式且不超过 10MB",
+                                            "图片消息无效：需为 data:image/...;base64, 形式",
                                             json.sendTo)
                                     ))
                                     continue
                                 }
+                                val mime = mimeMatch.groupValues[1]
+                                val bytes = try {
+                                    Base64.getDecoder().decode(mimeMatch.groupValues[2])
+                                } catch (e: Exception) {
+                                    null
+                                }
+                                if (bytes == null || bytes.size > 10 * 1024 * 1024) {
+                                    send(Json.encodeToString(
+                                        Content("err", current, Time.getCurrentTimeWithDate(),
+                                            "图片消息无效：base64 解码失败或超过 10MB",
+                                            json.sendTo)
+                                    ))
+                                    continue
+                                }
+                                // SHA-256 落盘，天然去重；扩展名取自 mime 子类型（image/png → png）
+                                val hex = MessageDigest.getInstance("SHA-256").digest(bytes)
+                                    .joinToString("") { "%02x".format(it) }
+                                val ext = mime.substringAfter('/', "")
+                                val cacheDir = File("cache").apply { if (!exists()) mkdirs() }
+                                val cacheFile = File(cacheDir, "$hex.$ext")
+                                if (!cacheFile.exists()) cacheFile.writeBytes(bytes)
+                                imageRef = "ImageRef:/img/$hex.$ext"
                             }
-                            val content = Content("send", current, Time.getCurrentTimeWithDate(), json.text, json.sendTo)
-                            val message = Message(current, Time.getCurrentTimeWithDate(), json.text)
+                            val textToSend = imageRef ?: json.text
+                            val content = Content("send", current, Time.getCurrentTimeWithDate(), textToSend, json.sendTo)
+                            val message = Message(current, Time.getCurrentTimeWithDate(), textToSend)
                             val response = Json.encodeToString(content)
                             if (json.sendTo.isNullOrEmpty()) {
                                 clients.forEach { (_, session) ->

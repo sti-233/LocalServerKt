@@ -1,4 +1,4 @@
-﻿<html lang="zh-CN">
+<html lang="zh-CN">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -477,15 +477,25 @@
             timeEl.className = 'time';
             timeEl.textContent = time;
 
-            // 图片消息（ImageB64: 前缀，来自 talk.html 的协议）渲染为缩略图，否则按纯文本渲染
+            // 图片消息渲染为缩略图：
+            //   ImageB64:（旧存档）→ data URL 直接当 src；ImageRef:（新）→ /img/ 端点懒加载
+            // 普通文本走 textContent 防 XSS
             const contentEl = document.createElement('p');
             contentEl.className = 'content';
             if (typeof content === 'string' && content.startsWith('ImageB64:')) {
                 const img = document.createElement('img');
                 img.className = 'img-message';
-                img.src = content.slice('ImageB64:'.length); // data URL 自带 mime 前缀，无需写死 png
+                img.src = content.slice('ImageB64:'.length); // data URL 自带 mime 前缀
                 img.alt = '图片';
                 img.loading = 'lazy';
+                contentEl.appendChild(img);
+            } else if (typeof content === 'string' && content.startsWith('ImageRef:')) {
+                const img = document.createElement('img');
+                img.className = 'img-message';
+                img.src = content.slice('ImageRef:'.length); // "/img/<sha256>.<ext>"
+                img.alt = '图片';
+                img.loading = 'lazy';
+                img.decoding = 'async';
                 contentEl.appendChild(img);
             } else {
                 contentEl.textContent = content; // 用 textContent，防 XSS
