@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>视频观看 - B站</title>
+    <script src="/resources/config.js"></script>
+    <link rel="stylesheet" href="/resources/video/video.css">
+</head>
+<body>
+<div class="topbar">
+    <div class="topbar-left">
+        <h1>视频观看</h1>
+    </div>
+    <div class="search-container">
+        <input id="kw" class="search-box" placeholder="搜索视频、用户…">
+        <button id="go" class="search-btn">🔍</button>
+    </div>
+</div>
+
+<div class="container">
+    <div id="status"></div>
+
+    <div id="content" style="display:none">
+        <div class="player-wrap">
+            <!-- preload=auto：设置 src 后立刻开始缓冲，用户点播放时已经有数据。
+                 配合服务端的首段预取，起播基本是瞬时的。 -->
+            <video id="player" controls playsinline preload="auto"></video>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+                <span style="font-size:14px">🔊</span>
+                <input id="vol" type="range" min="0" max="1" step="0.01" value="0.1"
+                       style="flex:1;accent-color:var(--accent,#fb7299)">
+                <span id="volVal" class="small muted" style="width:38px;text-align:right">10%</span>
+            </div>
+        </div>
+
+        <div id="playMsg" class="small muted" style="margin-top:8px"></div>
+
+        <div class="video-title" id="title"></div>
+
+        <div class="up-row">
+            <img id="upFace" alt="" referrerpolicy="no-referrer">
+            <div>
+                <div style="font-size:14px;font-weight:600" id="upName"></div>
+                <div class="small muted" id="upMeta"></div>
+            </div>
+            <a class="btn" id="upSpace" style="margin-left:auto" target="_self">查看空间</a>
+        </div>
+
+        <div class="stat-row" id="stats"></div>
+
+        <div class="card" id="pagesCard" style="display:none">
+            <div class="small muted" style="margin-bottom:9px">分P列表（点击切换）</div>
+            <div class="pages" id="pages"></div>
+        </div>
+
+        <div class="card">
+            <div class="small muted" style="margin-bottom:9px">简介</div>
+            <div class="desc" id="desc"></div>
+        </div>
+
+        <div class="card">
+            <div class="small muted" style="margin-bottom:9px">画质 / 音轨</div>
+            <div class="cmt-toolbar">
+                <label class="small muted">清晰度</label>
+                <select id="quality" class="select"></select>
+                <label class="small muted">编码</label>
+                <select id="codec" class="select"></select>
+                <span class="small muted" id="streamInfo"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="cmt-toolbar">
+                <span style="font-size:14px;font-weight:600">评论</span>
+                <label class="small muted" style="margin-left:8px">排序</label>
+                <select id="cmtSort" class="select">
+                    <option value="3">按热度</option>
+                    <option value="2">按时间</option>
+                    <option value="1">热度+时间</option>
+                </select>
+                <span class="small muted" id="cmtCount" style="margin-left:auto"></span>
+            </div>
+            <div id="comments"></div>
+            <div class="pager" id="cmtPager" style="display:none">
+                <button class="btn" id="cmtPrev">上一页</button>
+                <span class="info" id="cmtPageInfo"></span>
+                <button class="btn" id="cmtNext">下一页</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/resources/video/common.js"></script>
+<script>
+    const statusEl = document.getElementById('status');
+    const content = document.getElementById('content');
+    const player = document.getElementById('player');
+    const playMsg = document.getElementById('playMsg');
+    const qualitySel = document.getElementById('quality');
+    const codecSel = document.getElementById('codec');
+    const streamInfo = document.getElementById('streamInfo');
+    const volSlider = document.getElementById('vol');
+    const volVal = document.getElementById('volVal');
+
+    // 音量默认 10%：同时管 <video>（MP4 兜底）与 <audio>（DASH 音轨）两个出声口
+    player.volume = 0.1;
+    const setVol = v => {
+        player.volume = v;
+        if (audioEl) audioEl.volume = v;
+        volVal.textContent = Math.round(v * 100) + '%';
+    };
+    volSlider.oninput = e => setVol(Number(e.target.value));
+
+    let info = null;        // videoInfo.data
+    let playData = null;    // playStreamInfo
+    let currentCid = 0;
+    // B 站音频是独立流（DASH），这里用 <video> 播视频流，另用 <audio> 同步播放音频。
+    let audioEl = null;
+
+    const CODEC_NAME = { 7: 'AVC/H.264', 12: 'HEVC/H.265', 13: 'AV1' };
+    const QN_NAME = {
+        6: '240P', 16: '360P', 32: '480P', 64: '720P', 74: '720P60',
+        80: '1080P', 100: '智能修复', 112: '1080P+', 116: '1080P60',
+        120: '4K', 125: 'HDR', 126: '杜比视界', 127: '8K'
+    };
+
+    /** 兼容后端返回的 base_url / baseUrl 两种字段名 */
+    function streamBaseUrl(x) {
+        if (!x) return '';
+        return x.base_url || x.baseUrl || (x.backup_url && x.backup_url[0]) || (x.backupUrl && x.backupUrl[0]) || '';
+    }
+
+    /** 解析地址栏，拿到 bvid 或 aid，然后加载 */
+    async function boot() {
+        const sp = new URLSearchParams(location.search);
+        const bvid = sp.get('bvid');
+        const aid = sp.get('aid');
+        if (!bvid && !aid) {
+            showHint(statusEl, '请从首页或搜索结果中选择一个视频');
+            return;
+        }
+        // 列表卡片会把 cid 一并带过来：有 cid 就能和 /videoInfo 并发起取流，
+        // 不必等视频信息返回后再串行请求，起播更快。
+        const cidHint = sp.get('cid');
+        await loadVideo(bvid ? { bvid } : { aid }, bvid, cidHint);
+    }
+
+    /**
+     * 加载视频页。
+     * @param target        /videoInfo 的查询参数
+     * @param bvid          用于取流（取流接口需要 bvid）
+     * @param cidHint       列表卡片带来的 cid，可让取流与信息并行
+     */
+    async function loadVideo(target, bvid, cidHint) {
+        showSpinner(statusEl);
+        content.style.display = 'none';
+
+        // 关键：两个请求"同时发出"，总耗时约等于较慢的那个（实测 /videoInfo ~600ms、
+        // 取流 ~200ms）。若在拿到 cid 后再串行请求取流，则要 800ms+ 才能起播。
+        const infoPromise = api('/videoInfo', target);
+        const streamPromise = (bvid && cidHint)
+            ? api('/videoStreamInfo', { bvid, cid: cidHint }).catch(() => null)
+            : null;
+
+        try {
+            info = await infoPromise;
+        } catch (e) {
+            statusEl.innerHTML = '';
+            showError(statusEl, '获取视频信息失败：' + e.message);
+            return;
+        }
+        const prefetched = streamPromise ? await streamPromise : null;
+
+        statusEl.innerHTML = '';
+        content.style.display = 'block';
+        renderInfo();
+        // 评论不再与起播抢连接：让播放器先拿到数据
+        setTimeout(initComments, 0);
+        // 默认播放第一个分P
+        const first = (info.pages && info.pages.length) ? info.pages[0] : { cid: info.cid, page: 1, part: '' };
+
+        // 命中并发请求的结果、且正是第一个分P 时直接复用，避免重复请求
+        if (prefetched && Number(first.cid) === Number(cidHint)) {
+            playData = prefetched;
+            highlightPage(first.cid);
+            buildQualityOptions();
+            applyStream();
+        } else {
+            await selectPage(first.cid, first.page || 1);
+        }
+    }
+
+    /** 仅更新分P 高亮，不发请求（用于复用已取到的流） */
+    function highlightPage(cid) {
+        document.querySelectorAll('.page-chip').forEach(c => {
+            c.classList.toggle('active', Number(c.dataset.cid) === Number(cid));
+        });
+    }
+
+    // ---------- 评论（内嵌，与视频页合二为一） ----------
+    let comments = null;
+
+    function initComments() {
+        const box = document.getElementById('comments');
+        const pager = document.getElementById('cmtPager');
+        const pageInfo = document.getElementById('cmtPageInfo');
+        const countEl = document.getElementById('cmtCount');
+        const upMid = info.owner ? info.owner.mid : 0;
+
+        comments = createCommentSection(box, info.aid);
+        comments.onCount(total => {
+            countEl.textContent = total ? `共 ${fmtNum(total)} 条评论` : '';
+        });
+        comments.onPage((page, hasNext, hasPrev) => {
+            pager.style.display = (hasNext || hasPrev) ? 'flex' : 'none';
+            pageInfo.textContent = `第 ${page} 页`;
+            document.getElementById('cmtPrev').disabled = !hasPrev;
+            document.getElementById('cmtNext').disabled = !hasNext;
+        });
+        document.getElementById('cmtSort').onchange = e => {
+            comments.setSort(e.target.value);
+            comments.reset(upMid);
+        };
+        document.getElementById('cmtPrev').onclick = () => comments.goPage(comments.getPage() - 1, upMid);
+        document.getElementById('cmtNext').onclick = () => comments.goPage(comments.getPage() + 1, upMid);
+        comments.reset(upMid);
+    }
+
+    function renderInfo() {
+        document.getElementById('title').textContent = info.title || '';
+        document.getElementById('upName').textContent = (info.owner && info.owner.name) || '未知UP主';
+        document.getElementById('upFace').src = imgUrl(info.owner && info.owner.face);
+        const mid = info.owner ? info.owner.mid : 0;
+        document.getElementById('upMeta').textContent = 'UID: ' + mid + ' · ' + (info.tname || '');
+        document.getElementById('upSpace').href = '/resources/video/space.html?mid=' + mid;
+        document.getElementById('desc').textContent = info.desc || '（无简介）';
+
+        const s = info.stat || {};
+        document.getElementById('stats').innerHTML = `
+            <span>▶ 播放 ${fmtNum(s.view)}</span>
+            <span>💬 评论 ${fmtNum(s.reply)}</span>
+            <span>⭐ 收藏 ${fmtNum(s.favorite)}</span>
+            <span>🪙 投币 ${fmtNum(s.coin)}</span>
+            <span>👍 点赞 ${fmtNum(s.like)}</span>
+            <span>📅 ${fmtTime(info.pubdate)}</span>`;
+
+        // 分P 列表
+        const pages = info.pages || [];
+        const card = document.getElementById('pagesCard');
+        const box = document.getElementById('pages');
+        box.innerHTML = '';
+        if (pages.length > 1) {
+            card.style.display = 'block';
+            pages.forEach((p, idx) => {
+                // 接口对第一个分P 可能不返回 page 字段，用下标兜底
+                const no = p.page || (idx + 1);
+                const chip = document.createElement('div');
+                chip.className = 'page-chip';
+                chip.dataset.cid = p.cid;
+                chip.textContent = `P${no} ${p.part || ''}`;
+                chip.title = p.part || '';
+                chip.onclick = () => selectPage(p.cid, no);
+                box.appendChild(chip);
+            });
+        } else {
+            card.style.display = 'none';
+        }
+    }
+
+    async function selectPage(cid, pageNo) {
+        currentCid = cid;
+        // 高亮当前分P
+        document.querySelectorAll('.page-chip').forEach(c => {
+            c.classList.toggle('active', Number(c.dataset.cid) === Number(cid));
+        });
+        await fetchStream(cid);
+    }
+
+    async function fetchStream(cid) {
+        try {
+            playData = await api('/videoStreamInfo', { bvid: info.bvid, cid });
+        } catch (e) {
+            showError(statusEl, '获取播放地址失败：' + e.message);
+            return;
+        }
+        buildQualityOptions();
+        applyStream();
+    }
+
+    /** 依据后端返回的 availableQualities 生成清晰度下拉项 */
+    function buildQualityOptions() {
+        qualitySel.innerHTML = '';
+        // 后端已算好"实际可用清晰度"（降序），直接采用，避免前端猜错档位
+        const dash = playData && playData.dash;
+        const avail = (playData.availableQualities && playData.availableQualities.length)
+            ? playData.availableQualities
+            : (dash && dash.video ? [...new Set(dash.video.map(v => v.id))].sort((a, b) => b - a) : []);
+
+        if (avail.length) {
+            avail.forEach(id => {
+                const o = document.createElement('option');
+                o.value = id;
+                o.textContent = QN_NAME[id] || ('qn' + id);
+                qualitySel.appendChild(o);
+            });
+            // bestQuality 是服务端选定的默认档（免登录可用的最高清晰度）
+            const best = Number(playData.bestQuality || 0);
+            qualitySel.value = avail.includes(best) ? String(best) : String(avail[0]);
+        } else {
+            // MP4(html5) 兜底：只有单流
+            (playData.accept_quality || []).forEach((q, i) => {
+                const o = document.createElement('option');
+                o.value = q;
+                o.textContent = (playData.accept_description && playData.accept_description[i]) || ('qn' + q);
+                qualitySel.appendChild(o);
+            });
+            qualitySel.value = String(playData.quality || 32);
+        }
+        refreshCodecOptions();
+    }
+
+    function refreshCodecOptions() {
+        const qn = Number(qualitySel.value);
+        codecSel.innerHTML = '';
+        const vids = (playData && playData.dash && playData.dash.video || []).filter(v => v.id === qn);
+        if (vids.length) {
+            vids.forEach(v => {
+                const o = document.createElement('option');
+                o.value = v.codecid;
+                o.textContent = CODEC_NAME[v.codecid] || ('codec' + v.codecid);
+                codecSel.appendChild(o);
+            });
+            // 默认选 AVC/H.264(7)：兼容性最好。
+            // HEVC(12)/AV1(13) 虽然更省带宽，但部分浏览器/设备不支持，
+            // 选中后会直接黑屏报 DEMUXER_ERROR，故只在用户手动切换时才用。
+            const avc = vids.find(v => v.codecid === 7);
+            codecSel.value = String((avc || vids[0]).codecid);
+            codecSel.disabled = false;
+        } else {
+            const o = document.createElement('option');
+            o.textContent = '默认';
+            codecSel.appendChild(o);
+            codecSel.disabled = true;
+        }
+        codecSel.onchange = applyStream;
+    }
+
+    /** 把选中的视频流与音频流交给播放器 */
+    function applyStream() {
+        const qn = Number(qualitySel.value);
+        const codecid = Number(codecSel.value);
+        let vUrl = '', aUrl = '';
+
+        const dash = playData && playData.dash;
+        if (dash && dash.video && dash.video.length) {
+            // 优先精确匹配清晰度；匹配不到就退回最高可用清晰度，避免直接失败
+            let cands = dash.video.filter(v => v.id === qn);
+            if (!cands.length) {
+                const best = Math.max(...dash.video.map(v => v.id));
+                cands = dash.video.filter(v => v.id === best);
+            }
+            const pick = cands.find(v => v.codecid === codecid) || cands[0];
+            if (pick) vUrl = streamBaseUrl(pick);
+            if (dash.audio && dash.audio.length) {
+                // 选码率最高的音频
+                const a = dash.audio.slice().sort((x, y) => (y.bandwidth || 0) - (x.bandwidth || 0))[0];
+                aUrl = streamBaseUrl(a);
+            }
+        } else if (playData && playData.durl && playData.durl.length) {
+            vUrl = playData.durl[0].url;
+        }
+
+        if (!vUrl) {
+            playMsg.textContent = '没有拿到可用的视频流地址。';
+            return;
+        }
+
+        const wasPlaying = !player.paused && player.currentTime > 0;
+        player.src = streamUrl(vUrl);
+        if (wasPlaying) player.play().catch(() => {});
+
+        // DASH 视频流不含音轨，单独挂一个 <audio> 跟随 <video>（主时钟）播放。
+        // 同步策略见 bindSync：playbackRate 微调收敛漂移，避免跳表。
+        if (aUrl) {
+            if (!audioEl) {
+                audioEl = document.createElement('audio');
+                audioEl.preload = 'auto';
+                audioEl.volume = player.volume;
+                document.body.appendChild(audioEl);
+                bindSync();
+            }
+            audioEl.src = streamUrl(aUrl);
+        } else {
+            if (audioEl) { audioEl.pause(); audioEl.removeAttribute('src'); }
+        }
+
+        streamInfo.textContent = `当前: ${QN_NAME[qn] || qn} · ${CODEC_NAME[codecid] || '默认'}`;
+    }
+
+    /**
+     * 双流同步：以 <video> 为主时钟，音频用 playbackRate 微调（0.9~1.1 倍速内
+     * 人耳难以察觉）连续收敛漂移；只有漂移 > 0.5s（seek / 音频卡缓冲）才直接对表。
+     * requestVideoFrameCallback 按视频帧节拍跑、节流到 ~15Hz；不支持时退回 rAF。
+     */
+    function bindSync() {
+        let scheduled = false;
+        let lastTick = 0;
+
+        const scheduleSync = () => {
+            if (scheduled || !audioEl || player.paused) return;
+            scheduled = true;
+            const tick = () => {
+                scheduled = false;
+                const now = performance.now();
+                if (now - lastTick < 66) { scheduleSync(); return; }
+                lastTick = now;
+                correct();
+            };
+            if (player.requestVideoFrameCallback) player.requestVideoFrameCallback(tick);
+            else requestAnimationFrame(tick);
+        };
+
+        const correct = () => {
+            if (!audioEl || audioEl.readyState === 0 || player.paused) return;
+            const delta = audioEl.currentTime - player.currentTime;
+            if (Math.abs(delta) > 0.5) {
+                // 漂移过大：直接对表（音频 seek 无感知，因为它没在追播）
+                audioEl.currentTime = player.currentTime;
+                audioEl.playbackRate = player.playbackRate || 1;
+            } else if (Math.abs(delta) > 0.05) {
+                // 音频偏慢(delta>0)就放慢、偏快就加速，让漂移自然归零
+                audioEl.playbackRate = (player.playbackRate || 1) *
+                    Math.max(0.9, Math.min(1.1, 1 - delta * 0.8));
+            } else {
+                audioEl.playbackRate = player.playbackRate || 1;
+            }
+            scheduleSync();
+        };
+
+        player.addEventListener('play', () => {
+            if (!audioEl) return;
+            if (audioEl.readyState >= 2 && Math.abs(audioEl.currentTime - player.currentTime) > 0.2) {
+                audioEl.currentTime = player.currentTime;
+            }
+            audioEl.playbackRate = player.playbackRate || 1;
+            lastTick = 0;
+            audioEl.play().catch(() => {});
+            scheduleSync();
+        });
+        player.addEventListener('pause', () => {
+            if (!audioEl) return;
+            audioEl.pause();
+            audioEl.playbackRate = 1;
+        });
+        player.addEventListener('seeked', () => {
+            if (!audioEl || audioEl.readyState === 0) return;
+            if (Math.abs(audioEl.currentTime - player.currentTime) > 0.2) {
+                audioEl.currentTime = player.currentTime;
+            }
+            audioEl.playbackRate = player.playbackRate || 1;
+        });
+        player.addEventListener('ratechange', () => {
+            if (!audioEl) return;
+            // 播放器变速时音频同步跟倍速（纠偏逻辑会在 0.05s 内把微调速率清掉）
+            audioEl.playbackRate = player.playbackRate || 1;
+        });
+    }
+
+    qualitySel.onchange = () => { refreshCodecOptions(); applyStream(); };
+
+    // 顶栏搜索：统一按关键词搜索
+    bindSearchBox('kw', 'go');
+
+    boot();
+</script>
+</body>
+</html>

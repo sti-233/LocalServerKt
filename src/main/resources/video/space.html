@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>账号查询 / 空间查看 - B站</title>
+    <script src="/resources/config.js"></script>
+    <link rel="stylesheet" href="/resources/video/video.css">
+</head>
+<body>
+<div class="topbar">
+    <div class="topbar-left">
+        <h1>空间查看</h1>
+    </div>
+    <div class="search-container">
+        <input id="kw" class="search-box" placeholder="搜索视频、用户…">
+        <button id="go" class="search-btn">🔍</button>
+    </div>
+</div>
+
+<div class="container">
+    <div id="status"></div>
+
+    <div id="profile" style="display:none">
+        <div class="card">
+            <div class="space-header">
+                <img class="face" id="face" referrerpolicy="no-referrer" alt="">
+                <div style="flex:1;min-width:240px">
+                    <div class="sname" id="name"></div>
+                    <div class="ssign" id="sign"></div>
+                    <div class="chips" id="chips"></div>
+                </div>
+            </div>
+            <div class="stat-grid" id="statGrid"></div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="video">投稿视频</button>
+            <button class="tab" data-tab="dynamic">动态</button>
+        </div>
+
+        <!-- 投稿视频 -->
+        <div class="card" id="videoPane">
+            <div class="cmt-toolbar">
+                <label class="small muted">排序</label>
+                <select id="order" class="select">
+                    <option value="pubdate">最新发布</option>
+                    <option value="click">最多播放</option>
+                </select>
+                <span class="small muted" id="countInfo" style="margin-left:auto"></span>
+            </div>
+            <div id="videos"></div>
+            <div class="pager" id="pager" style="display:none">
+                <button class="btn" id="prev">上一页</button>
+                <span class="info" id="pageInfo"></span>
+                <button class="btn" id="next">下一页</button>
+            </div>
+        </div>
+
+        <!-- 动态 -->
+        <div class="card" id="dynamicPane" style="display:none">
+            <div class="cmt-toolbar">
+                <span class="small muted" id="dynInfo"></span>
+                <button class="btn" id="dynRefresh" style="margin-left:auto">刷新</button>
+            </div>
+            <div id="dynamics"></div>
+            <div class="pager" id="dynPager" style="display:none">
+                <button class="btn" id="dynMore">加载更多</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/resources/video/common.js"></script>
+<script>
+    const statusEl = document.getElementById('status');
+    const profile = document.getElementById('profile');
+    const videosEl = document.getElementById('videos');
+    const pager = document.getElementById('pager');
+    const pageInfo = document.getElementById('pageInfo');
+    const countInfo = document.getElementById('countInfo');
+    const orderSel = document.getElementById('order');
+    let mid = 0, page = 1, PS = 20;
+    // 空间主人的头像/昵称，动态卡片复用
+    let spaceFace = '', spaceName = '';
+
+    async function boot() {
+        const sp = new URLSearchParams(location.search);
+        const m = sp.get('mid');
+        if (!m || !/^\d+$/.test(m)) {
+            // 空间页必须由具体用户进入，引导用户去搜用户
+            showHint(statusEl, '请先搜索并选择一个用户，或从视频页点击 UP 主进入');
+            const box = document.createElement('div');
+            box.className = 'card';
+            box.innerHTML = `
+                <div class="small muted" style="margin-bottom:9px">搜索用户 / UP主</div>
+                <div style="display:flex;gap:9px;flex-wrap:wrap">
+                    <input id="spaceKw" class="input" style="flex:1;min-width:200px" placeholder="输入昵称或关键词…">
+                    <button id="spaceGo" class="btn primary">搜索用户</button>
+                </div>`;
+            statusEl.appendChild(box);
+            const si = document.getElementById('spaceKw');
+            const goUser = () => {
+                const v = si.value.trim();
+                if (!v) return;
+                location.href = '/resources/video/search.html?keyword=' + encodeURIComponent(v) + '&type=user';
+            };
+            document.getElementById('spaceGo').onclick = goUser;
+            si.addEventListener('keydown', e => { if (e.key === 'Enter') goUser(); });
+            return;
+        }
+        mid = Number(m);
+        showSpinner(statusEl);
+        profile.style.display = 'block';
+        // 资料与投稿分开加载：任一被风控不影响另一个展示
+        try {
+            const u = await api('/userInfo', { mid });
+            statusEl.innerHTML = '';
+            // profileAvailable=false 表示只拿到了粉丝数等零散数据（通常是 B 站风控）
+            if (u.profileAvailable === false) {
+                renderFallback(u);
+                showError(statusEl, '用户资料暂时获取失败（B站风控），仅显示部分数据，稍后重试通常可恢复。');
+            } else {
+                renderProfile(u);
+            }
+        } catch (e) {
+            statusEl.innerHTML = '';
+            showError(statusEl, '资料获取失败：' + e.message + '（B站风控，稍后重试通常可恢复）');
+            renderFallback({ mid });
+        }
+        loadVideos(1);
+    }
+
+    /** 资料拿不到时的降级展示：只显示 UID 与能拿到的统计 */
+    function renderFallback(u) {
+        document.getElementById('name').textContent = 'UID ' + (u.mid || mid);
+        document.getElementById('sign').textContent = '';
+        document.getElementById('chips').innerHTML = '';
+        const stats = [];
+        if (u.fans != null) stats.push(`<div class="sitem"><b>${fmtNum(u.fans)}</b><span>粉丝</span></div>`);
+        if (u.following != null) stats.push(`<div class="sitem"><b>${fmtNum(u.following)}</b><span>关注</span></div>`);
+        stats.push(`<div class="sitem"><b>${u.mid || mid}</b><span>UID</span></div>`);
+        document.getElementById('statGrid').innerHTML = stats.join('');
+    }
+
+    function renderProfile(u) {
+        // 供动态卡片显示作者头像/昵称
+        spaceFace = u.face || '';
+        spaceName = u.name || '';
+        document.getElementById('face').src = imgUrl(u.face);
+        document.getElementById('name').textContent = u.name || ('UID ' + u.mid);
+        document.getElementById('sign').textContent = u.sign || '（这个人很神秘，什么都没有写）';
+
+        // 徽章
+        const chips = [];
+        chips.push(`<span class="badge">Lv${u.level || 0}</span>`);
+        if (u.sex) chips.push(`<span class="badge">${esc(u.sex)}</span>`);
+        if (u.vip && (u.vip.status === 1 || u.vip.type > 0)) {
+            const txt = u.vip.labelText || '大会员';
+            chips.push(`<span class="badge pink">${esc(txt)}</span>`);
+        }
+        if (u.official && (u.official.type >= 0 || u.official.role > 0)) {
+            const t = u.official.title || '';
+            const d = u.official.desc || '';
+            chips.push(`<span class="badge">${esc(t || d || '认证')}</span>`);
+        }
+        if (u.is_senior_member === 1) chips.push('<span class="badge">硬核会员</span>');
+        if (u.nameplate && u.nameplate.name) chips.push(`<span class="badge">${esc(u.nameplate.name)}</span>`);
+        if (u.live_room && u.live_room.liveStatus === 1) chips.push('<span class="badge pink">直播中</span>');
+        if (u.silence === 1) chips.push('<span class="badge pink">账号被封禁</span>');
+        document.getElementById('chips').innerHTML = chips.join('');
+
+        // 统计条（粉丝 / 关注 / 投稿 / 生日；取不到的项不显示）
+        const stats = [];
+        if (u.fans != null) stats.push(`<div class="sitem"><b>${fmtNum(u.fans)}</b><span>粉丝</span></div>`);
+        if (u.following != null) stats.push(`<div class="sitem"><b>${fmtNum(u.following)}</b><span>关注</span></div>`);
+        if (u.archiveCount != null && u.archiveCount > 0) stats.push(`<div class="sitem"><b>${fmtNum(u.archiveCount)}</b><span>投稿</span></div>`);
+        if (u.totalLike != null) stats.push(`<div class="sitem"><b>${fmtNum(u.totalLike)}</b><span>获赞</span></div>`);
+        if (u.totalView != null) stats.push(`<div class="sitem"><b>${fmtNum(u.totalView)}</b><span>播放</span></div>`);
+        if (u.birthday) stats.push(`<div class="sitem"><b>${esc(u.birthday)}</b><span>生日</span></div>`);
+        stats.push(`<div class="sitem"><b>${u.mid}</b><span>UID</span></div>`);
+        document.getElementById('statGrid').innerHTML = stats.join('');
+    }
+
+    function vcard(v) {
+        // 空间投稿字段与推荐流不同：cover/duration/param 等；title 已是纯文本
+        return videoCard({ ...v, pic: v.cover }, { rawTitle: true, play: v.play, duration: v.duration, face: spaceFace });
+    }
+
+    /**
+     * 加载投稿。APP 接口用 aid 游标翻页（cursor 传上一页最后一条的 aid），
+     * 因此这里维护一个游标栈以支持"上一页"。
+     */
+    let cursorStack = [null];   // cursorStack[i] = 第 i+1 页要用的游标
+
+    async function loadVideos(p) {
+        page = Math.max(1, p);
+        showSpinner(videosEl);
+        pager.style.display = 'none';
+        try {
+            const params = { mid, pageSize: PS, order: orderSel.value };
+            const cur = cursorStack[page - 1];
+            if (cur) params.cursor = cur;
+            const data = await api('/userSpace', params);
+            const list = data.items || [];
+
+            videosEl.innerHTML = '';
+            if (!list.length) {
+                showHint(videosEl, '该用户没有公开投稿');
+                countInfo.textContent = '';
+                return;
+            }
+            const grid = document.createElement('div');
+            grid.className = 'grid';
+            list.forEach(v => grid.appendChild(vcard(v)));
+            videosEl.appendChild(grid);
+
+            const total = data.count || 0;
+            countInfo.textContent = `共 ${fmtNum(total)} 个投稿`;
+            // 记录下一页游标
+            if (data.hasNext && data.nextCursor) cursorStack[page] = data.nextCursor;
+
+            if (page > 1 || data.hasNext) {
+                pager.style.display = 'flex';
+                pageInfo.textContent = `第 ${page} 页`;
+                document.getElementById('prev').disabled = page <= 1;
+                document.getElementById('next').disabled = !data.hasNext;
+            }
+        } catch (e) {
+            showError(videosEl, '获取投稿失败：' + e.message);
+            countInfo.textContent = '';
+        }
+    }
+
+    // 切换排序/重新加载时清空游标栈
+    function reload() { cursorStack = [null]; page = 1; loadVideos(1); }
+
+    orderSel.onchange = reload;
+    document.getElementById('prev').onclick = () => loadVideos(page - 1);
+    document.getElementById('next').onclick = () => loadVideos(page + 1);
+
+    // ---------- 动态 ----------
+    const dynEl = document.getElementById('dynamics');
+    const dynPager = document.getElementById('dynPager');
+    const dynInfo = document.getElementById('dynInfo');
+    let dynCursor = null, dynLoaded = false, dynLoading = false;
+
+    /** 单条动态卡片 */
+    function dynCard(d) {
+        const el = document.createElement('div');
+        el.className = 'dyn';
+
+        // 顶部：头像 + 昵称 + 时间
+        const head = `
+            <div class="dyn-head">
+                <img class="dyn-face" src="${esc(imgUrl(spaceFace))}" referrerpolicy="no-referrer" alt="">
+                <div>
+                    <div class="dyn-name">${esc(spaceName || ('UID ' + mid))}</div>
+                    <div class="dyn-time">${esc(d.pubText || fmtTime(d.pubTs))}</div>
+                </div>
+                ${d.isTop ? '<span class="badge" style="margin-left:auto">置顶</span>' : ''}
+            </div>`;
+
+        // 正文（转发动态的正文里常只有"转发微博"之类的占位，做折叠展示）
+        const text = d.text || '';
+        const textHtml = text
+            ? `<div class="dyn-text">${esc(text).replace(/\n/g, '<br>')}</div>`
+            : '';
+
+        // 图片：最多展示 9 张
+        const pics = (d.pics || []).slice(0, 9);
+        const picsHtml = pics.length
+            ? `<div class="dyn-pics">${pics.map(p =>
+                `<img src="${esc(imgUrl(p.src))}" referrerpolicy="no-referrer" loading="lazy" alt="">`).join('')}</div>`
+            : '';
+
+        // 投稿视频（动态里附带的视频）
+        const a = d.archive;
+        const archHtml = a ? `
+            <div class="dyn-archive" onclick="location.href='/resources/video/watch.html?bvid=${encodeURIComponent(a.bvid)}'">
+                <img src="${esc(imgUrl(a.cover))}" referrerpolicy="no-referrer" loading="lazy" alt="">
+                <div class="dyn-archive-body">
+                    <div class="dyn-archive-title">${esc(a.title)}</div>
+                    <div class="small muted">▶ ${esc(a.play || '')} · 💬 ${esc(a.danmaku || '')} · ${esc(a.duration || '')}</div>
+                </div>
+            </div>` : '';
+
+        // 转发内容
+        const f = d.forwarded;
+        const fwdHtml = f ? `
+            <div class="dyn-forward">
+                <div class="small muted" style="margin-bottom:5px">@${esc(f.author)}</div>
+                ${f.text ? `<div class="dyn-text">${esc(f.text).replace(/\n/g, '<br>')}</div>` : ''}
+                ${(f.pics || []).length ? `<div class="dyn-pics">${f.pics.slice(0, 9).map(p =>
+                    `<img src="${esc(imgUrl(p))}" referrerpolicy="no-referrer" loading="lazy" alt="">`).join('')}</div>` : ''}
+                ${f.archive ? `<div class="small muted" style="margin-top:6px">📺 ${esc(f.archive.title)}</div>` : ''}
+            </div>` : '';
+
+        el.innerHTML = head + textHtml + picsHtml + archHtml + fwdHtml + `
+            <div class="dyn-foot">
+                <span>👍 ${fmtNum(d.like)}</span>
+                <span>💬 ${fmtNum(d.comment)}</span>
+                <span>🔁 ${fmtNum(d.forward)}</span>
+            </div>`;
+        return el;
+    }
+
+    async function loadDynamics(cursor, append) {
+        if (dynLoading) return;
+        dynLoading = true;
+        document.getElementById('dynMore').disabled = true;
+        if (!append) showSpinner(dynEl);
+        try {
+            const params = { mid };
+            if (cursor) params.cursor = cursor;
+            const data = await api('/userDynamic', params);
+            const list = data.items || [];
+            if (!append) dynEl.innerHTML = '';
+
+            if (!list.length) {
+                if (!append) showHint(dynEl, '该用户没有公开动态（或B站风控，可点"刷新"重试）');
+                dynPager.style.display = 'none';
+                dynInfo.textContent = '';
+                return;
+            }
+            list.forEach(d => dynEl.appendChild(dynCard(d)));
+            dynLoaded = true;
+            dynCursor = data.nextCursor || null;
+            dynInfo.textContent = `已加载 ${dynEl.querySelectorAll('.dyn').length} 条动态`;
+            dynPager.style.display = data.hasMore ? 'flex' : 'none';
+        } catch (e) {
+            if (!append) showError(dynEl, '获取动态失败：' + e.message);
+            else showError(dynEl, '加载更多失败：' + e.message);
+        } finally {
+            dynLoading = false;
+            document.getElementById('dynMore').disabled = false;
+        }
+    }
+
+    document.getElementById('dynMore').onclick = () => loadDynamics(dynCursor, true);
+    document.getElementById('dynRefresh').onclick = () => {
+        dynCursor = null;
+        loadDynamics(null, false);
+    };
+
+    // 标签页切换（动态首次进入时才加载）
+    function switchTab(t) {
+        document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === t));
+        document.getElementById('videoPane').style.display = t === 'video' ? 'block' : 'none';
+        document.getElementById('dynamicPane').style.display = t === 'dynamic' ? 'block' : 'none';
+        if (t === 'dynamic' && !dynLoaded) loadDynamics(null, false);
+    }
+
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.onclick = () => switchTab(tab.dataset.tab);
+    });
+
+    // 顶栏搜索：统一按关键词搜索
+    bindSearchBox('kw', 'go');
+
+    // 注意：必须等 boot() 把 mid 设好再切标签，
+    // 否则 loadDynamics 会拿着 mid=0 去请求（表现为"加载动态失败"）。
+    const wantDynamic = new URLSearchParams(location.search).get('tab') === 'dynamic';
+    boot().then(() => {
+        if (wantDynamic) switchTab('dynamic');
+    });
+</script>
+</body>
+</html>

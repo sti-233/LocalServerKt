@@ -589,7 +589,7 @@ object Ai {
     // B 站：复用本仓库 Video 模块的 WBI 签名搜索（lib/bilibili/Search.kt），title 含 <em> 标签需去掉
     private suspend fun platformBilibili(query: String, max: Int): List<SearchResult> =
         runCatching {
-            Search.searchByType(query)?.result.orEmpty().mapNotNull { r ->
+            Search.parseVideos(Search.searchVideo(query)).mapNotNull { r ->
                 val url = "https://www.bilibili.com/video/${r.bvid}"
                 SearchResult(url, r.title.replace(Regex("<[^>]+>"), ""), null)
             }.take(max)

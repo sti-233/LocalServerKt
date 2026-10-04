@@ -54,8 +54,28 @@ LocalServerKt 是使用 Ktor 对 [LocalServer](https://github.com/dfc2333/LocalS
 
 ### Video
 
-- `/searchByType?keyword={}`
-  - B 站视频搜索（WBI 签名请求）
+- `/video`
+  - 重定向至视频页面（推荐流 + 搜索入口）
+- `/recommend?fresh={?}&pageSize={?}`
+  - 首页推荐流，`fresh` 递增翻页；被风控时自动降级到热门榜
+- `/searchByType?keyword={}&type={video|user}&page={?}`
+  - 统一搜索入口（WBI 签名），`type=user` 搜用户/UP主
+- `/searchUser?keyword={}&page={?}&userType={?}`
+  - 用户搜索（等价于 `type=user`）
+- `/videoInfo?bvid={}|aid={}`
+  - 视频详情（分P、UP主、统计）
+- `/videoStreamInfo?bvid={}&cid={}&qn={?}`
+  - 取流信息（DASH 多清晰度）；默认按 1080P 协商，免登录 1080P（`try_look=1` + `fnval=4048`），1080P+ 需大会员登录；响应附 `availableQualities` 与 `bestQuality`，并预取首段流数据
+- `/videoStream?url={}`
+  - 取流代理（透传 Range，可拖动进度条；仅放行 B 站 CDN 域名）
+- `/videoComments?aid={}&page={?}&sort={?}`
+  - 视频评论（游标翻页，`sort` 3=热度 / 2=时间 / 1=混合）
+- `/userInfo?mid={}`
+  - 账号资料（App 端接口优先，失败降级 Web 端）
+- `/userSpace?mid={}&cursor={?}&order={?}&pageSize={?}`
+  - 空间投稿（App 端游标翻页优先，失败降级 Web 端页码翻页）
+- `/userDynamic?mid={}&cursor={?}`
+  - 空间动态（图文 / 视频投稿 / 转发；内置重试应对 B 站软限流）
 
 ### Ai
 

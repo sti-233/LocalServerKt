@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>B站视频 - 推荐</title>
+    <script src="/resources/config.js"></script>
+    <link rel="stylesheet" href="/resources/video/video.css">
+</head>
+<body>
+<div class="topbar">
+    <div class="topbar-left">
+        <img class="bili-logo" id="biliLogo" alt="BiliBili">
+        <h1>BiliBili</h1>
+    </div>
+    <div class="search-container">
+        <input id="kw" class="search-box" placeholder="搜索视频、用户…">
+        <button id="go" class="search-btn">🔍</button>
+    </div>
+</div>
+
+<div class="container">
+    <div id="status"></div>
+    <div id="feed"></div>
+    <div style="text-align:center;margin:18px 0 28px">
+        <button class="btn primary" id="more">换一批 / 加载更多</button>
+    </div>
+</div>
+
+<script src="/resources/video/common.js"></script>
+<script>
+    document.getElementById('biliLogo').src = imgUrl('https://i0.hdslb.com/bfs/static/jinkela/long/images/favicon.ico');
+    const feedEl = document.getElementById('feed');
+    const statusEl = document.getElementById('status');
+    const moreBtn = document.getElementById('more');
+
+    let fresh = 0;
+    let loading = false;
+
+    async function load() {
+        if (loading) return;
+        loading = true;
+        moreBtn.disabled = true;
+        moreBtn.textContent = '加载中…';
+        // 首次加载显示骨架，之后是追加
+        if (fresh === 0) showSpinner(feedEl);
+        try {
+            const data = await api('/recommend', { fresh, pageSize: 12 });
+            const items = data.items || [];
+            if (fresh === 0) feedEl.innerHTML = '';
+            if (!items.length) {
+                if (fresh === 0) showHint(feedEl, '暂时没有推荐内容，稍后再试');
+                moreBtn.style.display = 'none';
+                return;
+            }
+            let grid = feedEl.querySelector('.grid');
+            if (!grid) {
+                grid = document.createElement('div');
+                grid.className = 'grid';
+                feedEl.appendChild(grid);
+            }
+            items.forEach(v => grid.appendChild(videoCard(v)));
+            fresh++;
+            if (fresh >= 10) moreBtn.style.display = 'none';
+        } catch (e) {
+            if (fresh === 0) {
+                feedEl.innerHTML = '';
+                showError(statusEl, '加载推荐失败：' + e.message);
+            } else {
+                showError(statusEl, '加载更多失败：' + e.message);
+            }
+        } finally {
+            loading = false;
+            moreBtn.disabled = false;
+            moreBtn.textContent = '换一批 / 加载更多';
+        }
+    }
+
+    moreBtn.onclick = load;
+    bindSearchBox('kw', 'go');
+
+    // 滚到底部自动加载更多
+    window.addEventListener('scroll', () => {
+        if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 320) load();
+    });
+
+    load();
+</script>
+</body>
+</html>

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>搜索 - B站</title>
+    <script src="/resources/config.js"></script>
+    <link rel="stylesheet" href="/resources/video/video.css">
+</head>
+<body>
+<div class="topbar">
+    <div class="topbar-left">
+        <h1>搜索</h1>
+    </div>
+    <div class="search-container">
+        <input id="kw" class="search-box" placeholder="搜索视频、用户…">
+        <button id="go" class="search-btn">🔍</button>
+    </div>
+</div>
+
+<div class="container">
+    <div class="tabs">
+        <button class="tab active" data-type="video">视频</button>
+        <button class="tab" data-type="user">用户 / UP主</button>
+    </div>
+
+    <div id="status"></div>
+    <div id="results"></div>
+    <div class="pager" id="pager" style="display:none">
+        <button class="btn" id="prev">上一页</button>
+        <span class="info" id="pageInfo"></span>
+        <button class="btn" id="next">下一页</button>
+    </div>
+</div>
+
+<script src="/resources/video/common.js"></script>
+<script>
+    const kw = document.getElementById('kw');
+    const results = document.getElementById('results');
+    const status = document.getElementById('status');
+    const pager = document.getElementById('pager');
+    const pageInfo = document.getElementById('pageInfo');
+
+    const MAX_PAGE = 50;      // 与后端 Search.MAX_PAGE 一致
+    let keyword = '', page = 1, numPages = 1;
+    let type = 'video';       // 'video' | 'user'
+
+    async function search(p) {
+        if (!keyword) return;
+        page = p;
+        showSpinner(results);
+        pager.style.display = 'none';
+        status.innerHTML = '';
+        try {
+            // 视频与用户共用同一接口，只靠 type 区分
+            const data = await api('/searchByType', { keyword, page, type });
+            const list = data.result || [];
+            numPages = Math.min(data.numPages || 1, MAX_PAGE);
+            results.innerHTML = '';
+
+            if (!list.length) {
+                showHint(results, type === 'user' ? '没有找到相关用户' : '没有找到相关视频');
+                return;
+            }
+
+            const grid = document.createElement('div');
+            if (type === 'user') {
+                grid.className = 'ugrid';
+                list.forEach(u => grid.appendChild(userCard(u)));
+            } else {
+                grid.className = 'grid';
+                // 搜索接口的字段与推荐流不同（author/play 是平铺的），用 opts 适配共享卡片
+                list.forEach(r => grid.appendChild(videoCard(r, { play: r.play, duration: r.duration })));
+            }
+            results.appendChild(grid);
+
+            pager.style.display = 'flex';
+            const unit = type === 'user' ? '个用户' : '个视频';
+            pageInfo.textContent = `第 ${data.page || page} / ${numPages} 页 · 共 ${fmtNum(data.numResults)} ${unit}`;
+            document.getElementById('prev').disabled = page <= 1;
+            document.getElementById('next').disabled = page >= numPages;
+        } catch (e) {
+            showError(results, '搜索失败：' + e.message);
+        }
+    }
+
+    // 切换视频/用户标签，保持当前关键词重新搜索
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.onclick = () => {
+            if (tab.dataset.type === type) return;
+            type = tab.dataset.type;
+            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+            history.replaceState(null, '', `?keyword=${encodeURIComponent(keyword)}&type=${type}`);
+            if (keyword) search(1);
+        };
+    });
+
+    // 搜索结果页刻意"就地重新搜索"（不跳转），输入语义与其它页一致，都是纯关键词
+    function runSearch() {
+        keyword = kw.value.trim();
+        if (!keyword) { showHint(results, '请输入关键词'); return; }
+        history.replaceState(null, '', `?keyword=${encodeURIComponent(keyword)}&type=${type}`);
+        search(1);
+    }
+    document.getElementById('go').onclick = runSearch;
+    kw.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+    document.getElementById('prev').onclick = () => search(Math.max(1, page - 1));
+    document.getElementById('next').onclick = () => search(Math.min(numPages, page + 1));
+
+    // URL 带 keyword 时自动搜索
+    const sp = new URLSearchParams(location.search);
+    const q = sp.get('keyword');
+    const t = sp.get('type');
+    if (t === 'user' || t === 'video') {
+        type = t;
+        document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.type === type));
+    }
+    if (q) { kw.value = q; runSearch(); }
+    else showHint(results, '输入关键词后回车搜索');
+</script>
+</body>
+</html>
