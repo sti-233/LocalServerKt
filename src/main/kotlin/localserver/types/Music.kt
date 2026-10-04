@@ -1,6 +1,6 @@
 // Copyright (c) 2025 guang233
 // This code is licensed under MIT license (see LICENSE for details)
-package localserver.lib.NeteaseMusicApi.model
+package localserver.types
 
 import kotlinx.serialization.Serializable
 
@@ -16,10 +16,3 @@ data class Lyric(
 )
 
 @Serializable data class MusicUrl(val url: String, val level: String)
-
-@Serializable
-data class MusicDownloadRules(
-    val isSaveLrc: Boolean, val isSaveTlLrc: Boolean, val isSaveRomaLrc: Boolean, val isSaveYrc: Boolean,
-    val fileName: String, val delimiter: String,
-    val encoding: String, val concurrentDownloads: Int = 1
-)

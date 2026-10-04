@@ -2,71 +2,72 @@
 // This code is licensed under MIT license (see LICENSE for details)
 package localserver.lib.NeteaseMusicApi.utils
 
-import localserver.lib.NeteaseMusicApi.model.*
-import org.json.JSONObject
+import localserver.types.*
+import kotlinx.serialization.json.*
 
 object Decrypt {
+    private val json = Json
+
+    /** 取子字段为字符串，缺失或非字符串返回 null */
+    private fun JsonObject?.str(key: String): String? =
+        this?.get(key)?.jsonPrimitive?.contentOrNull
+
+    /** 取子字段为数字（Long），缺失返回 0 */
+    private fun JsonObject?.long(key: String): Long =
+        this?.get(key)?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
+
+    private fun parseObject(body: String): JsonObject =
+        json.parseToJsonElement(body).jsonObject
 
     fun decryptSearch(encryptedBody: String): List<Music> {
-        val decryptedJson = AESECBHelper.decrypt(encryptedBody)
-        val data = JSONObject(decryptedJson)
+        val data = parseObject(AESECBHelper.decrypt(encryptedBody))
 
-        if (data.optInt("code") != 200) {
-            throw Exception("Invalid data: ${data.optString("message", "Unknown error")}")
+        if (data.str("code")?.toIntOrNull() != 200) {
+            throw Exception("Invalid data: ${data.str("message") ?: "Unknown error"}")
         }
 
-        return data.optJSONObject("data")
-            ?.optJSONArray("resources")
-            ?.let { resources ->
-                List(resources.length()) { i ->
-                    resources.getJSONObject(i)
-                        .optJSONObject("baseInfo")
-                        ?.optJSONObject("simpleSongData")
-                        ?.let { simpleSongData ->
-                            parseSong(simpleSongData)
-                        } ?: throw IllegalStateException("Missing song data at index $i")
-                }
-            } ?: throw IllegalStateException("No resources found in response")
+        val resources = data["data"]?.jsonObject?.get("resources")?.jsonArray
+            ?: throw IllegalStateException("No resources found in response")
+        return resources.indices.map { i ->
+            val simpleSongData = resources[i].jsonObject
+                .get("baseInfo")?.jsonObject?.get("simpleSongData")?.jsonObject
+                ?: throw IllegalStateException("Missing song data at index $i")
+            parseSong(simpleSongData)
+        }
     }
 
-    private fun parseSong(simpleSongData: JSONObject): Music {
-        val albumObj = simpleSongData.optJSONObject("al")
+    private fun parseSong(simpleSongData: JsonObject): Music {
+        val albumObj = simpleSongData["al"]?.jsonObject
             ?: throw IllegalStateException("Missing album data")
 
         val album = Album(
-            name = albumObj.optString("name", ""),
-            id = albumObj.optLong("id", 0),
-            picUrl = albumObj.optString("picUrl", "")
+            name = albumObj.str("name").orEmpty(),
+            id = albumObj.long("id"),
+            picUrl = albumObj.str("picUrl").orEmpty()
         )
 
-        val artists = simpleSongData.optJSONArray("ar")?.let { arArray ->
-            List(arArray.length()) { j ->
-                val artist = arArray.getJSONObject(j)
-                Artist(
-                    name = artist.optString("name", ""),
-                    id = artist.optLong("id", 0)
-                )
-            }
+        val artists = simpleSongData["ar"]?.jsonArray?.map { a ->
+            val artist = a.jsonObject
+            Artist(name = artist.str("name").orEmpty(), id = artist.long("id"))
         } ?: emptyList()
 
         return Music(
-            name = simpleSongData.optString("name", ""),
+            name = simpleSongData.str("name").orEmpty(),
             artists = artists,
             album = album,
-            id = simpleSongData.optLong("id", 0)
+            id = simpleSongData.long("id")
         )
     }
 
     fun decryptLytic(encryptedBody: String): Lyric {
-        val decryptedJson = AESECBHelper.decrypt(encryptedBody)
-        val data = JSONObject(decryptedJson)
-        val lrc = parseMixedLyrics(data.optJSONObject("lrc")?.optString("lyric").orEmpty())
-        val tlyric = data.optJSONObject("tlyric")?.optString("lyric").orEmpty()
-        val romalrc = data.optJSONObject("romalrc")?.optString("lyric").orEmpty()
+        val data = parseObject(AESECBHelper.decrypt(encryptedBody))
+        val lrc = parseMixedLyrics(data["lrc"]?.jsonObject?.str("lyric").orEmpty())
+        val tlyric = data["tlyric"]?.jsonObject?.str("lyric").orEmpty()
+        val romalrc = data["romalrc"]?.jsonObject?.str("lyric").orEmpty()
 
-        val yrc = convertMultiLineToLrc(parseMixedLyrics(data.optJSONObject("yrc")?.optString("lyric").orEmpty()))
-        val ytlrc = convertMultiLineToLrc(data.optJSONObject("ytlrc")?.optString("lyric").orEmpty())
-        val yromalrc = convertMultiLineToLrc(data.optJSONObject("yromalrc")?.optString("lyric").orEmpty())
+        val yrc = convertMultiLineToLrc(parseMixedLyrics(data["yrc"]?.jsonObject?.str("lyric").orEmpty()))
+        val ytlrc = convertMultiLineToLrc(data["ytlrc"]?.jsonObject?.str("lyric").orEmpty())
+        val yromalrc = convertMultiLineToLrc(data["yromalrc"]?.jsonObject?.str("lyric").orEmpty())
 
         return Lyric(lrc, tlyric, romalrc, yrc, ytlrc, yromalrc)
     }
@@ -78,16 +79,15 @@ object Decrypt {
             when {
                 line.startsWith("{") && line.endsWith("}") -> {
                     try {
-                        val json = JSONObject(line)
-                        val timeMs = json.getLong("t")
+                        val obj = json.parseToJsonElement(line).jsonObject
+                        val timeMs = obj["t"]!!.jsonPrimitive.content.toLong()
 
                         val timeLabel = formatTime(timeMs)
 
                         val content = buildString {
-                            val array = json.getJSONArray("c")
-                            for (i in 0 until array.length()) {
-                                val item = array.getJSONObject(i)
-                                append(item.getString("tx"))
+                            val array = obj["c"]!!.jsonArray
+                            for (item in array) {
+                                append(item.jsonObject["tx"]!!.jsonPrimitive.content)
                             }
                         }
 
@@ -150,49 +150,45 @@ object Decrypt {
     }
 
     fun decryptMusicUrl(encryptedBody: String): MusicUrl {
-        val decryptedJson = AESECBHelper.decrypt(encryptedBody)
-        val data = JSONObject(decryptedJson).getJSONArray("data").get(0) as JSONObject
+        val data = parseObject(AESECBHelper.decrypt(encryptedBody))
+            .get("data")?.jsonArray?.firstOrNull()?.jsonObject
+            ?: throw IllegalStateException("Missing music url data")
 
-        val url = data.getString("url")
-        val level = data.getString("level")
+        val url = data.str("url").orEmpty()
+        val level = data.str("level").orEmpty()
 
         return MusicUrl(url, level)
     }
 
     fun decryptPlayList(encryptedBody: String): PlayList {
-        val decryptedJson = AESECBHelper.decrypt(encryptedBody)
-        val data = JSONObject(decryptedJson).getJSONObject("playlist")
+        val data = parseObject(AESECBHelper.decrypt(encryptedBody))["playlist"]?.jsonObject
+            ?: throw IllegalStateException("Missing playlist data")
 
-        val name = data.getString("name")
-        val coverImgUrl = data.getString("coverImgUrl")
-        val id = data.getLong("id")
+        val name = data.str("name").orEmpty()
+        val coverImgUrl = data.str("coverImgUrl").orEmpty()
+        val id = data.long("id")
 
-        val tracks = data.getJSONArray("tracks")
-        val musics = with(ArrayList<Music>()) {
-            for (i in 0 until tracks.length()) {
-                val track = tracks.getJSONObject(i)
-                add(parseSong(track))
-            }
-            toList()
+        val tracks = data["tracks"]?.jsonArray ?: JsonArray(emptyList())
+        val musics = tracks.map { t ->
+            t.jsonObject?.let { parseSong(it) }
+                ?: throw IllegalStateException("Missing track data")
         }
 
         return PlayList(name, coverImgUrl, musics, id)
     }
 
     fun decryptAlbum(encryptedBody: String): PlayList {
-        val decryptedJson = AESECBHelper.decrypt(encryptedBody)
-        val data = JSONObject(decryptedJson).getJSONObject("album")
-        val name = data.getString("name")
-        val coverImgUrl = data.getString("picUrl")
-        val id = data.getLong("id")
+        val data = parseObject(AESECBHelper.decrypt(encryptedBody))
+        val album = data["album"]?.jsonObject
+            ?: throw IllegalStateException("Missing album data")
+        val name = album.str("name").orEmpty()
+        val coverImgUrl = album.str("picUrl").orEmpty()
+        val id = album.long("id")
 
-        val songs = JSONObject(decryptedJson).getJSONArray("songs")
-        val musics = with(ArrayList<Music>()) {
-            for (i in 0 until songs.length()) {
-                val song = songs.getJSONObject(i)
-                add(parseSong(song))
-            }
-            toList()
+        val songs = data["songs"]?.jsonArray ?: JsonArray(emptyList())
+        val musics = songs.map { s ->
+            s.jsonObject?.let { parseSong(it) }
+                ?: throw IllegalStateException("Missing song data")
         }
         return PlayList(name, coverImgUrl, musics, id)
     }
