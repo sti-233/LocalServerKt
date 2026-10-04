@@ -22,53 +22,12 @@ import localserver.lib.bilibili.User
 import localserver.lib.bilibili.View
 import localserver.lib.bilibili.PlayUrl
 import localserver.lib.bilibili.USER_AGENT
+import localserver.utils.Http
 import localserver.utils.Logger
+import localserver.utils.Util.prettyJson
 
 object Video {
-    private val prettyJson = Json { prettyPrint = true; ignoreUnknownKeys = true }
-
     private const val DEFAULT_PAGE = 1
-
-    // 取流代理用的 HTTP 客户端。
-    //
-    // 这里刻意用 JDK 自带的 java.net.http.HttpClient 而不是 Ktor CIO：
-    // 实测同一路流、同一 Range 连续请求，CIO 每次都要 ~140-190ms
-    // （连接未被复用，每次都重新握手），而 JDK 客户端首次 303ms、之后稳定 25-29ms。
-    // 拖动进度条时每个 Range 都是一次新请求，这个差距直接决定拖动是否跟手。
-    private val jdkHttp: java.net.http.HttpClient by lazy {
-        java.net.http.HttpClient.newBuilder()
-            .version(java.net.http.HttpClient.Version.HTTP_1_1)
-            .connectTimeout(java.time.Duration.ofSeconds(10))
-            .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
-            .build()
-    }
-
-    /** 已建立的上游响应：状态码 + 响应头 + 待读的响应体 */
-    private class Upstream(
-        val status: Int,
-        val headers: java.net.http.HttpHeaders,
-        val body: java.io.InputStream
-    ) {
-        fun header(name: String): String? = headers.firstValue(name).orElse(null)
-    }
-
-    /**
-     * 向上游发起请求并拿到响应头。阻塞调用放到 IO 线程池执行。
-     * 不设置请求级超时，避免把长时间的视频流掐断（连接超时由 connectTimeout 兜底）。
-     */
-    private suspend fun openUpstream(url: String, range: String? = null): Upstream? =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val builder = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
-                    .header("user-agent", USER_AGENT)
-                    .header("referer", "https://www.bilibili.com/")
-                    .header("origin", "https://www.bilibili.com")
-                    .GET()
-                if (range != null) builder.header("Range", range)
-                val resp = jdkHttp.send(builder.build(), java.net.http.HttpResponse.BodyHandlers.ofInputStream())
-                Upstream(resp.statusCode(), resp.headers(), resp.body())
-            }.onFailure { Logger.debug("openUpstream failed: ${it.message}") }.getOrNull()
-        }
 
     fun Route.videoRoute() {
         searchByType()
@@ -531,7 +490,7 @@ object Video {
         val cached = headCache[url]
         if (cached != null && System.currentTimeMillis() - cached.at < PREFETCH_TTL_MS) return
         prefetchScope.launch {
-            val up = openUpstream(url, "bytes=0-${HEAD_PREFETCH_BYTES - 1}") ?: return@launch
+            val up = Http.openUpstream(url, "bytes=0-${HEAD_PREFETCH_BYTES - 1}", USER_AGENT, "https://www.bilibili.com/", "https://www.bilibili.com") ?: return@launch
             try {
                 if (up.status !in 200..299) return@launch
                 // 总长度优先取 Content-Range 的分母（Range 请求下 Content-Length 只是本次片段的长度）
@@ -585,7 +544,7 @@ object Video {
             }
         }
 
-        val response = openUpstream(url, range)
+        val response = Http.openUpstream(url, range, USER_AGENT, "https://www.bilibili.com/", "https://www.bilibili.com")
             ?: return@get call.respondText("Failed to fetch stream.", status = HttpStatusCode.BadGateway)
 
         // 透传关键响应头，Range 场景可能是 200 或 206。
@@ -688,7 +647,7 @@ object Video {
                 if (headLen.toLong() >= total) return@respondBytesWriter
 
                 // 2) 从缓存末尾继续向上游续传
-                val cont = openUpstream(url, "bytes=$headLen-")
+                val cont = Http.openUpstream(url, "bytes=$headLen-", USER_AGENT, "https://www.bilibili.com/", "https://www.bilibili.com")
                 if (cont == null || cont.status !in 200..299) {
                     Logger.debug("head 续传失败，剩余部分可能缺失")
                     return@respondBytesWriter

@@ -4,7 +4,6 @@ import io.ktor.server.auth.*
 import io.ktor.server.routing.*
 import io.ktor.server.response.*
 import io.ktor.client.*
-import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -47,7 +46,7 @@ object Network {
         val fileUrl = call.request.queryParameters["url"]
             ?: return@get call.respondText("Please provide URL parameter", status = HttpStatusCode.BadRequest)
         val inline = call.request.queryParameters["inline"] == "1"
-        val client = HttpClient(CIO)
+        val client = HttpClient.client
         val tempFile: Path = Files.createTempFile("download_", ".tmp")
         try {
             val response = client.get(fileUrl)
@@ -103,7 +102,7 @@ object Network {
         } catch (e: Exception) {
             call.respondText("Error: ${e.message}", status = HttpStatusCode.InternalServerError)
         } finally {
-            client.close()
+            // client 为 HttpClient.client 共享实例，不可 close；仅清理临时文件
             Files.deleteIfExists(tempFile)
         }
     }
