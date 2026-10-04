@@ -24,7 +24,7 @@
     <div id="profile" style="display:none">
         <div class="card">
             <div class="space-header">
-                <img class="face" id="face" referrerpolicy="no-referrer" alt="">
+                <img class="face" id="face" data-lb referrerpolicy="no-referrer" alt="">
                 <div style="flex:1;min-width:240px">
                     <div class="sname" id="name"></div>
                     <div class="ssign" id="sign"></div>
@@ -253,7 +253,7 @@
         // 顶部：头像 + 昵称 + 时间
         const head = `
             <div class="dyn-head">
-                <img class="dyn-face" src="${esc(imgUrl(spaceFace))}" referrerpolicy="no-referrer" alt="">
+                <img class="dyn-face" data-lb src="${esc(imgUrl(spaceFace))}" referrerpolicy="no-referrer" alt="">
                 <div>
                     <div class="dyn-name">${esc(spaceName || ('UID ' + mid))}</div>
                     <div class="dyn-time">${esc(d.pubText || fmtTime(d.pubTs))}</div>
@@ -267,11 +267,11 @@
             ? `<div class="dyn-text">${esc(text).replace(/\n/g, '<br>')}</div>`
             : '';
 
-        // 图片：最多展示 9 张
+        // 图片：最多展示 9 张（点击可全屏预览，data-lb 由 common.js 委托处理）
         const pics = (d.pics || []).slice(0, 9);
         const picsHtml = pics.length
             ? `<div class="dyn-pics">${pics.map(p =>
-                `<img src="${esc(imgUrl(p.src))}" referrerpolicy="no-referrer" loading="lazy" alt="">`).join('')}</div>`
+                `<img data-lb src="${esc(imgUrl(p.src))}" referrerpolicy="no-referrer" loading="lazy" alt="">`).join('')}</div>`
             : '';
 
         // 投稿视频（动态里附带的视频）
@@ -292,7 +292,7 @@
                 <div class="small muted" style="margin-bottom:5px">@${esc(f.author)}</div>
                 ${f.text ? `<div class="dyn-text">${esc(f.text).replace(/\n/g, '<br>')}</div>` : ''}
                 ${(f.pics || []).length ? `<div class="dyn-pics">${f.pics.slice(0, 9).map(p =>
-                    `<img src="${esc(imgUrl(p))}" referrerpolicy="no-referrer" loading="lazy" alt="">`).join('')}</div>` : ''}
+                    `<img data-lb src="${esc(imgUrl(p))}" referrerpolicy="no-referrer" loading="lazy" alt="">`).join('')}</div>` : ''}
                 ${f.archive ? `<div class="small muted" style="margin-top:6px">📺 ${esc(f.archive.title)}</div>` : ''}
             </div>` : '';
 

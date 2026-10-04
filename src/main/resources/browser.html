@@ -24,7 +24,8 @@
             color: var(--text);
         }
         .card {
-            max-width: 440px;
+            width: fit-content;
+            max-width: 100%;
             background: var(--card);
             border: 1px solid var(--border);
             border-radius: 12px;
@@ -99,6 +100,7 @@
         <div class="links">
             <button class="ghost" onclick="location.href = 'http://192.168.125.1'">ap</button>
             <button class="ghost" data-control onclick="location.href = 'http://' + SERVER_IP + '/vnc'">vnc</button>
+            <button class="ghost" data-control onclick="location.href = 'http://' + SERVER_IP + '/help'">help</button>
             <button class="ghost" data-control onclick="location.href = 'https://cn.bing.com'">bing</button>
             <button class="ghost" data-control onclick="location.href = 'https://www.geogebra.org/classic'">geogebra classic</button>
             <button class="ghost" data-control onclick="location.href = 'https://www.geogebra.org/graphing'">geogebra graphing</button>

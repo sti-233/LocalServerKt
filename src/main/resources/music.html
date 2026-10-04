@@ -33,10 +33,10 @@
             display: flex;
             align-items: center;
             gap: 12px;
+            min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
             padding: 10px 18px;
             background: var(--card);
             border-bottom: 1px solid var(--border);
-            flex-wrap: wrap;
         }
         .topbar-left { display: flex; align-items: center; gap: 12px; }
         .topbar h1 { margin: 0; font-size: 18px; white-space: nowrap; }
@@ -46,6 +46,8 @@
             transform: translateX(-50%);
             width: min(600px, calc(100% - 280px));
             min-width: 180px;
+            /* 绝对定位已脱离顶栏流，自然盖在按钮/标题上层（定位元素默认绘制在非定位元素之上），顶栏不再被撑出 wrap（小屏媒体查询内改回 static 占整行） */
+            z-index: 1;
         }
         .topbar .icon-btn {
             width: 34px;
@@ -60,6 +62,7 @@
         .topbar .icon-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
         .search-box {
             width: 100%;
+            height: 35px; /* 56 − 20(padding) − 1(border) = 35，顶栏总高 56（border-box） */
             padding: 9px 44px 9px 12px;
             border: 1px solid var(--border);
             border-radius: 8px;
@@ -81,7 +84,7 @@
             background: var(--accent);
             border: none;
             width: 34px;
-            height: 34px;
+            height: 35px; /* 56 − 20(padding) − 1(border) = 35，顶栏总高 56（border-box） */
             border-radius: 8px;
             color: white;
             cursor: pointer;
@@ -450,18 +453,21 @@
         const musicCache = new Map();
 
         document.addEventListener('DOMContentLoaded', function () {
-            loadSettings();
-            // 设置侧边栏展开/收起（与 chat.html 同款），默认收起
+            // 设置侧边栏展开/收起（与 chat.html 同款，默认收起）；
+            // 监听必须先挂：后续任何一步（localStorage 等）抛异常都不影响它
             document.getElementById('sidebarToggle').addEventListener('click', function () {
                 document.getElementById('sidebar').classList.toggle('open');
             });
+            loadSettings();
         });
 
-        // 加载保存的设置
+        // 加载保存的设置：优先 localStorage，不可用（隐私模式等）时退回 Cookie
         function loadSettings() {
-            const savedSettings = localStorage.getItem('musicSearchSettings');
-            if (savedSettings) {
-                try { settings = JSON.parse(savedSettings); } catch (e) { return; }
+            let raw = null;
+            try { raw = localStorage.getItem('musicSearchSettings'); } catch (e) { /* 隐私模式等：localStorage 不可用 */ }
+            if (raw == null) raw = readCookie('musicSearchSettings');
+            if (raw) {
+                try { settings = JSON.parse(raw); } catch (e) { return; }
                 document.getElementById('offset').value = settings.offset;
                 document.getElementById('limit').value = settings.limit;
                 const q = document.querySelector(`input[name="quality"][value="${settings.quality}"]`);
@@ -469,13 +475,25 @@
             }
         }
 
-        // 保存设置（直接写 localStorage，侧边栏收起不影响已保存值）
+        // Cookie 存取（localStorage 不可用时的设置备份；配置很小，一条 Cookie 足够）
+        function readCookie(name) {
+            const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+            return m ? decodeURIComponent(m[1]) : null;
+        }
+        function writeCookie(name, value) {
+            document.cookie = name + '=' + encodeURIComponent(value) + '; path=/; max-age=31536000';
+        }
+
+        // 保存设置：双写 localStorage + Cookie（localStorage 不可用时靠 Cookie 兜底，侧边栏收起不影响已保存值）
         function saveSettings() {
             settings.offset = parseInt(document.getElementById('offset').value) || 0;
             settings.limit = Math.min(20, Math.max(1, parseInt(document.getElementById('limit').value) || 10));
             settings.quality = document.querySelector('input[name="quality"]:checked').value;
-
-            localStorage.setItem('musicSearchSettings', JSON.stringify(settings));
+            const raw = JSON.stringify(settings);
+            let ok = false;
+            try { localStorage.setItem('musicSearchSettings', raw); ok = true; } catch (e) { /* 不可用 */ }
+            try { writeCookie('musicSearchSettings', raw); ok = true; } catch (e) { /* 被禁用 Cookie 时静默失败 */ }
+            if (!ok) { showToast('设置保存失败：存储均不可用', true); return; }
             showToast('设置已保存');
         }
 

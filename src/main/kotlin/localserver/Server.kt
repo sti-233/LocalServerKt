@@ -31,7 +31,7 @@ private const val chunkSize = 8192
 // "192.168.100.17"
 // "192.168.3.32"
 // "192.168.125.200"
-const val serverIp = "192.168.3.32"
+const val serverIp = "192.168.125.200"
 private const val password = "114514"
 
 fun main() {

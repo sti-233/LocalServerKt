@@ -430,6 +430,8 @@ object Video {
      *
      * 默认按 1080P(80) 协商，配合 PlayUrl 里的 try_look=1 + fnval=4048 实现免登录 1080P。
      * 响应里额外给出 availableQualities 与 bestQuality，前端据此直接选中能用的最高档。
+     *
+     * format=mp4（默认，fnval=1，音画合一单流）或 format=dash（fnval=4048，音画分离）。
      */
     private fun Route.videoStreamInfo() = get("/videoStreamInfo") {
         val bvid = call.parameters["bvid"]?.takeIf { it.isNotBlank() }
@@ -439,7 +441,8 @@ object Video {
         val qn = call.parameters["qn"]?.toIntOrNull()?.coerceAtLeast(6) ?: PlayUrl.QN_1080P
         // 是否启用免登录 1080P（默认开启，可用 tryLook=0 关闭以便对比）
         val tryLook = call.parameters["tryLook"] != "0"
-        val json = PlayUrl.get(bvid, cid, qn, dash = true, tryLook = tryLook)
+        val dash = call.parameters["format"] == "dash"
+        val json = PlayUrl.get(bvid, cid, qn, dash = dash, tryLook = tryLook)
             ?: return@get call.respondJson("Failed to fetch playurl.", HttpStatusCode.BadGateway)
         if (json.code != 0) {
             return@get call.respondJson(json.message.ifBlank { "code ${json.code}" }, HttpStatusCode.BadGateway)
@@ -455,10 +458,15 @@ object Video {
 
         // 提前预取"默认档位的视频流 + 最高码率音频流"的前若干字节，
         // 这样前端紧接着请求 /videoStream 时能直接命中内存、瞬时起播。
-        data.dash?.let { dash ->
-            dash.video.firstOrNull { it.id == best }?.baseUrl?.takeIf { it.isNotBlank() }?.let(::prefetchHead)
-            dash.audio.maxByOrNull { it.bandwidth ?: 0 }?.baseUrl?.takeIf { it.isNotBlank() }?.let(::prefetchHead)
+        val heads = if (dash) {
+            listOfNotNull(
+                data.dash?.video?.firstOrNull { it.id == best }?.baseUrl?.takeIf { it.isNotBlank() },
+                data.dash?.audio?.maxByOrNull { it.bandwidth ?: 0 }?.baseUrl?.takeIf { it.isNotBlank() }
+            )
+        } else {
+            listOfNotNull(data.durl.firstOrNull()?.url?.takeIf { it.isNotBlank() })
         }
+        heads.forEach(::prefetchHead)
 
         call.respondText(prettyJson.encodeToString(JsonObject(obj)))
     }

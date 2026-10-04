@@ -162,10 +162,10 @@ function userCard(u) {
     // 认证信息可能很长（如"2025百大UP主、2025年度商业影响力奖UP主…"），截断展示
     const officialShort = official.length > 22 ? official.slice(0, 22) + '…' : official;
     const prev = (u.res || []).slice(0, 4).map(v =>
-        `<img src="${esc(imgUrl(v.pic))}" referrerpolicy="no-referrer" loading="lazy" alt="">`).join('');
+        `<img data-lb src="${esc(imgUrl(v.pic))}" referrerpolicy="no-referrer" loading="lazy" alt="">`).join('');
 
     el.innerHTML = `
-        <img class="face" src="${esc(imgUrl(u.upic))}" referrerpolicy="no-referrer" alt="">
+        <img class="face" data-lb src="${esc(imgUrl(u.upic))}" referrerpolicy="no-referrer" alt="">
         <div class="ubody">
             <div class="uname">
                 <span>${esc(u.uname)}</span>
@@ -223,7 +223,7 @@ function createCommentSection(container, aid) {
         }).join('');
 
         el.innerHTML = `
-            <img class="avatar" src="${esc(imgUrl(m.avatar))}" referrerpolicy="no-referrer" alt="">
+            <img class="avatar" data-lb src="${esc(imgUrl(m.avatar))}" referrerpolicy="no-referrer" alt="">
             <div class="cbody">
                 <div class="chead">
                     <span class="uname">${esc(m.uname)}</span>
@@ -329,4 +329,184 @@ function createCommentSection(container, aid) {
         onCount: (fn) => { state.onCount = fn; },
         onPage: (fn) => { state.onPage = fn; }
     };
+}
+
+/**
+ * 图片预览（lightbox）：点击带 data-lb 的图片全屏查看，滚轮/双指捏合缩放、拖拽平移、Esc/✕ 关闭。
+ * 挂在 document 上委托，任何位置动态渲染的图片（卡片/评论/动态）都能预览；
+ * 预览时 stopPropagation，避免误触父级卡片的跳转 onclick。
+ * 逻辑与 chat.html 的 lightbox 一致，保持各页预览体验统一。
+ */
+function initImgLightbox() {
+    let lb = null; // 大图状态：{ img, scale, x, y, pinchDist, pinchMid, panning, panStart, panX0, panY0 }
+    const lbPointers = new Map(); // 当前按住的指针（双指捏合用）
+
+    function applyLbTransform() {
+        if (!lb) return;
+        lb.img.style.transform = `translate(${lb.x}px, ${lb.y}px) scale(${lb.scale})`;
+    }
+
+    function openLb(src) {
+        lb = {
+            img: document.querySelector('#biliLightbox img'),
+            scale: 1, x: 0, y: 0,
+            pinchDist: 0, pinchMid: null,
+            panning: false, panStart: null, panX0: 0, panY0: 0
+        };
+        lb.img.src = src;
+        document.getElementById('biliLightbox').classList.add('show');
+        document.getElementById('lbScale').textContent = '100%';
+    }
+
+    function closeLb() {
+        if (!lb) return;
+        document.getElementById('biliLightbox').classList.remove('show');
+        lb.img.src = ''; // 清掉 src，避免大图驻留内存
+        lb = null;
+        lbPointers.clear();
+    }
+
+    // 以 (cx, cy) 为缩放中心点，该点在视口中的位置保持不变
+    function zoomLb(newScale, cx, cy) {
+        if (!lb) return;
+        newScale = Math.min(20, Math.max(1, newScale));
+        const ratio = newScale / lb.scale;
+        if (ratio === 1) return;
+        lb.x += (cx - window.innerWidth / 2 - lb.x) * (1 - ratio);
+        lb.y += (cy - window.innerHeight / 2 - lb.y) * (1 - ratio);
+        lb.scale = newScale;
+        applyLbTransform();
+        clampLbPan();
+        document.getElementById('lbScale').textContent = Math.round(lb.scale * 100) + '%';
+    }
+
+    // 把平移限制在合理范围，防止图片被拖出视野
+    function clampLbPan() {
+        if (!lb) return;
+        const rect = lb.img.getBoundingClientRect();
+        const ox = Math.max(0, (rect.width - window.innerWidth) / 2);
+        const oy = Math.max(0, (rect.height - window.innerHeight) / 2);
+        lb.x = Math.min(ox, Math.max(-ox, lb.x));
+        lb.y = Math.min(oy, Math.max(-oy, lb.y));
+    }
+
+    // 遮罩与控件动态创建（4 个页面共用，不必每页写一份 DOM）
+    if (!document.getElementById('biliLightbox')) {
+        const d = document.createElement('div');
+        d.id = 'biliLightbox';
+        d.innerHTML = `
+            <img alt="全屏查看">
+            <button id="lbClose" title="关闭 (Esc)">✕</button>
+            <div class="lb-controls">
+                <button id="lbZoomIn" class="lb-btn" title="放大">+</button>
+                <span id="lbScale">100%</span>
+                <button id="lbZoomOut" class="lb-btn" title="缩小">−</button>
+            </div>`;
+        document.body.appendChild(d);
+    }
+    const lbEl = document.getElementById('biliLightbox');
+    const lbImg = lbEl.querySelector('img');
+
+    // 点击任意 data-lb 图片打开预览（委托，覆盖动态渲染内容）
+    document.addEventListener('click', function (e) {
+        const img = e.target.closest('img[data-lb]');
+        if (!img) return;
+        e.stopPropagation();
+        openLb(img.currentSrc || img.src);
+    }, true);
+
+    // 滚轮缩放（以光标位置为中心）
+    lbEl.addEventListener('wheel', function (e) {
+        if (!lb || !lb.img.src) return;
+        e.preventDefault();
+        zoomLb(lb.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
+    }, { passive: false });
+
+    // 双击大图：放大 2.5 倍 / 已放大则还原
+    lbImg.addEventListener('dblclick', function (e) {
+        if (!lb) return;
+        e.preventDefault();
+        if (lb.scale > 1) {
+            lb.scale = 1; lb.x = 0; lb.y = 0;
+            applyLbTransform();
+            document.getElementById('lbScale').textContent = '100%';
+        } else {
+            zoomLb(2.5, e.clientX, e.clientY);
+        }
+    });
+
+    // 指针手势：单指/鼠标拖拽平移，双指捏合缩放（Pointer Events 兼容触屏与鼠标）
+    lbEl.addEventListener('pointerdown', function (e) {
+        // 控制条/关闭按钮上不开始手势，保留其点击行为
+        if (!lb || !lb.img.src || e.target.closest('.lb-controls') || e.target.closest('#lbClose')) return;
+        lbEl.setPointerCapture(e.pointerId);
+        lbPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (lbPointers.size === 1) {
+            lb.panning = true;
+            lb.panStart = { x: e.clientX, y: e.clientY };
+            lb.panX0 = lb.x;
+            lb.panY0 = lb.y;
+        } else if (lbPointers.size === 2) {
+            const [p1, p2] = [...lbPointers.values()];
+            lb.panning = false;
+            lb.pinchDist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+            lb.pinchMid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+        }
+    });
+
+    lbEl.addEventListener('pointermove', function (e) {
+        if (!lb || !lbPointers.has(e.pointerId)) return;
+        const cur = { x: e.clientX, y: e.clientY };
+        lbPointers.set(e.pointerId, cur);
+
+        if (lbPointers.size === 2) {
+            const [p1, p2] = [...lbPointers.values()];
+            const newDist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+            if (lb.pinchDist > 0) {
+                zoomLb(lb.scale * (newDist / lb.pinchDist), lb.pinchMid.x, lb.pinchMid.y);
+            }
+            lb.pinchDist = newDist;
+        } else if (lb.panning) {
+            lb.x = lb.panX0 + (cur.x - lb.panStart.x);
+            lb.y = lb.panY0 + (cur.y - lb.panStart.y);
+            clampLbPan();
+            applyLbTransform();
+        }
+    });
+
+    function onLbPointerUp(e) {
+        if (!lb) return;
+        lbPointers.delete(e.pointerId);
+        if (lbPointers.size === 1) {
+            const [p] = [...lbPointers.values()];
+            lb.panning = true;
+            lb.panStart = p;
+            lb.panX0 = lb.x;
+            lb.panY0 = lb.y;
+        } else if (lbPointers.size === 0) {
+            lb.panning = false;
+            lb.pinchDist = 0;
+        }
+    }
+    lbEl.addEventListener('pointerup', onLbPointerUp);
+    lbEl.addEventListener('pointercancel', onLbPointerUp);
+
+    document.getElementById('lbZoomIn').addEventListener('click', function () {
+        if (lb) zoomLb(lb.scale * 1.25, window.innerWidth / 2, window.innerHeight / 2);
+    });
+    document.getElementById('lbZoomOut').addEventListener('click', function () {
+        if (lb) zoomLb(lb.scale / 1.25, window.innerWidth / 2, window.innerHeight / 2);
+    });
+    document.getElementById('lbClose').addEventListener('click', closeLb);
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeLb();
+    });
+}
+
+// 页面加载完即启用（所有 B 站页面都引入 common.js）
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initImgLightbox);
+} else {
+    initImgLightbox();
 }

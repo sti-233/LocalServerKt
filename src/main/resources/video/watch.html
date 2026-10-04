@@ -6,10 +6,39 @@
     <title>视频观看 - B站</title>
     <script src="/resources/config.js"></script>
     <link rel="stylesheet" href="/resources/video/video.css">
+    <style>
+        /* 左侧可收起的画质/音轨设置侧边栏：与 chat/music 侧边栏同款（230px、.open 展开、收起贴左）。
+           内联在本页，避免影响 video.css 里 index/search/space 等其它共用页面。 */
+        .wlayout { flex: 1; display: flex; min-height: 0; }
+        #sidebar {
+            width: 230px; flex: 0 0 230px;
+            background: var(--card);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            padding: 14px;
+            transition: margin-left .2s ease;
+        }
+        #sidebar:not(.open) { margin-left: -230px; }
+        .wmain { flex: 1; min-width: 0; overflow-y: auto; }
+        /* 本页 body 固定视口高度：侧边栏/主区各自内部滚动（覆盖 video.css 的 min-height:100vh，
+           仅影响本页；index/search/space 仍用自然页面滚动） */
+        body { height: 100vh; }
+        /* 顶栏不再 wrap：展开侧边栏不改变顶栏宽度，避免旧 Chrome 下与侧边栏布局互相
+           触发重排（music.html 同款坑，见其注释）；小屏下搜索框改回 static 整行才需要 wrap */
+        .topbar { flex-wrap: nowrap; }
+        @media (max-width: 640px) { .topbar { flex-wrap: wrap; } }
+        /* 侧边栏内容：竖排 label+select（用 margin 兜底而非 flex gap，兼容 Chrome 80） */
+        .ws-card h3 { margin: 0 0 10px; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+        .ws-row { margin-bottom: 10px; }
+        .ws-row label { display: block; margin-bottom: 4px; font-size: 12px; color: var(--muted); }
+        .ws-row .select { width: 100%; }
+        .ws-info { margin-top: 4px; }
+    </style>
 </head>
 <body>
 <div class="topbar">
     <div class="topbar-left">
+        <button id="sidebarToggle" class="icon-btn" title="显示/收起设置">☰</button>
         <h1>视频观看</h1>
     </div>
     <div class="search-container">
@@ -18,7 +47,32 @@
     </div>
 </div>
 
-<div class="container">
+<div class="wlayout">
+    <!-- 画质/音轨设置侧边栏：与 chat/music 侧边栏同款（可收起，默认收起） -->
+    <aside id="sidebar">
+        <div class="ws-card">
+            <h3>画质 / 音轨</h3>
+            <div class="ws-row">
+                <label for="format">格式</label>
+                <select id="format" class="select">
+                    <option value="mp4" selected>MP4</option>
+                    <option value="dash">DASH</option>
+                </select>
+            </div>
+            <div class="ws-row">
+                <label for="quality">清晰度</label>
+                <select id="quality" class="select"></select>
+            </div>
+            <div class="ws-row">
+                <label for="codec">编码</label>
+                <select id="codec" class="select"></select>
+            </div>
+            <span class="small muted ws-info" id="streamInfo"></span>
+        </div>
+    </aside>
+
+    <div class="wmain">
+    <div class="container">
     <div id="status"></div>
 
     <div id="content" style="display:none">
@@ -39,7 +93,7 @@
         <div class="video-title" id="title"></div>
 
         <div class="up-row">
-            <img id="upFace" alt="" referrerpolicy="no-referrer">
+            <img id="upFace" data-lb alt="" referrerpolicy="no-referrer">
             <div>
                 <div style="font-size:14px;font-weight:600" id="upName"></div>
                 <div class="small muted" id="upMeta"></div>
@@ -57,17 +111,6 @@
         <div class="card">
             <div class="small muted" style="margin-bottom:9px">简介</div>
             <div class="desc" id="desc"></div>
-        </div>
-
-        <div class="card">
-            <div class="small muted" style="margin-bottom:9px">画质 / 音轨</div>
-            <div class="cmt-toolbar">
-                <label class="small muted">清晰度</label>
-                <select id="quality" class="select"></select>
-                <label class="small muted">编码</label>
-                <select id="codec" class="select"></select>
-                <span class="small muted" id="streamInfo"></span>
-            </div>
         </div>
 
         <div class="card">
@@ -89,7 +132,9 @@
             </div>
         </div>
     </div>
-</div>
+    </div><!-- /.container -->
+    </div><!-- /.wmain -->
+</div><!-- /.wlayout -->
 
 <script src="/resources/video/common.js"></script>
 <script>
@@ -97,7 +142,13 @@
     const content = document.getElementById('content');
     const player = document.getElementById('player');
     const playMsg = document.getElementById('playMsg');
+    const formatSel = document.getElementById('format');
     const qualitySel = document.getElementById('quality');
+
+    // 设置侧边栏展开/收起（与 chat/music 同款，默认收起）
+    document.getElementById('sidebarToggle').addEventListener('click', function () {
+        document.getElementById('sidebar').classList.toggle('open');
+    });
     const codecSel = document.getElementById('codec');
     const streamInfo = document.getElementById('streamInfo');
     const volSlider = document.getElementById('vol');
@@ -279,7 +330,8 @@
 
     async function fetchStream(cid) {
         try {
-            playData = await api('/videoStreamInfo', { bvid: info.bvid, cid });
+            // format 由"格式"下拉决定（默认 mp4）：mp4 音画合一单流，dash 音画分离
+            playData = await api('/videoStreamInfo', { bvid: info.bvid, cid, format: formatSel.value });
         } catch (e) {
             showError(statusEl, '获取播放地址失败：' + e.message);
             return;
@@ -304,11 +356,12 @@
                 o.textContent = QN_NAME[id] || ('qn' + id);
                 qualitySel.appendChild(o);
             });
+            qualitySel.disabled = false;
             // bestQuality 是服务端选定的默认档（免登录可用的最高清晰度）
             const best = Number(playData.bestQuality || 0);
             qualitySel.value = avail.includes(best) ? String(best) : String(avail[0]);
         } else {
-            // MP4(html5) 兜底：只有单流
+            // MP4(html5) 单流：清晰度档位来自 accept_quality/accept_description，无独立编码档
             (playData.accept_quality || []).forEach((q, i) => {
                 const o = document.createElement('option');
                 o.value = q;
@@ -316,6 +369,8 @@
                 qualitySel.appendChild(o);
             });
             qualitySel.value = String(playData.quality || 32);
+            // 单流只有 durl[0]，档位切换无意义，禁下拉
+            qualitySel.disabled = (playData.durl || []).length <= 1;
         }
         refreshCodecOptions();
     }
@@ -392,7 +447,8 @@
             }
             audioEl.src = streamUrl(aUrl);
         } else {
-            if (audioEl) { audioEl.pause(); audioEl.removeAttribute('src'); }
+            // MP4：清掉 DASH 音轨（pause + 清空 src，必须 load() 真正停掉取流）
+            if (audioEl) { audioEl.pause(); audioEl.removeAttribute('src'); audioEl.load(); }
         }
 
         streamInfo.textContent = `当前: ${QN_NAME[qn] || qn} · ${CODEC_NAME[codecid] || '默认'}`;
@@ -468,6 +524,8 @@
     }
 
     qualitySel.onchange = () => { refreshCodecOptions(); applyStream(); };
+    // 切换格式（MP4/DASH）时重新取流：后端按 format 参数返回对应结构
+    formatSel.onchange = () => { if (currentCid) fetchStream(currentCid); };
 
     // 顶栏搜索：统一按关键词搜索
     bindSearchBox('kw', 'go');

@@ -22,6 +22,13 @@
     <div class="tabs">
         <button class="tab active" data-type="video">视频</button>
         <button class="tab" data-type="user">用户 / UP主</button>
+        <select id="order" class="order-select" title="视频排序">
+            <option value="">综合</option>
+            <option value="1">点击量</option>
+            <option value="5">视频时长</option>
+            <option value="13">竖屏视频</option>
+            <option value="31">今日播放</option>
+        </select>
     </div>
 
     <div id="status"></div>
@@ -45,6 +52,10 @@
     let keyword = '', page = 1, numPages = 1;
     let type = 'video';       // 'video' | 'user'
 
+    const orderSel = document.getElementById('order');
+    // 排序只对视频生效；用户搜索不传 order
+    function order() { return type === 'video' ? orderSel.value : ''; }
+
     async function search(p) {
         if (!keyword) return;
         page = p;
@@ -52,8 +63,11 @@
         pager.style.display = 'none';
         status.innerHTML = '';
         try {
-            // 视频与用户共用同一接口，只靠 type 区分
-            const data = await api('/searchByType', { keyword, page, type });
+            // 视频与用户共用同一接口，只靠 type 区分；order/duration/tids 仅视频搜索需要
+            const params = { keyword, page, type };
+            const o = order();
+            if (o) params.order = o;
+            const data = await api('/searchByType', params);
             const list = data.result || [];
             numPages = Math.min(data.numPages || 1, MAX_PAGE);
             results.innerHTML = '';
@@ -90,16 +104,24 @@
             if (tab.dataset.type === type) return;
             type = tab.dataset.type;
             document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
+            orderSel.disabled = type !== 'video';  // 排序只对视频搜索有意义
             history.replaceState(null, '', `?keyword=${encodeURIComponent(keyword)}&type=${type}`);
             if (keyword) search(1);
         };
     });
 
+    // 排序下拉：改动即重新搜索第一页
+    orderSel.onchange = () => { if (keyword) { syncUrl(); search(1); } };
+
     // 搜索结果页刻意"就地重新搜索"（不跳转），输入语义与其它页一致，都是纯关键词
+    function syncUrl() {
+        const o = orderSel.value;
+        history.replaceState(null, '', `?keyword=${encodeURIComponent(keyword)}&type=${type}` + (o ? `&order=${o}` : ''));
+    }
     function runSearch() {
         keyword = kw.value.trim();
         if (!keyword) { showHint(results, '请输入关键词'); return; }
-        history.replaceState(null, '', `?keyword=${encodeURIComponent(keyword)}&type=${type}`);
+        syncUrl();
         search(1);
     }
     document.getElementById('go').onclick = runSearch;
@@ -111,10 +133,13 @@
     const sp = new URLSearchParams(location.search);
     const q = sp.get('keyword');
     const t = sp.get('type');
+    const o = sp.get('order');
     if (t === 'user' || t === 'video') {
         type = t;
         document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.type === type));
     }
+    if (type === 'video' && o && [...orderSel.options].some(x => x.value === o)) orderSel.value = o;
+    orderSel.disabled = type !== 'video';
     if (q) { kw.value = q; runSearch(); }
     else showHint(results, '输入关键词后回车搜索');
 </script>

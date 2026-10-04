@@ -34,6 +34,7 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
+            min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
             padding: 10px 18px;
             background: var(--card);
             border-bottom: 1px solid var(--border);
@@ -396,7 +397,7 @@
 
     <script>
         /* ===== Debug 开关：设为 true 时显示 Debug 按钮，点击按钮打开调试窗口 ===== */
-        var DEBUG = false;
+        var DEBUG = true;
 
         const chatContainer = document.getElementById('chatContainer');
         const msgInput = document.getElementById('msgInput');

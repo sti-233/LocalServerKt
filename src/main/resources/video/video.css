@@ -11,6 +11,86 @@
     --danger: #ff4d4d;
 }
 
+/* ---------- 图片预览（lightbox，由 common.js 动态创建） ---------- */
+/* 不用 inset: 0：旧版 Chrome 不支持该简写（chat.html 同） */
+#biliLightbox {
+    position: fixed;
+    top: 0; right: 0; bottom: 0; left: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, .85);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s;
+    /* 禁止浏览器默认手势（滚页/双指缩放页面），交给 Pointer Events 处理 */
+    touch-action: none;
+}
+#biliLightbox.show { opacity: 1; pointer-events: auto; }
+#biliLightbox img {
+    max-width: 90vw;
+    max-height: 90vh;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, .5);
+    touch-action: none;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+#biliLightbox #lbClose, #biliLightbox .lb-btn {
+    position: fixed;
+    z-index: 101;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .12);
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s;
+}
+#biliLightbox #lbClose {
+    top: 16px;
+    right: 16px;
+    width: 40px;
+    height: 40px;
+    font-size: 20px;
+    line-height: 1;
+}
+#biliLightbox #lbClose:hover { background: rgba(255, 77, 77, .6); }
+#biliLightbox .lb-controls {
+    position: fixed;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 101;
+    display: flex;
+    align-items: center;
+}
+/* gap 旧版 Chrome 不支持 flex gap，用 margin 兜底 */
+#biliLightbox .lb-controls > * + * { margin-left: 8px; }
+#biliLightbox .lb-btn {
+    width: 40px;
+    height: 40px;
+    position: static; /* 覆盖上面 #lbClose/.lb-btn 的 fixed 定位，统一由 .lb-controls 定位（与 chat.html 一致） */
+    font-size: 20px;
+    line-height: 1;
+}
+#biliLightbox .lb-btn:hover { background: rgba(255, 255, 255, .3); }
+#biliLightbox #lbScale {
+    min-width: 52px;
+    text-align: center;
+    color: #fff;
+    font-size: 13px;
+    background: rgba(255, 255, 255, .12);
+    border-radius: 999px;
+    padding: 11px 8px;
+}
+/* 带 data-lb 的图片：点击预览，加手型光标提示 */
+img[data-lb] { cursor: zoom-in; }
+
 * { box-sizing: border-box; }
 
 body {
@@ -31,7 +111,7 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
-    min-height: 55px;
+    min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
     padding: 10px 18px;
     background: var(--card);
     border-bottom: 1px solid var(--border);
@@ -67,6 +147,7 @@ body {
 }
 .search-box {
     width: 100%;
+    height: 36px; /* 36 + 顶栏 20px padding = 56，与 min-height 对齐（border-box） */
     padding: 9px 44px 9px 12px;
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -389,6 +470,20 @@ body {
     font-weight: 600;
     border-bottom-color: var(--accent);
 }
+/* 视频排序下拉，跟在标签页右侧 */
+.order-select {
+    margin-left: auto;
+    margin-bottom: -1px;
+    padding: 5px 8px;
+    font-size: 13px;
+    color: var(--muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+}
+.order-select:hover, .order-select:focus { color: var(--accent); outline: none; }
+.order-select:disabled { opacity: .45; cursor: default; }
 
 /* ---------- 用户卡片 ---------- */
 .ugrid {

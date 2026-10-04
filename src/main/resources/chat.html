@@ -802,6 +802,7 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
+            min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
             padding: 10px 18px;
             background: var(--card);
             border-bottom: 1px solid var(--border);
@@ -1037,7 +1038,11 @@
         /* 图片全屏查看遮罩（右上角 ✕ 关闭；滚轮/双指捏合缩放；拖拽平移） */
         #lightbox {
             position: fixed;
-            inset: 0;
+            /* 不用 inset: 0：Chrome < 87 不支持该简写，遮罩会塌缩成图片大小（背景/居中失效） */
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
             z-index: 100;
             display: flex;
             align-items: center;

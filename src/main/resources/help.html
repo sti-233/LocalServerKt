@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>端点一览</title>
+    <script src="/download?url=https://unpkg.com/marked@0.8.2/marked.min.js&inline=1"></script>
+    <style>
+        :root {
+            --bg: #f4f6fb;
+            --card: #ffffff;
+            --accent: #4f7cff;
+            --accent-soft: #e9efff;
+            --text: #232a3b;
+            --muted: #8b91a5;
+            --border: #e4e7f0;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+        /* 顶栏：与其他页面（chat/ai/file 等）的 topbar 一致；min-height 对齐 video.css 的 55px（chat 等由 34px 图标撑出的实际高度） */
+        .topbar {
+            position: sticky; /* 帮助页内容可滚动，顶栏固定在视口顶部 */
+            top: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
+            padding: 10px 18px;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+        }
+        .topbar h1 { font-size: 18px; }
+        .content {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        .content h1 { font-size: 20px; margin-bottom: 12px; }
+        .content h2 { font-size: 16px; margin: 24px 0 8px; }
+        .content blockquote { color: var(--muted); margin: 8px 0; font-size: 13px; }
+        .content table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--card); margin: 8px 0; }
+        .content th, .content td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+        .content th { background: var(--accent-soft); }
+        .content code { background: #eef1f8; padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+        .content pre { background: var(--card); border: 1px solid var(--border); padding: 12px; border-radius: 6px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <header class="topbar"><h1>LocalServerKt 端点一览</h1></header>
+    <div class="content" id="content"></div>
+    <script>
+        /* markdown 源在 /resources/help.md（staticResources 静态提供），渲染方式同 ai.html */
+        fetch('/resources/help.md')
+            .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+            .then(md => {
+                const el = document.getElementById('content');
+                el.innerHTML = (typeof marked !== 'undefined') ? marked.parse(md) : '<pre>' + md + '</pre>';
+            })
+            .catch(err => {
+                document.getElementById('content').innerHTML = '<pre>加载 help.md 失败: ' + err + '</pre>';
+            });
+    </script>
+</body>
+</html>

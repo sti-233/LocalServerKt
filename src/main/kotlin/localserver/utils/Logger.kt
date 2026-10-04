@@ -24,6 +24,8 @@ object Logger {
     }
 
     fun error(message: String) {
+        // 客户端断开时 Ktor CIO 写通道抛的 ChannelWriteException 属正常现象，忽略以免刷屏
+        if (message.contains("io.ktor.util.cio.ChannelWriteException")) return
         println("[Error] ${Time.getCurrentTimeWithDate()}\n$message\n\n")
         logFile.appendText("[Error] ${Time.getCurrentTimeWithDate()}\n$message\n\n")
     }

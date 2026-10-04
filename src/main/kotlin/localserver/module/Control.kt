@@ -8,6 +8,7 @@ import localserver.utils.Util
 import io.ktor.server.auth.*
 import io.ktor.server.routing.*
 import io.ktor.server.response.*
+import io.ktor.http.*
 import kotlinx.serialization.json.*
 
 object Control {
@@ -27,6 +28,7 @@ object Control {
         link()
         userList()
         canControl()
+        help()
     }
 
     // 前端（如 browser.html）据此隐藏需要 control 鉴权的按钮
@@ -39,9 +41,14 @@ object Control {
         removeUser()
         resetName()
     }
-    
+
     private fun Route.link() = authenticate("control") {
         get("/vnc") { call.respondRedirect("http://${serverIp}:5901") }
+    }
+
+    // 端点清单：control 鉴权后跳转 resources/help.html（页面 fetch /resources/help.md 用 marked.js 渲染，与 ai.html 一致）
+    private fun Route.help() = authenticate("control") {
+        get("/help") { call.respondRedirect("/resources/help.html") }
     }
 
     private fun Route.control() = authenticate("control") {
