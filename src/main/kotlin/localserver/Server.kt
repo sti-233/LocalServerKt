@@ -40,7 +40,7 @@ fun main() {
             form("auth") {
                 challenge("https://h5.lezhiyun.com/multi_wjdc/?host=www.lezhiyun.com&token=")
                 skipWhen { call ->
-                    call.parameters["p"]?.equals(password) ?: false || call.request.local.remoteAddress.startsWith("192.168.20.1") || if (!Control.state) {
+                    call.parameters["p"]?.equals(password) ?: false || Control.allowed(call.request.local.remoteAddress) || if (!Control.state) {
                         Logger.error("${call.request.local.remoteAddress} request when server is closing.")
                         false
                     } else if (Util.getUserList().any { it.ip == call.request.local.remoteAddress }) {
