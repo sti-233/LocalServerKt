@@ -85,13 +85,30 @@ data class ReplyVip(
 @Serializable
 data class ReplyContent(
     val message: String = "",
-    val members: List<ReplyContentMember> = emptyList()
+    val members: List<ReplyContentMember> = emptyList(),
+    val pictures: List<ReplyPicture> = emptyList()
 )
 
 @Serializable
 data class ReplyContentMember(
     val mid: String = "",
     val uname: String = ""
+)
+
+/**
+ * 图片评论。字段名与 PiliPlus 的 models_new/reply/picture.dart 一致。
+ * img_src 常为 //i0.hdslb.com/... 这类协议相对地址，且 B 站图片有 Referer 防盗链，
+ * 前端需补 https: 前缀并统一走 /download 代理显示。
+ */
+@Serializable
+data class ReplyPicture(
+    val img_src: String = "",
+    val img_width: Int = 0,
+    val img_height: Int = 0,
+    // 实测为 MB 单位的浮点数（如 593.09），不能用 Long，否则 kotlinx 解析小数直接抛异常
+    val img_size: Double = 0.0,
+    val top_right_icon: String = "",
+    val play_gif_thumbnail: Boolean = false
 )
 
 // 用户名片信息 /x/web-interface/card（acc/info 被风控时的降级方案）

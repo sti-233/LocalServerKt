@@ -211,6 +211,18 @@ function createCommentSection(container, aid) {
         const official = m.official_verify && m.official_verify.type >= 0;
         const upFlag = upMid && String(c.mid) === String(upMid);
 
+        // 图片评论（content.pictures，与 PiliPlus 同一字段）：正文下方显示缩略图，
+        // 带 data-lb 交给全局 lightbox 点击预览。img_src 常是 //i0.hdslb.com/... 协议相对
+        // 地址且 B 站图片有 Referer 防盗链，统一走 imgUrl() 的 /download 代理。
+        // 固定 96px 高度、宽度自适应，不同比例的图片也不把评论区撑乱。
+        const pics = ((c.content && c.content.pictures) || [])
+            .filter(p => p && p.img_src && p.img_src.length > 0);
+        const picsHtml = pics.length
+            ? `<div class="cmt-pics">${pics.map(p =>
+                `<img data-lb src="${esc(imgUrl(p.img_src))}" referrerpolicy="no-referrer" loading="lazy" alt="" title="点击查看大图">`
+              ).join('')}</div>`
+            : '';
+
         const sub = (c.replies || []).map(r => {
             const rm = r.member || {};
             return `<div>
@@ -234,6 +246,7 @@ function createCommentSection(container, aid) {
                     <span class="time">${esc(fmtTime(c.ctime))}</span>
                 </div>
                 <div class="text">${esc((c.content && c.content.message) || '')}</div>
+                ${picsHtml}
                 <div class="cfoot">
                     <span>👍 ${fmtNum(c.like)}</span>
                     ${c.count > 0 ? `<span>💬 ${c.count} 条回复</span>` : ''}

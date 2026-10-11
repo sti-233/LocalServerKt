@@ -372,6 +372,22 @@ body {
 .cmt .time { font-size: 12px; color: var(--muted); }
 .cmt .text { font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .cmt .cfoot { font-size: 12px; color: var(--muted); margin-top: 5px; display: flex; gap: 14px; }
+/* 图片评论缩略图行：位于正文下方，点击由全局 lightbox（data-lb）放大预览。
+   用 margin 而非 flex gap 排版，兼容 Chrome 80（<84 不支持 flex gap）。 */
+.cmt-pics {
+    display: flex;
+    flex-wrap: wrap;
+    margin-top: 7px;
+}
+.cmt-pics img {
+    height: 96px;
+    width: auto;
+    margin: 0 8px 8px 0;
+    border-radius: 6px;
+    object-fit: cover;
+    background: var(--border);
+    cursor: zoom-in;
+}
 
 .badge {
     font-size: 11px;

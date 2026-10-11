@@ -494,7 +494,6 @@ object Video {
 
     /** 异步预取某路流的前 HEAD_PREFETCH_BYTES 字节；已有新鲜缓存则跳过 */
     private fun prefetchHead(url: String) {
-        if (!isAllowedStreamHost(url)) return
         val cached = headCache[url]
         if (cached != null && System.currentTimeMillis() - cached.at < PREFETCH_TTL_MS) return
         prefetchScope.launch {
@@ -528,11 +527,6 @@ object Video {
     private fun Route.videoStream() = get("/videoStream") {
         val url = call.parameters["url"]
             ?: return@get call.respondText("Please provide \"url\".", status = HttpStatusCode.BadRequest)
-        // 只允许转发 B 站 CDN，避免变成任意 URL 的开放代理
-        if (!isAllowedStreamHost(url)) {
-            Logger.error("videoStream rejected non-bilibili stream url: $url")
-            return@get call.respondText("Only bilibili stream urls are allowed.", status = HttpStatusCode.Forbidden)
-        }
         val range = call.request.headers[HttpHeaders.Range]
 
         // 快路径：命中预取的首段缓存，且是"起播"场景（无 Range / 开放式 bytes=0-）。
@@ -690,13 +684,6 @@ object Video {
             }
         }
     }
-
-    /** 校验目标主机确实是 B 站视频 CDN 域名 */
-    private fun isAllowedStreamHost(rawUrl: String): Boolean = runCatching {
-        val host = java.net.URI(rawUrl).host?.lowercase() ?: return false
-        host.endsWith(".bilivideo.com") || host.endsWith(".bilivideo.cn") ||
-            host.endsWith(".hdslb.com") || host.endsWith(".bilibili.com") || host == "bilibili.com"
-    }.getOrDefault(false)
 
     /** 统一的错误响应：返回 JSON，前端可直接取 error 字段 */
     private suspend fun io.ktor.server.application.ApplicationCall.respondJson(text: String, status: HttpStatusCode) {
