@@ -1,6 +1,9 @@
 package localserver.module
 
 import io.ktor.client.*
+import io.ktor.client.network.sockets.ConnectTimeoutException
+import io.ktor.client.plugins.HttpRequestTimeoutException
+import io.ktor.client.plugins.sse.SSEClientException
 import io.ktor.client.plugins.sse.serverSentEventsSession
 import io.ktor.client.request.*
 import io.ktor.http.*
@@ -13,6 +16,7 @@ import io.ktor.server.sse.heartbeat
 import io.ktor.server.sse.sse
 import io.ktor.sse.ServerSentEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
@@ -22,6 +26,7 @@ import localserver.types.AiConversationListResponse
 import localserver.types.AiConversationResponse
 import localserver.types.AiErrorResponse
 import localserver.types.AiMessage
+import localserver.types.AiShareResponse
 import localserver.types.AiToolCall
 import localserver.utils.AiHistory
 import localserver.utils.HttpClient as Http
@@ -30,6 +35,7 @@ import localserver.utils.Secrets
 import localserver.utils.Time
 import localserver.utils.Util
 import localserver.utils.toModelJson
+import localserver.serverIp
 import kotlin.time.Duration.Companion.seconds
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -54,12 +60,14 @@ object Ai {
     private val sessions = ConcurrentHashMap<String, AiSession>()
 
     // 内存会话：消息在内存维护，落盘时整体覆盖写入（会话体积小，整体写简单，也避免写出半截坏文件）
+    // anonymous=true 的匿名会话永不落盘，关闭/刷新页面即从内存销毁
     private class AiSession(
         val id: String,
         var name: String,
         var custom: Boolean,
         val createdAt: String,
-        val messages: MutableList<AiMessage> = mutableListOf()
+        val messages: MutableList<AiMessage> = mutableListOf(),
+        var anonymous: Boolean = false
     ) {
         // 转为可序列化的存档对象
         fun toConversation(now: String): AiConversation = AiConversation(
@@ -68,7 +76,8 @@ object Ai {
             custom = custom,
             createdAt = createdAt,
             updatedAt = now,
-            messages = messages.toList()
+            messages = messages.toList(),
+            anonymous = anonymous
         )
     }
 
@@ -137,10 +146,248 @@ object Ai {
     }
 
     // 把内存会话落盘（整体覆盖）；失败只记日志，不打断对话
+    // 匿名会话直接跳过：它的全部内容只应存在于内存里
     private fun persist(ip: String, session: AiSession) {
+        if (session.anonymous) return
         val now = Time.getCurrentTimeWithDate()
         AiHistory.save(userNameOf(ip), session.toConversation(now))
     }
+
+    /* ==================== 匿名会话 ==================== */
+
+    // 新建一个匿名会话（不落盘）：id 仍用标准格式，避免前端各处校验要特殊分支
+    private fun newAnonymousSession(ip: String): AiSession {
+        val now = Time.getCurrentTimeWithDate()
+        val session = AiSession(
+            id = AiHistory.newId(now),
+            name = "匿名对话 " + (if (now.length >= 16) now.substring(5, 16) else now),
+            custom = true,
+            createdAt = now,
+            anonymous = true
+        )
+        sessions[ip] = session
+        return session
+    }
+
+    /* ==================== 回溯（rewind） ==================== */
+
+    // 取某会话的消息列表（内存优先，其次存档）；拿不到返回 null
+    // 返回的是可直接在锁内修改的 MutableList，调用方负责后续落盘
+    private fun messagesOf(ip: String, id: String): MutableList<AiMessage>? {
+        sessions[ip]?.takeIf { it.id == id }?.let { return it.messages }
+        val stored = AiHistory.load(userNameOf(ip), id) ?: return null
+        val session = AiSession(stored.id, stored.name, stored.custom, stored.createdAt, stored.messages.toMutableList())
+        sessions[ip] = session
+        return session.messages
+    }
+
+    /* ==================== 匿名会话 ==================== */
+
+    // 新建匿名会话：只在内存里，不落盘
+    private fun Route.newAnonymous() = post("/ai/conversation/anonymous") {
+        val clientIp = call.request.local.remoteAddress
+        val session = newAnonymousSession(clientIp)
+        call.respondText(
+            json.encodeToString(buildJsonObject {
+                put("id", session.id)
+                put("name", session.name)
+                put("anonymous", true)
+            }),
+            contentType = ContentType.Application.Json
+        )
+    }
+
+    // 销毁匿名会话：离开页面时由前端 sendBeacon 调用；非匿名会话忽略
+    private fun Route.endAnonymous() = post("/ai/conversation/anonymous/end") {
+        val clientIp = call.request.local.remoteAddress
+        val body = runCatching { bodyOf(call.receiveText()) }.getOrNull()
+        val id = body?.get("id")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val current = sessions[clientIp]
+        val killed = if (current != null && current.anonymous && (id.isEmpty() || current.id == id)) {
+            sessions.remove(clientIp)
+            true
+        } else {
+            false
+        }
+        call.respondText(
+            json.encodeToString(buildJsonObject { put("ended", killed) }),
+            contentType = ContentType.Application.Json
+        )
+    }
+
+    // 按"第几条用户消息"回溯：删除该用户消息及其之后的全部记录，返回被删掉的原文
+    // 用序号而不是数组下标：前端既有历史回放也有流式新消息时都能稳定指认
+    private fun Route.rewindConversation() = post("/ai/conversation/rewind") {
+        val clientIp = call.request.local.remoteAddress
+        val body = bodyOf(call.receiveText())
+        val id = body?.get("id")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val ord = body?.get("ord")?.jsonPrimitive?.intOrNull ?: -1
+        if (!AiHistory.isValidId(id)) {
+            respondError(call, HttpStatusCode.BadRequest, "Invalid conversation id.")
+            return@post
+        }
+        if (ord < 0) {
+            respondError(call, HttpStatusCode.BadRequest, "Invalid message ordinal.")
+            return@post
+        }
+        val messages = messagesOf(clientIp, id)
+        if (messages == null) {
+            respondError(call, HttpStatusCode.NotFound, "Conversation not found.")
+            return@post
+        }
+        val userIndexes = synchronized(messages) {
+            messages.indices.filter { messages[it].role == "user" }
+        }
+        val target = userIndexes.getOrNull(ord)
+        if (target == null) {
+            respondError(call, HttpStatusCode.NotFound, "Message not found.")
+            return@post
+        }
+        val removed = synchronized(messages) {
+            val text = messages[target].content
+            while (messages.size > target) messages.removeAt(messages.size - 1)
+            text
+        }
+        // 内存会话由 persist 落盘（匿名会话自动跳过）；没有内存会话时直接改存档文件
+        val session = sessions[clientIp]?.takeIf { it.id == id }
+        if (session != null) {
+            persist(clientIp, session)
+        } else {
+            val stored = AiHistory.load(userNameOf(clientIp), id)
+            if (stored != null) {
+                stored.messages = messages.toList()
+                AiHistory.save(userNameOf(clientIp), stored)
+            }
+        }
+        call.respondText(
+            json.encodeToString(buildJsonObject {
+                put("id", id)
+                put("removed", removed)
+                put("count", messages.size)
+            }),
+            contentType = ContentType.Application.Json
+        )
+    }
+
+    /* ==================== 分享链接 ==================== */
+
+    // 为会话生成只读外链（同一会话重复生成复用旧链接）
+    private fun Route.shareConversation() = post("/ai/share") {
+        val clientIp = call.request.local.remoteAddress
+        val body = bodyOf(call.receiveText())
+        val id = body?.get("id")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        if (!AiHistory.isValidId(id)) {
+            respondError(call, HttpStatusCode.BadRequest, "Invalid conversation id.")
+            return@post
+        }
+        // 匿名会话不落盘，别人拿走链接也读不到内容，直接拒绝
+        if (sessions[clientIp]?.takeIf { it.id == id }?.anonymous == true) {
+            respondError(call, HttpStatusCode.BadRequest, "Anonymous conversation cannot be shared.")
+            return@post
+        }
+        val share = AiHistory.createShare(userNameOf(clientIp), id)
+        if (share == null) {
+            respondError(call, HttpStatusCode.BadRequest, "Cannot create share link.")
+            return@post
+        }
+        call.respondText(
+            json.encodeToString(AiShareResponse(
+                token = share.token,
+                url = shareUrl(share.token),
+                convId = share.convId
+            )),
+            contentType = ContentType.Application.Json
+        )
+    }
+
+    // 撤销分享
+    private fun Route.revokeShare() = post("/ai/share/revoke") {
+        val clientIp = call.request.local.remoteAddress
+        val body = bodyOf(call.receiveText())
+        val id = body?.get("id")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        if (!AiHistory.isValidId(id)) {
+            respondError(call, HttpStatusCode.BadRequest, "Invalid conversation id.")
+            return@post
+        }
+        val removed = AiHistory.revokeShare(userNameOf(clientIp), id)
+        call.respondText(
+            json.encodeToString(buildJsonObject {
+                put("id", id)
+                put("revoked", removed)
+            }),
+            contentType = ContentType.Application.Json
+        )
+    }
+
+    // 分享页数据（不校验登录：拿到令牌即可只读查看）
+    private fun Route.sharedConversation() = get("/ai/share/info") {
+        val token = call.parameters["t"]?.trim().orEmpty()
+        val share = AiHistory.findShare(token)
+        if (share == null) {
+            respondError(call, HttpStatusCode.NotFound, "Share link not found or revoked.")
+            return@get
+        }
+        val conv = AiHistory.load(share.owner, share.convId)
+        if (conv == null) {
+            respondError(call, HttpStatusCode.NotFound, "Shared conversation no longer exists.")
+            return@get
+        }
+        val snapshot = synchronized(conv.messages) { conv.messages.toList() }
+        call.respondText(
+            json.encodeToString(AiConversationResponse(
+                id = conv.id,
+                name = conv.name,
+                custom = conv.custom,
+                createdAt = conv.createdAt,
+                updatedAt = conv.updatedAt,
+                messages = snapshot.map { it.toModelJson() },
+                readonly = true
+            )),
+            contentType = ContentType.Application.Json
+        )
+    }
+
+    // 把分享的会话复制一份到"自己"名下，之后可以继续聊（原会话不受影响）
+    private fun Route.cloneSharedConversation() = post("/ai/share/clone") {
+        val clientIp = call.request.local.remoteAddress
+        val body = bodyOf(call.receiveText())
+        val token = body?.get("t")?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val share = AiHistory.findShare(token)
+        if (share == null) {
+            respondError(call, HttpStatusCode.NotFound, "Share link not found or revoked.")
+            return@post
+        }
+        val src = AiHistory.load(share.owner, share.convId)
+        if (src == null) {
+            respondError(call, HttpStatusCode.NotFound, "Shared conversation no longer exists.")
+            return@post
+        }
+        val now = Time.getCurrentTimeWithDate()
+        val copy = AiHistory.create(userNameOf(clientIp), "副本 · " + src.name, now)
+        copy.messages = src.messages.toList()
+        AiHistory.save(userNameOf(clientIp), copy)
+        sessions[clientIp] = AiSession(copy.id, copy.name, copy.custom, copy.createdAt, copy.messages.toMutableList())
+        call.respondText(
+            json.encodeToString(buildJsonObject {
+                put("id", copy.id)
+                put("name", copy.name)
+            }),
+            contentType = ContentType.Application.Json
+        )
+    }
+
+    // 分享短链：/s/<令牌> → 带上令牌跳到阅读页
+    private fun Route.shareLink() = get("/s/{token}") {
+        val token = call.parameters["token"]?.trim().orEmpty()
+        if (!AiHistory.isValidToken(token)) {
+            call.respondText("分享链接无效。", status = HttpStatusCode.NotFound)
+            return@get
+        }
+        call.respondRedirect("/resources/ai.html?share=" + URLEncoder.encode(token, "UTF-8"))
+    }
+
+    // 完整分享地址（局域网内可直接点开）
+    private fun shareUrl(token: String): String = "http://" + serverIp + "/s/" + token
 
     // 工具定义：get_time（服务器当前时间）、get_location（本机出口 IP 城市定位）、get_weather（彩云天气，紧凑文本）
     private val tools = buildJsonArray {
@@ -235,6 +482,14 @@ object Ai {
         newConversation()
         renameConversation()
         deleteConversation()
+        rewindConversation()
+        newAnonymous()
+        endAnonymous()
+        shareConversation()
+        revokeShare()
+        sharedConversation()
+        cloneSharedConversation()
+        shareLink()
     }
 
     private fun Route.aiPage() = authenticate("auth") {
@@ -273,20 +528,49 @@ object Ai {
                 }
             }
 
-            // 旁路累积上游 chunk 中的回复与思考过程，用于流结束后写入 history
+            // 一轮之内上游会分几次说话：先思考，再可能给出 tool_calls（本地执行工具），
+            // 最后才是正文。parts 按发生顺序记下这些片段并原样落盘——若合成一条 assistant，
+            // 思考与正文的分段、以及"正文在工具调用之后"这个顺序都会丢，
+            // 前端回放时（以及模型回看历史时）就无法还原当时走了几步。
+            val parts = mutableListOf<AiMessage>()
+            // 当前这一轮请求的正文与思考缓冲（进入工具轮时清空重来）
             val reply = StringBuilder()
             val thinking = StringBuilder()
 
+            // 把已累积的片段写进会话历史并清空（保持"先发生先落"的唯一顺序）
+            fun commitParts() {
+                if (parts.isEmpty()) return
+                synchronized(history) { history.addAll(parts) }
+                parts.clear()
+            }
+
+            // 本轮请求产出的思考 / 正文按"思考在前、正文在后"追加成片段
+            fun flushSegments() {
+                if (thinking.isNotEmpty()) {
+                    parts.add(AiMessage(
+                        role = "assistant",
+                        reasoning = thinking.toString(),
+                        time = Time.getCurrentTimeWithDate()
+                    ))
+                }
+                if (reply.isNotEmpty()) {
+                    parts.add(AiMessage(
+                        role = "assistant",
+                        content = reply.toString(),
+                        time = Time.getCurrentTimeWithDate()
+                    ))
+                }
+                thinking.setLength(0)
+                reply.setLength(0)
+            }
+
             fun recordAssistant(interrupted: Boolean) {
-                if (reply.isEmpty() && thinking.isEmpty()) return
-                val entry = AiMessage(
-                    role = "assistant",
-                    content = reply.toString(),
-                    reasoning = thinking.toString().takeIf { it.isNotEmpty() },
-                    interrupted = interrupted,
-                    time = Time.getCurrentTimeWithDate()
-                )
-                synchronized(history) { history.add(entry) }
+                // 中断标记只打在最后一段上：前端据此在收尾处提示"回答在传输中断开"
+                if (interrupted && parts.isNotEmpty()) {
+                    val last = parts.removeAt(parts.lastIndex)
+                    parts.add(last.copy(interrupted = true))
+                }
+                commitParts()
             }
 
             // 每轮请求前在锁内取最新 messages 快照（工具结果可能刚写回）
@@ -312,63 +596,112 @@ object Ai {
                 // 工具调用循环：模型给出 tool_calls 时本地执行工具，
                 // 把 assistant(tool_calls) 与 role=tool 结果写回 history 后继续请求，
                 // 直到模型给出最终回复
-                // <- 改：单轮流改成 while 循环
                 while (true) {
-                    // 客户端 SSE 会话（io.ktor.client.plugins.sse.serverSentEventsSession）
-                    val upstream = Http.sse.serverSentEventsSession(urlString = baseUrl) {
-                        method = HttpMethod.Post
-                        header(HttpHeaders.Authorization, "Bearer $apiKey")
-                        contentType(ContentType.Application.Json)
-                        setBody(buildBody())
-                    }
+                    reply.setLength(0)
+                    thinking.setLength(0)
                     // 聚合流中 delta.tool_calls（arguments 为分片，按 index 拼接）
                     val toolCalls = LinkedHashMap<Int, JsonObject>()
                     var finishReason: String? = null
-                    // 把上游事件逐条转发给服务端 SSE 会话，并旁路解析 chunk
-                    // 循环内：把上游事件逐条转发给服务端 SSE 会话，并旁路解析 chunk
-                    // [DONE] 是"本轮"的结束标记，多轮工具循环期间不能转发给前端（前端见 [DONE] 会断连），
-                    // 循环真正结束后统一补发
-                    upstream.incoming.collect { event ->
-                        if (event.data == "[DONE]") return@collect
-                        finishReason = parseDelta(event, reply, thinking, toolCalls) ?: finishReason
-                        send(event)
+                    var attempt = 0
+                    while (true) {
+                        attempt++
+                        // 本轮是否已经往客户端转发过内容：转发过就不能重试，
+                        // 否则重开一次上游会让前端收到重复的思考/正文片段
+                        var forwarded = false
+                        try {
+                            // 客户端 SSE 会话（io.ktor.client.plugins.sse.serverSentEventsSession）
+                            val upstream = Http.sse.serverSentEventsSession(urlString = baseUrl) {
+                                method = HttpMethod.Post
+                                header(HttpHeaders.Authorization, "Bearer $apiKey")
+                                contentType(ContentType.Application.Json)
+                                setBody(buildBody())
+                            }
+                            // [DONE] 是"本轮"的结束标记，多轮工具循环期间不能转发给前端（前端见 [DONE] 会断连），
+                            // 循环真正结束后统一补发
+                            upstream.incoming.collect { event ->
+                                if (event.data == "[DONE]") return@collect
+                                finishReason = parseDelta(event, reply, thinking, toolCalls) ?: finishReason
+                                forwarded = true
+                                send(event)
+                            }
+                            break
+                        } catch (retryError: Exception) {
+                            // 客户端取消照旧往上抛，不当作上游故障
+                            if (retryError is CancellationException) throw retryError
+                            if (!canRetryUpstream(attempt, forwarded, retryError)) throw retryError
+                            // 重试前清掉这一轮半截的缓冲，避免拼出重复内容
+                            reply.setLength(0)
+                            thinking.setLength(0)
+                            toolCalls.clear()
+                            finishReason = null
+                            val backoff = upstreamRetryBaseDelayMs * attempt
+                            Logger.error(
+                                "AI upstream attempt $attempt/$upstreamMaxAttempts failed " +
+                                    "(${retryError::class.simpleName}: ${retryError.message}), " +
+                                    "retrying in ${backoff}ms"
+                            )
+                            delay(backoff)
+                        }
                     }
                     if (finishReason != "tool_calls" || toolCalls.isEmpty()) {
-                        // 正常结束：记录完整的 assistant 回复与思考过程
+                        // 正常结束：思考与正文各成一段，按发生顺序落盘
+                        flushSegments()
                         recordAssistant(false)
                         break
                     }
-                    // 把带 tool_calls 的 assistant 条目与工具结果写进 history，否则下一轮丢上下文
-                    synchronized(history) {
-                        history.add(AiMessage(
+                    // 工具轮：本轮已有的思考与正文先单独成段，再紧跟工具调用与结果，
+                    // 这样"思考 → 调工具 → 看到结果 → 再回答"的先后关系才能留存
+                    val calls = toolCalls.values.map { tc ->
+                        val fn = tc["function"] as? JsonObject
+                        AiToolCall(
+                            id = tc.getString("id").orEmpty(),
+                            type = tc.getString("type") ?: "function",
+                            name = fn?.getString("name").orEmpty(),
+                            arguments = fn?.getString("arguments").orEmpty()
+                        )
+                    }
+                    // 思考单独成段（只给前端看，发往模型时会被跳过）
+                    if (thinking.isNotEmpty()) {
+                        parts.add(AiMessage(
                             role = "assistant",
-                            content = reply.toString(),
-                            toolCalls = toolCalls.values.map { tc ->
-                                val fn = tc["function"] as? JsonObject
-                                AiToolCall(
-                                    id = tc.getString("id").orEmpty(),
-                                    type = tc.getString("type") ?: "function",
-                                    name = fn?.getString("name").orEmpty(),
-                                    arguments = fn?.getString("arguments").orEmpty()
-                                )
-                            },
+                            reasoning = thinking.toString(),
                             time = Time.getCurrentTimeWithDate()
                         ))
-                        toolCalls.values.forEach { tc ->
-                            val fn = tc["function"] as? JsonObject
-                            val name = fn?.getString("name").orEmpty()
-                            val args = fn?.getString("arguments").orEmpty()
-                            history.add(AiMessage(
-                                role = "tool",
-                                content = executeTool(name, args),
-                                toolCallId = tc.getString("id"),
-                                time = Time.getCurrentTimeWithDate()
-                            ))
+                        thinking.setLength(0)
+                    }
+                    // 正文与 tool_calls 必须留在同一条 assistant 里：
+                    // 上游要求"带 tool_calls 的 assistant 后面紧跟 tool 结果"，
+                    // 拆成两条连续 assistant 会让上下文格式变味
+                    val callEntry = AiMessage(
+                        role = "assistant",
+                        content = reply.toString(),
+                        toolCalls = calls,
+                        time = Time.getCurrentTimeWithDate()
+                    )
+                    reply.setLength(0)
+                    commitParts()
+                    val resultEntries = calls.map { c ->
+                        AiMessage(
+                            role = "tool",
+                            content = executeTool(c.name, c.arguments),
+                            toolCallId = c.id,
+                            time = Time.getCurrentTimeWithDate()
+                        )
+                    }
+                    // 写回会话历史后下一轮才有上下文
+                    synchronized(history) {
+                        history.add(callEntry)
+                        history.addAll(resultEntries)
+                    }
+                    // 即时请求也要看到工具结果：role=tool 原本只写进历史，前端流式渲染拿不到，
+                    // 于是"这一轮工具返回了什么"当场永远是空白。工具调用本身由上游 delta 转发。
+                    resultEntries.forEach { entry ->
+                        try {
+                            send(ServerSentEvent(data = entry.toModelJson().toString()))
+                        } catch (sendError: Exception) {
+                            Logger.error("Failed to forward tool result: $sendError")
                         }
                     }
-                    // 清空缓冲，进入下一轮
-                    reply.setLength(0)
-                    thinking.setLength(0)
                 }
                 // 补发本轮 [DONE] 作为整条流的结束标记（工具轮已跳过）
                 try {
@@ -378,11 +711,16 @@ object Ai {
                 }
             } catch (e: CancellationException) {
                 Logger.error("AI request cancelled (client disconnected): $e")
-                // 工具循环已 break 后再取消（心跳协程残余写通道），reply 已清空，不重复记录
-                if (reply.isNotEmpty() || thinking.isNotEmpty()) recordAssistant(true)
+                // 客户端断开时上游可能已经吐出半截思考/正文，先落成片段再标记中断；
+                // 工具循环正常 break 之后的残余取消不会留下内容（缓冲已清空），不会误记
+                if (reply.isNotEmpty() || thinking.isNotEmpty() || parts.isNotEmpty()) {
+                    flushSegments()
+                    recordAssistant(true)
+                }
                 throw e
             } catch (e: Exception) {
                 Logger.error("AI upstream error: $e")
+                flushSegments()
                 recordAssistant(true)
                 // 通道可能已不可写（例如客户端已断开），send 失败时静默忽略
                 try {
@@ -416,9 +754,10 @@ object Ai {
         }
         val session = sessions[clientIp]
         // 内存里没有该会话时回落到存档（进程重启后仍能恢复）
+        // 内存会话优先：匿名会话没有存档，只能从这里取
         val messages = if (convId != null) {
-            AiHistory.load(userNameOf(clientIp), convId)?.messages
-                ?: session?.takeIf { it.id == convId }?.messages
+            session?.takeIf { it.id == convId }?.messages
+                ?: AiHistory.load(userNameOf(clientIp), convId)?.messages
                 ?: emptyList()
         } else {
             session?.messages ?: emptyList()
@@ -460,7 +799,16 @@ object Ai {
     // 按最后一条消息发出时间从新到旧排序
     private fun Route.conversations() = get("/ai/conversations") {
         val clientIp = call.request.local.remoteAddress
-        val items = AiHistory.list(userNameOf(clientIp))
+        val stored = AiHistory.list(userNameOf(clientIp))
+        val current = sessions[clientIp]
+        // 匿名会话不落盘，AiHistory.list 扫不到，单独拼一条放最前面
+        val items = if (current != null && current.anonymous) {
+            val summary = AiHistory.summarize(current.toConversation(Time.getCurrentTimeWithDate()))
+                .copy(anonymous = true)
+            listOf(summary) + stored
+        } else {
+            stored
+        }
         val active = sessions[clientIp]?.id ?: ""
         call.respondText(
             json.encodeToString(AiConversationListResponse(items = items, active = active)),
@@ -476,9 +824,9 @@ object Ai {
             respondError(call, HttpStatusCode.BadRequest, "Invalid conversation id.")
             return@get
         }
-        // 内存里正在聊的会话优先（可能比落盘更新）
+        // 内存里正在聊的会话优先（可能比落盘更新；匿名会话只有内存这一份）
         val session = sessions[clientIp]?.takeIf { it.id == id }
-        val stored = AiHistory.load(userNameOf(clientIp), id)
+        val stored = if (session != null) null else AiHistory.load(userNameOf(clientIp), id)
         val messages = session?.messages ?: stored?.messages ?: emptyList()
         val name = session?.name ?: stored?.name ?: AiHistory.defaultName()
         val custom = session?.custom ?: stored?.custom ?: false
@@ -499,7 +847,8 @@ object Ai {
                 custom = custom,
                 createdAt = createdAt,
                 updatedAt = updatedAt,
-                messages = messages.map { it.toModelJson() }
+                messages = messages.map { it.toModelJson() },
+                anonymous = session?.anonymous ?: false
             )),
             contentType = ContentType.Application.Json
         )
@@ -537,6 +886,20 @@ object Ai {
             respondError(call, HttpStatusCode.BadRequest, "Name is empty.")
             return@post
         }
+        // 匿名会话没有存档文件，改名只改内存
+        val anon = sessions[clientIp]?.takeIf { it.id == id && it.anonymous }
+        if (anon != null) {
+            anon.name = clean
+            anon.custom = true
+            call.respondText(
+                json.encodeToString(buildJsonObject {
+                    put("id", anon.id)
+                    put("name", anon.name)
+                }),
+                contentType = ContentType.Application.Json
+            )
+            return@post
+        }
         val renamed = AiHistory.rename(userNameOf(clientIp), id, clean)
         if (renamed == null) {
             respondError(call, HttpStatusCode.NotFound, "Conversation not found.")
@@ -565,6 +928,19 @@ object Ai {
             respondError(call, HttpStatusCode.BadRequest, "Invalid conversation id.")
             return@post
         }
+        // 匿名会话不落盘，删除只需从内存摘掉
+        val anon = sessions[clientIp]?.takeIf { it.id == id && it.anonymous }
+        if (anon != null) {
+            sessions.remove(clientIp)
+            call.respondText(
+                json.encodeToString(buildJsonObject {
+                    put("id", id)
+                    put("deleted", true)
+                }),
+                contentType = ContentType.Application.Json
+            )
+            return@post
+        }
         val deleted = AiHistory.delete(userNameOf(clientIp), id)
         if (!deleted) {
             respondError(call, HttpStatusCode.NotFound, "Conversation not found.")
@@ -572,6 +948,8 @@ object Ai {
         }
         // 删掉的正好是当前会话：内存里也清掉（下次发消息会新建一个）
         sessions[clientIp]?.takeIf { it.id == id }?.let { sessions.remove(clientIp) }
+        // 一并撤销分享链接，否则留下指向空会话的死链
+        AiHistory.revokeShare(userNameOf(clientIp), id)
         call.respondText(
             json.encodeToString(buildJsonObject {
                 put("id", id)
@@ -1006,6 +1384,37 @@ private fun List<AiMessage>.toModelMessages(): JsonArray =
 // 返回本 chunk 的 finish_reason（可能为 null）。
 // 解析失败（如 [DONE] 或非 JSON 事件）静默跳过，不影响原样转发。
 // <- 改：新增 toolCalls 聚合与返回值
+// 上游偶发失败的重试次数（含首次）与退避基数
+internal const val upstreamMaxAttempts = 5
+internal const val upstreamRetryBaseDelayMs = 1500L
+
+/* 判断上游异常是否值得重试：连接超时、请求超时、IO 断开、5xx、408、429。
+   4xx 里其余状态（400/401/403/404…）是请求本身有问题，重试只会重复失败。 */
+internal fun isRetryableUpstreamError(e: Throwable): Boolean {
+    if (e is CancellationException) return false
+    var cur: Throwable? = e
+    while (cur != null) {
+        when (cur) {
+            is SSEClientException -> {
+                val status = cur.response?.status
+                    ?: return true // 没有响应对象（连接阶段就失败）同样值得重试
+                return status.value >= 500 ||
+                    status == HttpStatusCode.RequestTimeout ||
+                    status == HttpStatusCode.TooManyRequests
+            }
+            is HttpRequestTimeoutException,
+            is ConnectTimeoutException,
+            is java.io.IOException -> return true
+        }
+        cur = cur.cause
+    }
+    return false
+}
+
+/* 这一轮还能不能再试一次：已经往客户端转发过内容就不能——重开上游会让前端收到重复片段。 */
+internal fun canRetryUpstream(attempt: Int, forwarded: Boolean, error: Throwable): Boolean =
+    !forwarded && attempt < upstreamMaxAttempts && isRetryableUpstreamError(error)
+
 private fun parseDelta(
     event: ServerSentEvent,
     reply: StringBuilder,

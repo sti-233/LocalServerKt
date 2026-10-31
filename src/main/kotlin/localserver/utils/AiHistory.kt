@@ -2,6 +2,8 @@ package localserver.utils
 
 import localserver.types.AiConversation
 import localserver.types.AiConversationSummary
+import localserver.types.AiShare
+import localserver.types.AiShareStore
 
 import kotlinx.serialization.json.Json
 
@@ -203,5 +205,81 @@ object AiHistory {
     } catch (e: Exception) {
         Logger.error("AiHistory: failed to parse ${file.name}: ${e.message}")
         null
+    }
+
+    /* ==================== 分享链接 ==================== */
+
+    /** 分享记录文件名：放在 cache/ai 根目录，下划线前缀避免与用户名目录同名 */
+    private const val SHARE_FILE = "_shares.json"
+
+    /** 分享令牌长度（hex 字符数）：24 位 = 96 bit，无法枚举 */
+    private const val SHARE_TOKEN_HEX = 24
+
+    private val tokenRegex = Regex("^[0-9a-f]{$SHARE_TOKEN_HEX}$")
+
+    /** 令牌是否合法（防注入，也避免拿任意串去扫表） */
+    fun isValidToken(token: String): Boolean = tokenRegex.matches(token)
+
+    private fun shareStoreFile(base: File = File(DEFAULT_ROOT)): File = File(base, SHARE_FILE)
+
+    /** 读取全部分享记录；文件缺失或损坏时返回空表（分享挂了不影响聊天主流程） */
+    fun loadShares(base: File = File(DEFAULT_ROOT)): List<AiShare> {
+        val file = shareStoreFile(base)
+        if (!file.exists()) return emptyList()
+        return try {
+            storeJson.decodeFromString<AiShareStore>(file.readText().trimStart('\uFEFF')).items
+        } catch (e: Exception) {
+            Logger.error("AiHistory: failed to parse share store: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /** 写入全部分享记录（整体覆盖；失败只记日志） */
+    fun saveShares(items: List<AiShare>, base: File = File(DEFAULT_ROOT)): Boolean = try {
+        val file = shareStoreFile(base)
+        val dir = file.parentFile
+        if (dir != null && !dir.exists() && !dir.mkdirs()) {
+            Logger.error("AiHistory: cannot create dir ${dir.path}")
+            false
+        } else {
+            file.writeText(storeJson.encodeToString(AiShareStore(items)))
+            true
+        }
+    } catch (e: Exception) {
+        Logger.error("AiHistory: failed to save share store: ${e.message}")
+        false
+    }
+
+    /** 为某会话创建分享令牌；同一会话重复创建时复用旧令牌（链接不会越点越多） */
+    fun createShare(
+        user: String,
+        convId: String,
+        now: String = Time.getCurrentTimeWithDate(),
+        base: File = File(DEFAULT_ROOT)
+    ): AiShare? {
+        if (!isValidId(convId)) return null
+        val owner = sanitizeUser(user)
+        val items = loadShares(base).toMutableList()
+        // 同一 owner+会话已有令牌就复用，避免每点一次分享就多出一条记录
+        items.firstOrNull { it.owner == owner && it.convId == convId }?.let { return it }
+        val token = UUID.randomUUID().toString().replace("-", "").padEnd(SHARE_TOKEN_HEX, '0').take(SHARE_TOKEN_HEX)
+        val share = AiShare(token = token, owner = owner, convId = convId, createdAt = now)
+        items.add(share)
+        return if (saveShares(items, base)) share else null
+    }
+
+    /** 按令牌查分享记录 */
+    fun findShare(token: String, base: File = File(DEFAULT_ROOT)): AiShare? {
+        if (!isValidToken(token)) return null
+        return loadShares(base).firstOrNull { it.token == token }
+    }
+
+    /** 撤销某会话的分享；返回是否真的删掉了记录 */
+    fun revokeShare(user: String, convId: String, base: File = File(DEFAULT_ROOT)): Boolean {
+        val owner = sanitizeUser(user)
+        val items = loadShares(base)
+        val rest = items.filterNot { it.owner == owner && it.convId == convId }
+        if (rest.size == items.size) return false
+        return saveShares(rest, base)
     }
 }

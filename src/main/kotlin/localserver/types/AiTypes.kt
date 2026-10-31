@@ -41,6 +41,8 @@ data class AiToolCall(
 /**
  * 一个会话（一条历史记录）的完整存档，落盘为
  * cache/ai/<ip 对应的用户名>/<id>.json
+ *
+ * 匿名会话（anonymous=true）不落盘，只活在服务端内存里，前端离开页面即销毁。
  */
 @Serializable
 data class AiConversation(
@@ -55,7 +57,9 @@ data class AiConversation(
     /** 最后更新时间 */
     val updatedAt: String = "",
     /** 消息列表 */
-    var messages: List<AiMessage> = emptyList()
+    var messages: List<AiMessage> = emptyList(),
+    /** 匿名会话：只在内存里，不落盘；离开页面销毁 */
+    var anonymous: Boolean = false
 )
 
 /** 会话列表项（侧边栏用）：不含消息正文 */
@@ -70,7 +74,9 @@ data class AiConversationSummary(
     /** 消息条数 */
     val count: Int,
     /** 最后一条消息摘要 */
-    val preview: String
+    val preview: String,
+    /** 匿名会话（不落盘，仅存在于内存） */
+    val anonymous: Boolean = false
 )
 
 /** 会话列表响应：侧边栏数据 + 当前打开的会话 id */
@@ -89,11 +95,48 @@ data class AiConversationResponse(
     val custom: Boolean = false,
     val createdAt: String = "",
     val updatedAt: String = "",
-    val messages: List<JsonObject> = emptyList()
+    val messages: List<JsonObject> = emptyList(),
+    /** 匿名会话（不落盘，离开页面销毁） */
+    val anonymous: Boolean = false,
+    /** 只读查看（通过分享链接打开时为 true，前端隐藏输入框与全部写操作） */
+    val readonly: Boolean = false
 )
 
 /** 通用错误响应 */
 @Serializable
 data class AiErrorResponse(
     val error: String
+)
+
+/**
+ * 一条分享记录：把某个会话只读外链出去。
+ *
+ * 令牌随机生成、不可猜测；会话内容在打开链接时实时读取，
+ * 因此原会话继续更新、或所有者撤销分享，链接立即反映变化。
+ */
+@Serializable
+data class AiShare(
+    /** 分享令牌（URL 里的 t 参数） */
+    val token: String,
+    /** 会话所属用户名（cache/ai 下的目录名） */
+    val owner: String,
+    /** 会话 id */
+    val convId: String,
+    /** 创建时间 */
+    val createdAt: String = ""
+)
+
+/** 全部分享记录的落盘容器 */
+@Serializable
+data class AiShareStore(
+    val items: List<AiShare> = emptyList()
+)
+
+/** 分享创建/查询响应 */
+@Serializable
+data class AiShareResponse(
+    val token: String,
+    /** 可分享到局域网的完整地址 */
+    val url: String,
+    val convId: String
 )
