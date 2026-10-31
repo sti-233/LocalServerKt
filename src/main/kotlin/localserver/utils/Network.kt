@@ -290,7 +290,7 @@ object Network {
         get("/") {
             call.respondRedirect("/resources/browser.html")
         }
-        get("/client-lzysso/h5-sso") {
+        get("/question/{...}") {
             call.respondRedirect("/resources/browser.html")
         }
     }
