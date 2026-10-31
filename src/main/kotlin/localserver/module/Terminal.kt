@@ -69,7 +69,19 @@ object Terminal {
     private class TerminalSession {
         // 与 /defaultFileDir 相同：服务端运行 jar 所在目录；拿不到时退回用户目录
         private val dir = defaultDir().ifEmpty { System.getProperty("user.home") }
-        private val builder = ProcessBuilder("powershell.exe", "-NoLogo", "-NonInteractive")
+        // 编码必须在启动参数里设：控制台的格式化输出（ls/Format-Table 的表头与文件名）
+        // 编码在进程启动时就定型，事后往 stdin 里写 [Console]::OutputEncoding 只影响字符串输出，
+        // 格式化通道仍按启动时的活动代码页（中文系统 936）写出，前端按 UTF-8 解就是乱码。
+        // InputEncoding 也要设，否则含中文的命令/路径会被按 GBK 解码成乱码。
+        // Get-Content 的默认值另需指定：PowerShell 5.1 读无 BOM 文件按系统 ANSI(936) 解，
+        // 现代编辑器存的 UTF-8 文件会变成"浣犲ソ"这类乱码；读 GBK 旧文件需显式 -Encoding Default。
+        private val builder = ProcessBuilder(
+            "powershell.exe", "-NoLogo", "-NonInteractive",
+            "-NoExit", "-Command",
+            "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; " +
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+                "\$PSDefaultParameterValues['Get-Content:Encoding'] = 'utf8'"
+        )
             .redirectErrorStream(true)
             .directory(File(dir))
         private lateinit var process: Process
@@ -79,15 +91,14 @@ object Terminal {
 
         init { start() }
 
-        // 每次（重）启动进程时先强制控制台输出编码为 UTF-8，再丢弃到标记为止的输出。
-        // 编码命令也必须带标记：drain 靠读到标记行终止，否则 init 会一直阻塞，后续命令全无输出
+        // 每次（重）启动进程时的同步：编码已在启动参数里设好，这里只发一行标记把启动输出（PowerShell banner）丢干净
+        // 标记必须发，drain 靠读到标记行终止，否则 init 会一直阻塞，后续命令全无输出
         private fun start() {
             val p = builder.start()
             process = p
             input = BufferedWriter(OutputStreamWriter(p.outputStream, Charsets.UTF_8))
             output = BufferedReader(InputStreamReader(p.inputStream, Charsets.UTF_8))
-            input.write("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8")
-            input.write("; Write-Host('$MARKER' + \$LASTEXITCODE)\n")
+            input.write("Write-Host('$MARKER' + \$LASTEXITCODE)\n")
             input.flush()
             drain()
         }
