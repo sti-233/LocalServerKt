@@ -13,6 +13,15 @@ repositories {
 
 tasks.test {
     useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+    }
+    // 测试在 build/test-work 下运行：服务端按工作目录写 userList.json / cache/ / logs.txt，
+    // 放这里避免污染仓库根目录（build/ 已在 .gitignore 中）
+    workingDir = layout.buildDirectory.dir("test-work").get().asFile
+    doFirst {
+        workingDir.mkdirs()
+    }
 }
 kotlin {
     jvmToolchain(23)
@@ -34,6 +43,10 @@ tasks.jar {
 val ktorVersion = "3.1.1"
 
 dependencies {
+    testImplementation(kotlin("test"))
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testImplementation("io.ktor:ktor-server-test-host-jvm:$ktorVersion")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-netty:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")

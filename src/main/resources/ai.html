@@ -292,6 +292,103 @@
         }
         .rerender-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
 
+        /* ===== 会话侧边栏：参考 chat.html 的会话列表 =====
+           侧边栏可收起（.layout 无 .sidebar-open 时贴左边框），宽 230px */
+        .layout { flex: 1; display: flex; min-height: 0; }
+        .right-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        #sidebar {
+            width: 230px;
+            flex: 0 0 230px;
+            background: var(--card);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            padding: 12px 10px;
+            transition: margin-left .2s ease;
+        }
+        #sidebar:not(.open) { margin-left: -230px; }
+        .conv-section { margin-bottom: 14px; }
+        .conv-section h3 {
+            margin: 0 0 8px;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: .4px;
+            padding: 0 8px;
+        }
+        .conv-item {
+            display: block;
+            position: relative;
+            width: 100%;
+            text-align: left;
+            padding: 8px 10px;
+            margin-bottom: 2px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text);
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .conv-item:hover { background: var(--bg); }
+        .conv-item.active {
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-weight: 600;
+        }
+        .conv-empty {
+            margin: 0;
+            padding: 4px 8px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+        /* 会话项右侧的操作按钮（重命名 / 删除），悬停显示 */
+        .conv-actions {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            display: none;
+        }
+        .conv-item:hover .conv-actions { display: flex; }
+        .conv-actions button {
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-size: 12px;
+            padding: 2px 4px;
+            border-radius: 4px;
+            color: var(--muted);
+        }
+        .conv-actions button:hover { background: var(--bg); color: var(--accent); }
+        .conv-actions button.del:hover { color: var(--danger); }
+        .conv-item .conv-title {
+            display: block;
+            padding-right: 46px; /* 给操作按钮留位置 */
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .conv-item .conv-time {
+            display: block;
+            font-size: 11px;
+            color: var(--muted);
+            font-weight: 400;
+            margin-top: 2px;
+        }
+        /* 顶栏图标按钮（☰ 侧边栏开关） */
+        .topbar .icon-btn {
+            background: var(--accent-soft);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 16px;
+            cursor: pointer;
+            padding: 5px 10px;
+        }
+        .topbar .icon-btn:hover { background: #dfe6ff; }
+
         /* ===== Debug 窗口样式（保留深色终端风，与聊天主题分离）===== */
         #debugPanel {
             position: fixed;
@@ -368,6 +465,7 @@
 <body>
     <header class="topbar">
         <div class="topbar-left" style="display:flex;align-items:center;gap:10px;">
+            <button id="sidebarToggle" class="icon-btn" title="显示/收起会话">☰</button>
             <h1>AI 助手</h1>
             <span class="badge">!?AI?!</span>
         </div>
@@ -376,13 +474,25 @@
             <button class="clear-btn" onclick="clearHistory()">清除对话</button>
         </div>
     </header>
-    <div class="chat-container" id="chatContainer">
-        <div class="message system">你好！我是 AI 助手，有什么可以帮你的？</div>
+    <div class="layout">
+        <!-- 会话侧边栏：cache/ai/<用户名>/ 下的会话列表，按最后一条消息时间从新到旧 -->
+        <aside id="sidebar">
+            <div class="conv-section">
+                <h3>历史记录</h3>
+                <button class="conv-item" id="newConvBtn" style="font-weight:600;">＋ 新对话</button>
+                <div id="convList"></div>
+            </div>
+        </aside>
+        <div class="right-col">
+            <div class="chat-container" id="chatContainer">
+                <div class="message system">你好！我是 AI 助手，有什么可以帮你的？</div>
+            </div>
+            <footer class="inputbar">
+                <textarea id="msgInput" placeholder="输入消息…" rows="1"></textarea>
+                <button id="sendBtn" onclick="sendMessage()">发送</button>
+            </footer>
+        </div>
     </div>
-    <footer class="inputbar">
-        <textarea id="msgInput" placeholder="输入消息…" rows="1"></textarea>
-        <button id="sendBtn" onclick="sendMessage()">发送</button>
-    </footer>
 
     <!-- ===== Debug 窗口 DOM ===== -->
     <div id="debugPanel">
@@ -400,6 +510,13 @@
         var DEBUG = false;
 
         const chatContainer = document.getElementById('chatContainer');
+        const sidebar = document.getElementById('sidebar');
+        const convList = document.getElementById('convList');
+        const newConvBtn = document.getElementById('newConvBtn');
+        /* 当前打开的会话 id（空串 = 还没有会话） */
+        let currentConvId = '';
+        /* 当前会话名（用于顶栏/侧边栏高亮） */
+        let currentConvName = '';
         const msgInput = document.getElementById('msgInput');
         const sendBtn = document.getElementById('sendBtn');
         const debugPanel = document.getElementById('debugPanel');
@@ -479,6 +596,173 @@
 
         debugLogWrite('info', '[init] Debug 模式已开启，点击顶部 🐛 按钮打开 Debug 面板。marked 版本:',
             (typeof marked !== 'undefined' && marked.version) || 'unknown');
+
+        /* ===== 侧边栏展开/收起（与 chat.html 一致）===== */
+        document.getElementById('sidebarToggle').addEventListener('click', function () {
+            sidebar.classList.toggle('open');
+        });
+        newConvBtn.addEventListener('click', function () { newConversation(); });
+
+        /* ===== 会话列表（侧边栏）=====
+           数据来自 /ai/conversations：{items:[{id,name,lastTime,count,preview}], active}
+           按最后一条消息时间从新到旧排序（服务端已排好序） */
+        async function loadConversations() {
+            try {
+                const resp = await fetch('/ai/conversations');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data = await resp.json();
+                const items = data.items || [];
+                renderConversations(items);
+                if (!currentConvId && data.active) currentConvId = data.active;
+                syncActiveItem();
+            } catch (err) {
+                debugLogWrite('error', '[loadConversations] 失败:', err);
+            }
+        }
+
+        function renderConversations(items) {
+            convList.innerHTML = '';
+            if (!items || items.length === 0) {
+                convList.innerHTML = '<p class="conv-empty">暂无历史记录</p>';
+                return;
+            }
+            items.forEach(function (item) {
+                const btn = document.createElement('button');
+                btn.className = 'conv-item';
+                btn.dataset.id = item.id;
+                const title = document.createElement('span');
+                title.className = 'conv-title';
+                title.textContent = item.name || '未命名会话';
+                btn.appendChild(title);
+                const time = document.createElement('span');
+                time.className = 'conv-time';
+                time.textContent = item.lastTime ? item.lastTime.slice(5, 16) : '';
+                btn.appendChild(time);
+
+                // 操作：重命名 / 删除
+                const actions = document.createElement('span');
+                actions.className = 'conv-actions';
+                const renameBtn = document.createElement('button');
+                renameBtn.title = '重命名';
+                renameBtn.textContent = '✎';
+                renameBtn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    renameConversation(item.id, item.name);
+                });
+                const delBtn = document.createElement('button');
+                delBtn.className = 'del';
+                delBtn.title = '删除';
+                delBtn.textContent = '🗑';
+                delBtn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    deleteConversation(item.id);
+                });
+                actions.appendChild(renameBtn);
+                actions.appendChild(delBtn);
+                btn.appendChild(actions);
+
+                btn.addEventListener('click', function () { switchConversation(item.id); });
+                convList.appendChild(btn);
+            });
+        }
+
+        function syncActiveItem() {
+            var items = convList.querySelectorAll('.conv-item');
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].dataset.id === currentConvId) items[i].classList.add('active');
+                else items[i].classList.remove('active');
+            }
+        }
+
+        /* 切换会话：拉取该会话消息并重绘 */
+        function switchConversation(id) {
+            if (!id) return;
+            currentConvId = id;
+            syncActiveItem();
+            fetch('/ai/conversation?id=' + encodeURIComponent(id))
+                .then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(function (conv) {
+                    currentConvName = conv.name || '';
+                    renderConversationMessages(conv.messages || []);
+                    loadConversations();
+                })
+                .catch(function (err) { debugLogWrite('error', '[switchConversation] 失败:', err); });
+        }
+
+        /* 把服务端返回的消息数组渲染到聊天区（复用 loadHistory 的渲染逻辑） */
+        function renderConversationMessages(items) {
+            chatContainer.innerHTML = '';
+            if (!items || items.length === 0) {
+                chatContainer.innerHTML = '<div class="message system">这个会话还没有消息。</div>';
+                return;
+            }
+            items.forEach(function (item) { renderHistoryItem(item); });
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        /* 新建会话：服务端创建后切换过去 */
+        function newConversation() {
+            fetch('/ai/conversation/new', { method: 'POST', body: '{}' })
+                .then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(function (data) {
+                    currentConvId = data.id;
+                    chatContainer.innerHTML = '<div class="message system">新对话已创建。</div>';
+                    loadConversations();
+                })
+                .catch(function (err) { debugLogWrite('error', '[newConversation] 失败:', err); });
+        }
+
+        /* 重命名会话 */
+        function renameConversation(id, oldName) {
+            var name = window.prompt('新的会话名：', oldName || '');
+            if (name === null) return; // 取消
+            if (!name.trim()) {
+                debugLogWrite('warn', '[renameConversation] 名称为空，已忽略');
+                return;
+            }
+            fetch('/ai/conversation/rename', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: id, name: name.trim() })
+            })
+                .then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(function () {
+                    if (id === currentConvId) currentConvName = name.trim();
+                    loadConversations();
+                })
+                .catch(function (err) { debugLogWrite('error', '[renameConversation] 失败:', err); });
+        }
+
+        /* 删除会话 */
+        function deleteConversation(id) {
+            if (!window.confirm('确定删除这个会话？')) return;
+            fetch('/ai/conversation/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: id })
+            })
+                .then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(function () {
+                    if (id === currentConvId) {
+                        currentConvId = '';
+                        chatContainer.innerHTML = '<div class="message system">会话已删除。</div>';
+                    }
+                    loadConversations();
+                })
+                .catch(function (err) { debugLogWrite('error', '[deleteConversation] 失败:', err); });
+        }
 
         /* ===== 输入框自适应高度 ===== */
         msgInput.addEventListener('input', () => {
@@ -560,17 +844,64 @@
 
         function clearHistory() {
             debugLogWrite('log', '[clearHistory] 清除对话');
-            fetch('/ai/clear', { method: 'POST' })
+            var url = '/ai/clear' + (currentConvId ? '?conv=' + encodeURIComponent(currentConvId) : '');
+            fetch(url, { method: 'POST' })
                 .then(() => {
                     chatContainer.innerHTML = '<div class="message system">对话已清除。</div>';
                     autoScrollEnabled = true;
+                    loadConversations();
                 })
                 .catch(err => debugLogWrite('error', '[clearHistory] 失败:', err));
         }
 
+        /* ===== 渲染一条历史消息（loadHistory 与会话切换共用） ===== */
+        function renderHistoryItem(item) {
+            const role = item.role;
+            const content = item.content || '';
+            if (role === 'user') {
+                addMessage(content, 'user');
+                return;
+            }
+            if (role !== 'assistant') return;
+            // 一条 AI 回复单元（.ai-wrap）：思考块（可选）+ 气泡 + 右下角 ✨ 重渲染按钮
+            const unitEl = addAiUnit(!!item.reasoning_content).unit;
+            if (item.reasoning_content) {
+                unitEl._thinkingText = item.reasoning_content;
+                const tcBody = unitEl.querySelector('.thinking-content');
+                renderMarkdown(tcBody, item.reasoning_content);
+                renderMath(tcBody);
+                unitEl.querySelector('.thinking-label').textContent = '已折叠的思考';
+                unitEl.querySelector('.thinking-toggle').classList.add('collapsed');
+                tcBody.classList.add('collapsed');
+            }
+            const div = addMessage('', 'ai');
+            unitEl.insertBefore(div, unitEl.querySelector('.rerender-btn'));
+            unitEl._contentText = content;
+            unitEl._interrupted = !!item.interrupted;
+            if (content) {
+                // 历史消息与实时回复一致：markdown + 数学公式渲染
+                renderMarkdown(div, content);
+                renderMath(div);
+            }
+            if (item.interrupted) {
+                const note = document.createElement('div');
+                note.textContent = '（回答在传输中断开）';
+                note.style.color = '#9ca3af';
+                note.style.fontSize = '12px';
+                div.appendChild(note);
+            }
+            // 纯工具调用轮：有 tool_calls 但无正文/思考，跳过不渲染空气泡
+            if (item.tool_calls && !content && !item.reasoning_content) {
+                unitEl.parentNode.removeChild(unitEl);
+                return;
+            }
+            unitEl.querySelector('.rerender-btn').addEventListener('click', () => rerenderUnit(unitEl));
+        }
+
         /* ===== 页面加载时从服务端恢复历史对话 ===== */
         function loadHistory() {
-            fetch('/ai/history')
+            var url = '/ai/history' + (currentConvId ? '?conv=' + encodeURIComponent(currentConvId) : '');
+            fetch(url)
                 .then(r => {
                     if (!r.ok) throw new Error('HTTP ' + r.status);
                     return r.json();
@@ -582,48 +913,7 @@
                     if (welcome && welcome.textContent.indexOf('AI 助手') !== -1) {
                         chatContainer.removeChild(welcome);
                     }
-                    items.forEach(item => {
-                        const role = item.role;
-                        const content = item.content || '';
-                        if (role === 'user') {
-                            addMessage(content, 'user');
-                            return;
-                        }
-                        if (role !== 'assistant') return;
-                        // 一条 AI 回复单元（.ai-wrap）：思考块（可选）+ 气泡 + 右下角 ✨ 重渲染按钮
-                        const unitEl = addAiUnit(!!item.reasoning_content).unit;
-                        if (item.reasoning_content) {
-                            unitEl._thinkingText = item.reasoning_content;
-                            const tcBody = unitEl.querySelector('.thinking-content');
-                            renderMarkdown(tcBody, item.reasoning_content);
-                            renderMath(tcBody);
-                            unitEl.querySelector('.thinking-label').textContent = '已折叠的思考';
-                            unitEl.querySelector('.thinking-toggle').classList.add('collapsed');
-                            tcBody.classList.add('collapsed');
-                        }
-                        const div = addMessage('', 'ai');
-                        unitEl.insertBefore(div, unitEl.querySelector('.rerender-btn'));
-                        unitEl._contentText = content;
-                        unitEl._interrupted = !!item.interrupted;
-                        if (content) {
-                            // 历史消息与实时回复一致：markdown + 数学公式渲染
-                            renderMarkdown(div, content);
-                            renderMath(div);
-                        }
-                        if (item.interrupted) {
-                            const note = document.createElement('div');
-                            note.textContent = '（回答在传输中断开）';
-                            note.style.color = '#9ca3af';
-                            note.style.fontSize = '12px';
-                            div.appendChild(note);
-                        }
-                        // 纯工具调用轮：有 tool_calls 但无正文/思考，跳过不渲染空气泡
-                        if (item.tool_calls && !content && !item.reasoning_content) {
-                            unitEl.parentNode.removeChild(unitEl);
-                            return;
-                        }
-                        unitEl.querySelector('.rerender-btn').addEventListener('click', () => rerenderUnit(unitEl));
-                    });
+                    items.forEach(renderHistoryItem);
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                     debugLogWrite('log', '[loadHistory] 已恢复', items.length, '条消息');
                 })
@@ -816,6 +1106,7 @@
                     streamEnded = true;
                     cleanup();
                     finalize();
+                    loadConversations();
                     return;
                 }
 
@@ -897,7 +1188,8 @@
                 }
             }
 
-            var url = '/ai/chat?text=' + encodeURIComponent(text);
+            var url = '/ai/chat?text=' + encodeURIComponent(text) +
+                (currentConvId ? '&conv=' + encodeURIComponent(currentConvId) : '');
             debugLogWrite('log', '[EventSource] 建立连接:', url);
             es = new EventSource(url);
 
@@ -927,7 +1219,25 @@
                 msgInput.focus();
             };
         }
-        loadHistory();
+        /* ===== 初始化：拉会话列表 → 恢复当前会话消息 ===== */
+        (async function init() {
+            await loadConversations();
+            // 服务端记录的活动会话优先；没有则用列表第一个（已按时间从新到旧排序）
+            if (!currentConvId) {
+                var first = convList.querySelector('.conv-item');
+                if (first) {
+                    currentConvId = first.dataset.id;
+                    syncActiveItem();
+                }
+            }
+            if (currentConvId) {
+                switchConversation(currentConvId);
+            } else {
+                loadHistory();
+            }
+            // 宽屏默认展开侧边栏，窄屏收起（与 chat.html 一致）
+            if (window.innerWidth > 600) sidebar.classList.add('open');
+        })();
     </script>
 </body>
 </html>
