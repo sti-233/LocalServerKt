@@ -1,19 +1,12 @@
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme-lock="dark">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>终端</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
     <script src="/resources/config.js"></script>
     <style>
-        :root {
-            --bg: #0d1117;
-            --card: #161b22;
-            --text: #c9d1d9;
-            --muted: #8b949e;
-            --accent: #4f7cff;
-            --green: #3fb950;
-            --red: #ff4d4d;
-        }
         * { box-sizing: border-box; }
         html, body { height: 100%; }
         body {
@@ -33,7 +26,7 @@
             min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
             padding: 10px 16px;
             background: var(--card);
-            border-bottom: 1px solid #21262d;
+            border-bottom: 1px solid var(--border);
         }
         .topbar h1 { margin: 0; font-size: 16px; font-weight: 600; }
         .topbar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
@@ -43,7 +36,7 @@
             padding: 5px 12px;
             background: transparent;
             color: var(--muted);
-            border: 1px solid #21262d;
+            border: 1px solid var(--border);
             border-radius: 6px;
             cursor: pointer;
             font-size: 13px;
@@ -58,7 +51,7 @@
             white-space: pre-wrap;
             word-break: break-all;
         }
-        #output .cmd { color: #58a6ff; }
+        #output .cmd { color: var(--accent); }
         #output .cmd::before { content: "PS> "; color: var(--green); }
         #output .note { color: var(--muted); }
         #output .err-line { color: var(--red); }
@@ -70,7 +63,7 @@
             gap: 8px;
             padding: 10px 16px;
             background: var(--card);
-            border-top: 1px solid #21262d;
+            border-top: 1px solid var(--border);
         }
         .inputbar .ps1 { color: var(--green); font-weight: 600; }
         #cmd {
@@ -84,13 +77,13 @@
         .inputbar button {
             padding: 5px 14px;
             background: var(--accent);
-            color: #fff;
+            color: var(--on-accent);
             border: none;
             border-radius: 6px;
             cursor: pointer;
             font: inherit;
         }
-        .inputbar button:hover { background: #3f68e8; }
+        .inputbar button:hover { background: var(--accent-hover); }
     </style>
 </head>
 <body>
@@ -99,6 +92,7 @@
         <span class="dot" id="connDot"></span>
         <button onclick="document.getElementById('output').textContent=''">清屏</button>
         <button onclick="resetSession()">重置</button>
+        <a class="nav-setting" href="/setting" title="设置">⚙ 设置</a>
     </header>
 
     <div id="output"><div class="note">连接中...</div></div>

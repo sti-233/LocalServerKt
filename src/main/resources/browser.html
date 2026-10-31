@@ -3,17 +3,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Go</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
     <script src="/resources/config.js"></script>
     <style>
-        :root {
-            --bg: #f4f6fb;
-            --card: #ffffff;
-            --accent: #4f7cff;
-            --accent-soft: #e9efff;
-            --text: #232a3b;
-            --muted: #8b91a5;
-            --border: #e4e7f0;
-        }
         * { box-sizing: border-box; }
         body {
             margin: 0;
@@ -53,15 +46,15 @@
         button {
             padding: 9px 16px;
             background: var(--accent);
-            color: #fff;
+            color: var(--on-accent);
             border: none;
             border-radius: 8px;
             font-size: 14px;
             cursor: pointer;
         }
-        button:hover { background: #3f68e8; }
+        button:hover { background: var(--accent-hover); }
         button.ghost { background: var(--accent-soft); color: var(--text); }
-        button.ghost:hover { background: #dbe5ff; }
+        button.ghost:hover { background: var(--accent-soft-strong); }
         .links { display: flex; gap: 8px; overflow-x: auto; }
         .links + .links { margin-top: 8px; }
     </style>
@@ -94,6 +87,7 @@
             <button class="ghost" onclick="location.href = 'http://' + SERVER_IP + '/ai'">ai</button>
             <button class="ghost" onclick="location.href = 'http://' + SERVER_IP + '/music'">music</button>
             <button class="ghost" onclick="location.href = 'http://' + SERVER_IP + '/video'">video</button>
+            <button class="ghost" onclick="location.href = 'http://' + SERVER_IP + '/setting'">setting</button>
             <button class="ghost" data-control onclick="location.href = 'http://' + SERVER_IP + '/terminal'">terminal</button>
             <button class="ghost" data-control onclick="location.href = 'http://' + SERVER_IP + '/file'">file</button>
         </div>

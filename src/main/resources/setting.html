@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>设置</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
+    <script src="/resources/config.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
+            padding: 10px 18px;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+        }
+        .topbar h1 { margin: 0; font-size: 18px; }
+        .topbar .back {
+            margin-left: auto;
+            color: var(--muted);
+            font-size: 13px;
+            text-decoration: none;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+        }
+        .topbar .back:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+        .wrap {
+            flex: 1;
+            overflow-y: auto;
+            padding: 18px;
+            max-width: 860px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px 18px;
+            margin-bottom: 14px;
+            box-shadow: var(--shadow);
+        }
+        .card h2 {
+            margin: 0 0 4px;
+            font-size: 15px;
+            font-weight: 600;
+        }
+        .card .hint {
+            margin: 0 0 12px;
+            font-size: 12.5px;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        /* 主题三选一：用真实 radio，键盘也能操作 */
+        .theme-row { display: flex; flex-wrap: wrap; margin: -5px; }
+        .theme-opt {
+            display: flex;
+            align-items: center;
+            margin: 5px;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg);
+            cursor: pointer;
+            font-size: 13.5px;
+            user-select: none;
+        }
+        .theme-opt:hover { border-color: var(--accent); }
+        .theme-opt input { margin: 0 8px 0 0; cursor: pointer; }
+        /* 选中态：不能再依赖 :has()（Chrome 105+ 才有），由 JS 加 class */
+        .theme-opt.active {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-weight: 600;
+        }
+        .theme-opt .sub { margin-left: 6px; font-weight: 400; font-size: 12px; color: var(--muted); }
+        .theme-opt.active .sub { color: var(--accent); }
+
+        /* 存储表格 */
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th, td {
+            text-align: left;
+            padding: 8px 6px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: top;
+        }
+        th { color: var(--muted); font-weight: 600; font-size: 12px; }
+        td.k { color: var(--text); font-family: Consolas, Monaco, monospace; font-size: 12px; word-break: break-all; }
+        td.v { color: var(--muted); font-family: Consolas, Monaco, monospace; font-size: 12px; word-break: break-all; }
+        tr:last-child td { border-bottom: none; }
+
+        .btn {
+            padding: 7px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+            color: var(--text);
+            font-size: 13px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+        .btn.danger:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+        .btn:disabled { opacity: .45; cursor: not-allowed; }
+        .btn:disabled:hover { border-color: var(--border); color: var(--text); background: var(--card); }
+
+        .row { display: flex; align-items: center; flex-wrap: wrap; margin: 0 -5px; }
+        .row > * { margin: 5px; }
+
+        .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+        .err { color: var(--danger); font-size: 13px; }
+
+        /* 提示浮层，与 chat.html / music.html 的 toast 一致 */
+        .toast {
+            position: fixed;
+            left: 50%;
+            bottom: 32px;
+            transform: translateX(-50%) translateY(20px);
+            max-width: 80vw;
+            padding: 10px 18px;
+            background: var(--accent);
+            color: var(--on-accent);
+            border-radius: 8px;
+            font-size: 13.5px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s, transform .2s;
+            z-index: 1100;
+        }
+        .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        .toast.error { background: var(--danger); }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <h1>⚙ 设置</h1>
+        <a class="back" href="/resources/browser.html">← 返回</a>
+    </header>
+
+    <div class="wrap">
+        <!-- 主题 -->
+        <section class="card">
+            <h2>外观</h2>
+            <p class="hint">切换后所有页面一起生效（存在 path=/ 的 Cookie 里，跨页面共享）。</p>
+            <div class="theme-row" id="themeRow">
+                <label class="theme-opt" data-mode="light">
+                    <input type="radio" name="theme" value="light">☀ 日间
+                </label>
+                <label class="theme-opt" data-mode="dark">
+                    <input type="radio" name="theme" value="dark">🌙 夜间
+                </label>
+                <label class="theme-opt" data-mode="auto">
+                    <input type="radio" name="theme" value="auto">🖥 跟随系统<span class="sub" id="sysHint"></span>
+                </label>
+            </div>
+        </section>
+
+        <!-- 服务端配置 -->
+        <section class="card">
+            <h2>服务端保存的配置</h2>
+            <p class="hint">
+                聊天已读位置、音乐搜索偏好、文件浏览选项都会同步一份到这里——
+                清浏览器数据、换浏览器或换设备后仍然在。下面按页面分组显示。
+            </p>
+            <div id="prefsBox"><div class="empty">正在读取…</div></div>
+            <div class="row" style="margin-top:12px;">
+                <button class="btn" id="reloadBtn" onclick="loadPrefs()">刷新</button>
+                <button class="btn danger" id="clearBtn" onclick="clearAll()">清空服务端配置</button>
+            </div>
+        </section>
+
+        <!-- 说明 -->
+        <section class="card">
+            <h2>这些配置存在哪</h2>
+            <p class="hint" style="margin-bottom:0;">
+                浏览器端：Cookie，名字形如 <code>ls_&lt;页面&gt;_&lt;键&gt;</code>，路径限定在各自页面，
+                互不干扰；单个 Cookie 上限约 4KB，所以大块数据（如聊天已读表）以服务端那份为准。<br>
+                服务端：<code>cache/prefs/&lt;用户名&gt;.json</code>，按 IP 白名单里的用户名分文件夹，普通页面设置只有几 KB。
+            </p>
+        </section>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // ===== 主题 =====
+        var opts = document.querySelectorAll('.theme-opt');
+
+        function paintTheme() {
+            var mode = Theme.get(); // 'light' | 'dark' | 'auto'
+            for (var i = 0; i < opts.length; i++) {
+                var el = opts[i];
+                var on = el.getAttribute('data-mode') === mode;
+                el.classList.toggle('active', on);
+                var radio = el.querySelector('input');
+                if (radio) radio.checked = on;
+            }
+            var hint = document.getElementById('sysHint');
+            if (hint) hint.textContent = Theme.current() === 'dark' ? '（当前系统：深色）' : '（当前系统：浅色）';
+        }
+
+        for (var i = 0; i < opts.length; i++) {
+            opts[i].addEventListener('click', function (e) {
+                // label 点击本身会触发 radio 的 change，这里只处理"点了整块"
+                var mode = this.getAttribute('data-mode');
+                Theme.set(mode);
+            });
+        }
+
+        Theme.onChange(paintTheme);
+        paintTheme();
+
+        // ===== 服务端配置 =====
+        function esc(s) {
+            return String(s).replace(/[&<>"']/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+        }
+
+        function shortValue(v) {
+            var s = String(v);
+            if (s.length > 90) s = s.slice(0, 90) + '…（共 ' + s.length + ' 字符）';
+            return esc(s);
+        }
+
+        function loadPrefs() {
+            var box = document.getElementById('prefsBox');
+            box.innerHTML = '<div class="empty">正在读取…</div>';
+            fetch('/api/prefs')
+                .then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(function (data) {
+                    var prefs = data.prefs || {};
+                    var pages = Object.keys(prefs);
+                    if (!pages.length) {
+                        box.innerHTML = '<div class="empty">还没有任何配置被保存到服务端。</div>';
+                        return;
+                    }
+                    var html = '';
+                    for (var i = 0; i < pages.length; i++) {
+                        var page = pages[i];
+                        var obj = prefs[page] || {};
+                        var keys = Object.keys(obj);
+                        html += '<div style="margin-bottom:14px;">';
+                        html += '<div style="font-size:13px;font-weight:600;margin-bottom:4px;">' + esc(page) + '</div>';
+                        html += '<table><thead><tr><th style="width:35%;">键</th><th>值</th></tr></thead><tbody>';
+                        for (var j = 0; j < keys.length; j++) {
+                            html += '<tr><td class="k">' + esc(keys[j]) + '</td><td class="v">' + shortValue(obj[keys[j]]) + '</td></tr>';
+                        }
+                        html += '</tbody></table></div>';
+                    }
+                    box.innerHTML = html;
+                })
+                .catch(function (err) {
+                    box.innerHTML = '<div class="err">读取失败：' + esc(err && err.message ? err.message : err) + '</div>';
+                });
+        }
+
+        // 清空：逐页调用 /api/prefs 把该页所有键置空（服务端在页面变空时会整个删掉这一页）
+        function clearAll() {
+            if (!confirm('确定清空服务端保存的全部页面配置吗？\n清空后各页面的偏好会回到默认值。')) return;
+            var btn = document.getElementById('clearBtn');
+            btn.disabled = true;
+            fetch('/api/prefs')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var prefs = data.prefs || {};
+                    var pages = Object.keys(prefs);
+                    if (!pages.length) { toast('服务端本来就没有配置'); return null; }
+                    var chain = Promise.resolve();
+                    pages.forEach(function (page) {
+                        chain = chain.then(function () {
+                            var keys = Object.keys(prefs[page] || {});
+                            return fetch('/api/prefs', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ page: page, remove: keys })
+                            }).then(function (r) {
+                                if (!r.ok) throw new Error('HTTP ' + r.status);
+                            });
+                        });
+                    });
+                    return chain.then(function () {
+                        toast('已清空');
+                        loadPrefs();
+                    });
+                })
+                .catch(function (err) {
+                    toast('清空失败：' + (err && err.message ? err.message : err), true);
+                })
+                .then(function () { btn.disabled = false; });
+        }
+
+        function toast(text, isError) {
+            var el = document.getElementById('toast');
+            el.textContent = text;
+            el.classList.toggle('error', !!isError);
+            el.classList.add('show');
+            clearTimeout(el._t);
+            el._t = setTimeout(function () { el.classList.remove('show'); }, 2600);
+        }
+
+        loadPrefs();
+    </script>
+</body>
+</html>

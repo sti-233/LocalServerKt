@@ -3,18 +3,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>文件浏览</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
     <script src="/resources/config.js"></script>
+    <script src="/resources/lib/page-store.js"></script>
     <style>
-        :root {
-            --bg: #f4f6fb;
-            --card: #ffffff;
-            --accent: #4f7cff;
-            --accent-soft: #e9efff;
-            --text: #232a3b;
-            --muted: #8b91a5;
-            --border: #e4e7f0;
-            --danger: #ff4d4d;
-        }
         * { box-sizing: border-box; }
         html, body { height: 100%; }
         body {
@@ -62,15 +55,15 @@
             height: 35px; /* 与 .path 同高（顶栏 56 − padding 20 − border 1） */
             padding: 0 16px;
             background: var(--accent);
-            color: #fff;
+            color: var(--on-accent);
             border: none;
             border-radius: 8px;
             font-size: 14px;
             cursor: pointer;
         }
-        .topbar button:hover { background: #3f68e8; }
-        .topbar button.ghost { background: #eef1f8; color: var(--text); }
-        .topbar button.ghost:hover { background: #e2e6f2; }
+        .topbar button:hover { background: var(--accent-hover); }
+        .topbar button.ghost { background: var(--fill); color: var(--text); }
+        .topbar button.ghost:hover { background: var(--fill-strong); }
 
         /* 列表区：卡片容器 + 表格 */
         .list-container {
@@ -132,6 +125,7 @@
         <input class="path" id="pathInput" value="" placeholder="输入路径，如 D:\或 /，留空为磁盘列表">
         <button class="ghost" id="upBtn" onclick="goUp()" style="display:none;">↑ 上级</button>
         <button onclick="gotoPath()">跳转</button>
+        <a class="nav-setting" href="/setting" title="设置">⚙ 设置</a>
     </header>
 
     <div class="list-container" id="listContainer">
@@ -152,13 +146,23 @@
     <div class="status" id="statusBar"></div>
 
     <script>
+        // 本页配置存 Cookie（路径 /resources/file.html，与其他页面互不混杂）
+        const store = PageStore.create('file', { remote: true });
+
+        // 显示隐藏文件（. 开头）：存本页 Cookie 并同步服务端，默认隐藏
+        function loadShowHidden() {
+            return store.get('showHidden') === '1';
+        }
+        function saveShowHidden() {
+            store.set('showHidden', '1');
+        }
         const API = () => location.protocol === 'file:' ? 'http://' + SERVER_IP : '';
         const fileList = document.getElementById('fileList');
         const pathInput = document.getElementById('pathInput');
         const upBtn = document.getElementById('upBtn');
         const statusBar = document.getElementById('statusBar');
         let currentPath = ''; // 当前目录；空字符串 = 磁盘列表
-        let showHidden = localStorage.getItem('fileShowHidden') === '1';
+        let showHidden = loadShowHidden();
 
         function status(msg, isError) {
             statusBar.textContent = msg || '';
@@ -228,7 +232,7 @@
                 cell.textContent = '显示隐藏文件（. 开头）';
                 toggle.onclick = () => {
                     showHidden = true;
-                    localStorage.setItem('fileShowHidden', '1');
+                    saveShowHidden();
                     location.reload();
                 };
                 toggle.appendChild(cell);

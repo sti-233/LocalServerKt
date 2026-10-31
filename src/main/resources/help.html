@@ -4,17 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>端点一览</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
     <script src="/download?url=https://unpkg.com/marked@0.8.2/marked.min.js&inline=1"></script>
     <style>
-        :root {
-            --bg: #f4f6fb;
-            --card: #ffffff;
-            --accent: #4f7cff;
-            --accent-soft: #e9efff;
-            --text: #232a3b;
-            --muted: #8b91a5;
-            --border: #e4e7f0;
-        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
@@ -34,6 +27,7 @@
             border-bottom: 1px solid var(--border);
         }
         .topbar h1 { font-size: 18px; }
+        .topbar .nav-setting { margin-left: auto; }
         .content {
             max-width: 900px;
             margin: 0 auto;
@@ -45,12 +39,12 @@
         .content table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--card); margin: 8px 0; }
         .content th, .content td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
         .content th { background: var(--accent-soft); }
-        .content code { background: #eef1f8; padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+        .content code { background: var(--fill); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
         .content pre { background: var(--card); border: 1px solid var(--border); padding: 12px; border-radius: 6px; overflow-x: auto; }
     </style>
 </head>
 <body>
-    <header class="topbar"><h1>LocalServerKt 端点一览</h1></header>
+    <header class="topbar"><h1>LocalServerKt 端点一览</h1><a class="nav-setting" href="/setting">⚙ 设置</a></header>
     <div class="content" id="content"></div>
     <script>
         /* markdown 源在 /resources/help.md（staticResources 静态提供），渲染方式同 ai.html */

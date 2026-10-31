@@ -4,6 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>视频观看 - B站</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
     <script src="/resources/config.js"></script>
     <link rel="stylesheet" href="/resources/video/video.css">
     <style>
@@ -45,6 +47,7 @@
         <input id="kw" class="search-box" placeholder="搜索视频、用户…">
         <button id="go" class="search-btn">🔍</button>
     </div>
+    <a class="nav-setting" href="/setting" title="设置">⚙ 设置</a>
 </div>
 
 <div class="wlayout">
@@ -83,7 +86,7 @@
             <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
                 <span style="font-size:14px">🔊</span>
                 <input id="vol" type="range" min="0" max="1" step="0.01" value="0.1"
-                       style="flex:1;accent-color:var(--accent,#fb7299)">
+                       style="flex:1;accent-color:var(--accent,var(--pink))">
                 <span id="volVal" class="small muted" style="width:38px;text-align:right">10%</span>
             </div>
         </div>

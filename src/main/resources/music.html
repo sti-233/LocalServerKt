@@ -3,18 +3,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>音乐搜索 - Music Search</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
     <script src="/resources/config.js"></script>
     <style>
-        :root {
-            --bg: #f4f6fb;
-            --card: #ffffff;
-            --accent: #4f7cff;
-            --accent-soft: #e9efff;
-            --text: #232a3b;
-            --muted: #8b91a5;
-            --border: #e4e7f0;
-            --danger: #ff4d4d;
-        }
         * { box-sizing: border-box; }
         html, body { height: 100%; }
         body {
@@ -86,13 +78,13 @@
             width: 34px;
             height: 35px; /* 56 − 20(padding) − 1(border) = 35，顶栏总高 56（border-box） */
             border-radius: 8px;
-            color: white;
+            color: var(--on-accent);
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
         }
-        .search-btn:hover { background: #3f68e8; }
+        .search-btn:hover { background: var(--accent-hover); }
 
         /* 主布局：左侧可收起的设置侧边栏 + 右侧内容区，与 chat.html 的会话侧边栏同构 */
         .layout { flex: 1; display: flex; min-height: 0; }
@@ -168,13 +160,13 @@
             padding: 9px 0;
             margin: 4px 8px;
             background: var(--accent);
-            color: white;
+            color: var(--on-accent);
             border: none;
             border-radius: 8px;
             font-size: 14px;
             cursor: pointer;
         }
-        .save-btn:hover { background: #3f68e8; }
+        .save-btn:hover { background: var(--accent-hover); }
 
         /* 内容区：居中卡片 */
         .content {
@@ -230,7 +222,7 @@
             width: 38px;
             height: 38px;
             border-radius: 50%;
-            color: white;
+            color: var(--on-accent);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -238,7 +230,7 @@
             flex-shrink: 0;
             font-size: 14px;
         }
-        .play-btn:hover { background: #3f68e8; }
+        .play-btn:hover { background: var(--accent-hover); }
         .lyrics-btn {
             background: var(--accent-soft);
             color: var(--accent);
@@ -253,7 +245,7 @@
             flex-shrink: 0;
             font-size: 13px;
         }
-        .lyrics-btn:hover { background: #dbe5ff; }
+        .lyrics-btn:hover { background: var(--accent-soft-strong); }
         .lyrics-container {
             display: none;
             margin-top: 10px;
@@ -322,7 +314,7 @@
             max-width: 80vw;
             padding: 10px 18px;
             background: var(--accent);
-            color: #fff;
+            color: var(--on-accent);
             border-radius: 10px;
             font-size: 13px;
             box-shadow: 0 4px 16px rgba(79, 124, 255, .35);
@@ -357,6 +349,7 @@
             <input type="text" class="search-box" placeholder="搜索歌曲..." id="searchInput">
             <button class="search-btn" onclick="performSearch()">🔍</button>
         </div>
+        <a class="nav-setting" href="/setting" title="设置">⚙ 设置</a>
     </header>
 
     <div class="layout">
@@ -438,7 +431,11 @@
         <div class="loading-text" id="loadingText"></div>
     </div>
 
+    <script src="/resources/lib/page-store.js"></script>
     <script>
+        // 本页配置存 Cookie（路径 /resources/music.html，与其他页面互不混杂）
+        const store = PageStore.create('music', { remote: true });
+
         // 设置数据
         let settings = {
             offset: 0,
@@ -454,46 +451,35 @@
 
         document.addEventListener('DOMContentLoaded', function () {
             // 设置侧边栏展开/收起（与 chat.html 同款，默认收起）；
-            // 监听必须先挂：后续任何一步（localStorage 等）抛异常都不影响它
+            // 监听必须先挂：后续任何一步（存储读写等）抛异常都不影响它
             document.getElementById('sidebarToggle').addEventListener('click', function () {
                 document.getElementById('sidebar').classList.toggle('open');
             });
-            loadSettings();
+            // 先拉服务端配置再赋值给表单：Cookie 只有 4KB 且可能被清掉，
+            // 服务端那份才是跨浏览器/跨设备都在的（拉取失败就退回 Cookie 里的值）
+            store.sync(function () { loadSettings(); });
         });
 
-        // 加载保存的设置：优先 localStorage，不可用（隐私模式等）时退回 Cookie
+        // 加载保存的设置（Cookie + 服务端 /api/prefs）
         function loadSettings() {
-            let raw = null;
-            try { raw = localStorage.getItem('musicSearchSettings'); } catch (e) { /* 隐私模式等：localStorage 不可用 */ }
-            if (raw == null) raw = readCookie('musicSearchSettings');
-            if (raw) {
-                try { settings = JSON.parse(raw); } catch (e) { return; }
-                document.getElementById('offset').value = settings.offset;
-                document.getElementById('limit').value = settings.limit;
-                const q = document.querySelector(`input[name="quality"][value="${settings.quality}"]`);
-                if (q) q.checked = true;
-            }
+            const raw = store.get('settings');
+            if (!raw) return;
+            try { settings = JSON.parse(raw); } catch (e) { return; }
+            document.getElementById('offset').value = settings.offset;
+            document.getElementById('limit').value = settings.limit;
+            const q = document.querySelector(`input[name="quality"][value="${settings.quality}"]`);
+            if (q) q.checked = true;
         }
 
-        // Cookie 存取（localStorage 不可用时的设置备份；配置很小，一条 Cookie 足够）
-        function readCookie(name) {
-            const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
-            return m ? decodeURIComponent(m[1]) : null;
-        }
-        function writeCookie(name, value) {
-            document.cookie = name + '=' + encodeURIComponent(value) + '; path=/; max-age=31536000';
-        }
-
-        // 保存设置：双写 localStorage + Cookie（localStorage 不可用时靠 Cookie 兜底，侧边栏收起不影响已保存值）
+        // 保存设置：写本页 Cookie，并防抖推一份到服务端（服务端失败不影响本页立即生效）
         function saveSettings() {
             settings.offset = parseInt(document.getElementById('offset').value) || 0;
             settings.limit = Math.min(20, Math.max(1, parseInt(document.getElementById('limit').value) || 10));
             settings.quality = document.querySelector('input[name="quality"]:checked').value;
-            const raw = JSON.stringify(settings);
-            let ok = false;
-            try { localStorage.setItem('musicSearchSettings', raw); ok = true; } catch (e) { /* 不可用 */ }
-            try { writeCookie('musicSearchSettings', raw); ok = true; } catch (e) { /* 被禁用 Cookie 时静默失败 */ }
-            if (!ok) { showToast('设置保存失败：存储均不可用', true); return; }
+            if (!store.set('settings', JSON.stringify(settings))) {
+                showToast('设置保存失败：存储不可用', true);
+                return;
+            }
             showToast('设置已保存');
         }
 

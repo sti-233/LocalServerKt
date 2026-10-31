@@ -6,6 +6,7 @@ import localserver.module.Control
 import localserver.module.Control.controlRoute
 import localserver.module.File.fileRoute
 import localserver.module.Music.musicRoute
+import localserver.module.Prefs.prefsRoute
 import localserver.module.Terminal.terminalRoute
 import localserver.module.Video.videoRoute
 import localserver.utils.Logger
@@ -31,7 +32,7 @@ private const val chunkSize = 8192
 // "192.168.100.17"
 // "192.168.3.32"
 // "192.168.125.200"
-const val serverIp = "192.168.125.200"
+const val serverIp = "192.168.3.32"
 private const val password = "114514"
 
 fun main() {
@@ -86,6 +87,7 @@ fun main() {
             videoRoute()
             fileRoute()
             terminalRoute()
+            prefsRoute()
             network()
         }
     }.start(wait = true)

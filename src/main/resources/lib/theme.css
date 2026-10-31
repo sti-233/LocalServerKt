@@ -1,0 +1,152 @@
+/**
+ * 全站主题变量（日间 / 夜间）。
+ *
+ * 所有页面的 <style> 里不再各自写 :root 颜色，统一由本文件提供，
+ * 页面只消费 var(--xxx)。切换主题时只改 <html data-theme="...">，
+ * 变量整体换一套，页面无需任何 JS 参与重绘。
+ *
+ * 引入顺序（必须在页面自己的 <style> 之前）：
+ *     <link rel="stylesheet" href="/resources/lib/theme.css">
+ *     <script src="/resources/lib/page-store.js"></script>
+ *     <script src="/resources/lib/theme.js"></script>
+ *
+ * 兼容 Chrome 80：不用 :is()/:where()/gap/inset，只用属性选择器与自定义属性。
+ */
+
+/* ---------- 日间（默认值，不带 data-theme 时也成立） ---------- */
+:root {
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --text: #232a3b;
+    --text-2: #3d4457;          /* 次要正文：视频简介、动态正文 */
+    --muted: #8b91a5;
+    --border: #e4e7f0;
+
+    --accent: #4f7cff;
+    --accent-hover: #3f68e8;
+    --accent-soft: #e9efff;
+    --accent-soft-strong: #dbe5ff; /* 浅蓝底上的再深一档（hover、选中边） */
+    --link: #4a6fd4;
+
+    --fill: #eef1f8;            /* 中性填充：ghost 按钮底、行内 code 底 */
+    --fill-strong: #e2e6f2;
+
+    --danger: #ff4d4d;
+    --danger-hover: #e63535;
+    --danger-soft: #fff1f1;
+    --danger-border: #ffd6d6;
+
+    --pink: #fb7299;            /* B 站品牌粉 */
+    --pink-soft: #ffeaf1;
+    --pink-border: #ffd3e0;
+
+    /*
+     * 实色强调底上的文字色。日间底色够深，沿用白字（就是改造前的外观）；
+     * 夜间底色为了在暗背景上够亮而调亮了，白字就糊了，必须换成深字。
+     * 所有"background: var(--accent|--danger) + 文字"的地方都要用这个变量，
+     * 不要再直接写 #fff，否则夜间主题下会看不清。
+     */
+    --on-accent: #fff;
+    --on-danger: #fff;
+
+    --shadow: 0 1px 3px rgba(23, 33, 64, .06);
+}
+
+/* ---------- 夜间 ---------- */
+html[data-theme="dark"] {
+    color-scheme: dark;
+
+    --bg: #12151c;
+    --card: #1a1f29;
+    --text: #dde3ee;
+    --text-2: #b6bfd0;
+    --muted: #8b94a8;
+    --border: #2a3140;
+
+    --accent: #6b93ff;          /* 暗底上提亮一档，保证对比度 */
+    --accent-hover: #85a8ff;
+    --accent-soft: #1e2a45;
+    --accent-soft-strong: #26365a;
+    --link: #7ba0ff;
+
+    --fill: #232a37;
+    --fill-strong: #2c3444;
+
+    --danger: #ff6b6b;
+    --danger-hover: #ff8585;
+    --danger-soft: #33191c;
+    --danger-border: #4d2429;
+
+    --pink: #ff86a8;
+    --pink-soft: #3a2129;
+    --pink-border: #522c38;
+
+    /* 暗底上的强调色偏亮，压白字只有 2.9:1，改用深字后是 6.3:1 */
+    --on-accent: #10131a;
+    --on-danger: #10131a;
+
+    --shadow: 0 1px 3px rgba(0, 0, 0, .4);
+}
+
+/* 显式写一遍日间的 color-scheme：滚动条、input 光标、原生下拉跟着走 */
+html[data-theme="light"] { color-scheme: light; }
+
+/*
+ * 终端页固定深色，不随主题切换（浅色终端不像终端）。
+ * 这条必须排在两个 data-theme 规则之后：同特异性时后者生效。
+ */
+html[data-theme-lock="dark"] {
+    color-scheme: dark;
+
+    --bg: #0d1117;
+    --card: #161b22;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --border: #21262d;
+
+    --accent: #4f7cff;
+    --accent-hover: #3f68e8;
+    --accent-soft: #16223d;
+    --accent-soft-strong: #1d2c4d;
+
+    --fill: #21262d;
+    --fill-strong: #2d333b;
+
+    --green: #3fb950;
+    --red: #ff4d4d;
+    --danger-hover: #ff6b6b;
+
+    /*
+     * 终端页固定深色。按钮底色用的仍是 --accent(#4f7cff)，压白字只有 3.7:1，
+     * 换成深字后是 5.0:1——比改造前更清楚，也和夜间主题的处理保持一致。
+     */
+    --on-accent: #10131a;
+    --on-danger: #10131a;
+    --pink: #fb7299;
+    --pink-soft: #3a2028;
+    --pink-border: #522c38;
+    --text-2: #b9c1cd;
+    --link: #7ba0ff;
+}
+
+/* ---------- 全局过渡：切换瞬间不闪白 ---------- */
+html, body {
+    transition: background-color .18s ease, color .18s ease;
+}
+
+/* 顶栏右侧的"设置"入口：各页样式各异，这里只保证不破坏原有布局 */
+.topbar .nav-setting {
+    color: var(--muted);
+    font-size: 13px;
+    text-decoration: none;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card);
+    white-space: nowrap;
+}
+.topbar .nav-setting:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}

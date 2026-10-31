@@ -1,15 +1,5 @@
-/* B站视频模块共用样式：与 music.html / chat.html 的设计语言保持一致 */
-:root {
-    --bg: #f4f6fb;
-    --card: #ffffff;
-    --accent: #4f7cff;
-    --accent-soft: #e9efff;
-    --pink: #fb7299;          /* B站品牌粉 */
-    --text: #232a3b;
-    --muted: #8b91a5;
-    --border: #e4e7f0;
-    --danger: #ff4d4d;
-}
+/* B站视频模块共用样式：与 music.html / chat.html 的设计语言保持一致
+   颜色变量统一由 /resources/lib/theme.css 提供（日间/夜间两套），本文件只消费 var(--xxx) */
 
 /* ---------- 图片预览（lightbox，由 common.js 动态创建） ---------- */
 /* 不用 inset: 0：旧版 Chrome 不支持该简写（chat.html 同） */
@@ -121,6 +111,8 @@ body {
 /* 顶栏 BiliBili 图标（favicon.ico 直接当 logo 用） */
 .bili-logo { width: 28px; height: 28px; object-fit: contain; flex: 0 0 auto; }
 .topbar-left { display: flex; align-items: center; gap: 12px; }
+/* 设置入口靠右（search-container 是绝对定位，不占流内空间） */
+.topbar .nav-setting { margin-left: auto; }
 
 .icon-btn {
     width: 34px; height: 34px;
@@ -169,11 +161,11 @@ body {
     border: none;
     width: 34px; height: 34px;
     border-radius: 8px;
-    color: #fff;
+    color: var(--on-accent);
     cursor: pointer;
     display: flex; align-items: center; justify-content: center;
 }
-.search-btn:hover { background: #3f68e8; }
+.search-btn:hover { background: var(--accent-hover); }
 
 /* ---------- 主内容 ---------- */
 .container {
@@ -205,8 +197,8 @@ body {
 
 .error {
     color: var(--danger);
-    background: #fff1f1;
-    border: 1px solid #ffd6d6;
+    background: var(--danger-soft);
+    border: 1px solid var(--danger-border);
     border-radius: 8px;
     padding: 10px 12px;
     font-size: 13px;
@@ -302,7 +294,7 @@ body {
     line-height: 1.65;
     white-space: pre-wrap;
     word-break: break-word;
-    color: #3d4457;
+    color: var(--text-2);
 }
 
 /* 分P 列表 */
@@ -320,7 +312,7 @@ body {
     white-space: nowrap;
 }
 .page-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
-.page-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.page-chip.active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
 /* ---------- 评论 ---------- */
 .cmt-toolbar {
@@ -349,8 +341,8 @@ body {
 }
 .btn:hover { background: var(--accent-soft); border-color: var(--accent); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: #3f68e8; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.primary:hover { background: var(--accent-hover); }
 
 .cmt {
     display: flex;
@@ -368,7 +360,7 @@ body {
 }
 .cmt .cbody { flex: 1; min-width: 0; }
 .cmt .chead { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 4px; }
-.cmt .uname { font-size: 13px; font-weight: 600; color: #4a6fd4; }
+.cmt .uname { font-size: 13px; font-weight: 600; color: var(--link); }
 .cmt .time { font-size: 12px; color: var(--muted); }
 .cmt .text { font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .cmt .cfoot { font-size: 12px; color: var(--muted); margin-top: 5px; display: flex; gap: 14px; }
@@ -395,10 +387,10 @@ body {
     border-radius: 4px;
     background: var(--accent-soft);
     color: var(--accent);
-    border: 1px solid #d3e0ff;
+    border: 1px solid var(--accent-soft-strong);
 }
-.badge.pink { background: #ffeaf1; color: var(--pink); border-color: #ffd3e0; }
-.badge.up { background: #fff0f5; color: var(--pink); border-color: #ffd3e0; }
+.badge.pink { background: var(--pink-soft); color: var(--pink); border-color: var(--pink-border); }
+.badge.up { background: var(--pink-soft); color: var(--pink); border-color: var(--pink-border); }
 
 /* 楼中楼 */
 .sub-cmts {
@@ -613,14 +605,14 @@ body {
     background: var(--border);
     flex: 0 0 38px;
 }
-.dyn-name { font-size: 13.5px; font-weight: 600; color: #4a6fd4; }
+.dyn-name { font-size: 13.5px; font-weight: 600; color: var(--link); }
 .dyn-time { font-size: 12px; color: var(--muted); }
 
 .dyn-text {
     font-size: 13.5px;
     line-height: 1.65;
     word-break: break-word;
-    color: #3d4457;
+    color: var(--text-2);
 }
 
 .dyn-pics {

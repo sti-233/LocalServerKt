@@ -3,8 +3,16 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Chat</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
     <script src="/resources/config.js"></script>
+    <script src="/resources/lib/page-store.js"></script>
     <script>
+        // 本页配置存 Cookie（路径 /resources/chat.html，与其他页面互不混杂）
+        // remote：同时同步一份到服务端 /api/prefs —— 已读表条目数随私聊对象增长，
+        // 单靠 4KB 的 Cookie 迟早撑破，服务端那份没有上限
+        const store = PageStore.create('chat', { remote: true });
+
         // ===== 全局状态 =====
         let websocket = null;
         let nowTarget = null; // 当前私聊对象，与输入框不一致时先刷新再发送
@@ -15,7 +23,7 @@
         let privLastMap = {}; // "对方" -> {time, by}：同一对方可能对应新旧多份归档，取最新一条
         let privPartners = new Set(); // 侧边栏已渲染的私聊对象，用于判断是否需要重新拉取会话列表
         let lastConvNames = null; // 上次拉取到的会话名单（拼接串）；重连后重拉时名单没变就只重算红点、不重建列表
-        let lastRead = {}; // 各会话已读到的时间戳 {键: 时间}，存 localStorage；私聊键 'p:对方'，群聊键 'g:'
+        let lastRead = {}; // 各会话已读到的时间戳 {键: 时间}，存 Cookie；私聊键 'p:对方'，群聊键 'g:'
 
         document.addEventListener('DOMContentLoaded', async function () {
             document.getElementById('sendBtn').addEventListener('click', sendMsg);
@@ -91,16 +99,18 @@
         // 群聊按日期（history_yyyy-MM-dd.json）归档，私聊按 "名A-名B"（getTarget 排序后命名）归档
         // 加载 message/ 下所有 history 文件名，分组渲染；点击切换对应对话并刷新
         // 未读小红点：按"会话最后消息晚于已读时间且非自己/系统发送"计算（数据来自 /conversations 的 last 字段）
-        function lastReadKey() { return 'chatLastRead:' + (me || 'unknown'); }
+        // 键名直接用用户名，PageStore 内部会做 Cookie 名安全编码（中文等非 token 字符）
+        function lastReadKey() { return 'lastRead_' + (me || 'unknown'); }
 
         function loadLastRead() {
-            try { lastRead = JSON.parse(localStorage.getItem(lastReadKey()) || '{}'); }
+            try { lastRead = JSON.parse(store.get(lastReadKey()) || '{}'); }
             catch (e) { lastRead = {}; }
         }
 
+        // 全量已读表：Cookie 只当本机缓存（可能因 4KB 上限被裁剪），
+        // 完整的那份在服务端 /api/prefs 里，所以这里永远推完整表，不再自己丢条目
         function saveLastRead() {
-            try { localStorage.setItem(lastReadKey(), JSON.stringify(lastRead)); }
-            catch (e) { /* 隐私模式等场景下 localStorage 不可用，未读点仍能基于会话列表刷新显示 */ }
+            store.set(lastReadKey(), JSON.stringify(lastRead), true);
         }
 
         function markRead(key, time) {
@@ -318,7 +328,7 @@
         }
 
         // ===== 未读小红点 =====
-        // 数据：convLast（服务端 /conversations 的 last 字段，按会话文件），已读：localStorage 的 lastRead
+        // 数据：convLast（服务端 /conversations 的 last 字段，按会话文件），已读：Cookie 里的 lastRead
         // 实时：收到 WS 消息后更新 convLast 并刷新红点；切换会话时把对应"已读时间"记到 lastRead
 
         // 根据 convLast 与 lastRead 重算侧边栏所有红点（不重建列表，只增删 dot）
@@ -377,8 +387,11 @@
                     }
                 }
                 // 侧边栏依赖自己的用户名与已读记录，成功后加载会话列表
-                loadLastRead();
-                loadConversations();
+                // 已读表先向服务端同步一次（跨浏览器/清缓存后仍能对上），失败就用本机 Cookie
+                store.sync(function () {
+                    loadLastRead();
+                    loadConversations();
+                });
             } catch (e) {
                 console.warn('获取当前用户名失败:', e);
             }
@@ -775,16 +788,6 @@
         }
     </script>
     <style>
-        :root {
-            --bg: #f4f6fb;
-            --card: #ffffff;
-            --accent: #4f7cff;
-            --accent-soft: #e9efff;
-            --text: #232a3b;
-            --muted: #8b91a5;
-            --border: #e4e7f0;
-            --danger: #ff4d4d;
-        }
         * { box-sizing: border-box; }
         html, body { height: 100%; }
         body {
@@ -929,10 +932,10 @@
         .message-box.own {
             align-self: flex-end;
             background: var(--accent-soft);
-            border-color: #cdd9ff;
+            border-color: var(--accent-soft-strong);
         }
         .sender { margin: 0; font-size: 12px; font-weight: 700; color: var(--accent); }
-        .message-box.own .sender { color: #7a8bb0; }
+        .message-box.own .sender { color: var(--muted); }
         .time { margin: 1px 0 4px; font-size: 11px; color: var(--muted); }
         /* pre-wrap 保留消息里的换行 */
         .content { margin: 0; font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
@@ -944,7 +947,7 @@
             right: 10px;
             padding: 2px 10px;
             background: var(--danger);
-            color: #fff;
+            color: var(--on-danger);
             border: none;
             border-radius: 999px;
             font-size: 11px;
@@ -953,7 +956,7 @@
             transition: opacity .15s;
         }
         .message-box:hover .revoke-btn { opacity: 1; }
-        .revoke-btn:hover { background: #e63535; }
+        .revoke-btn:hover { background: var(--danger-hover, #e63535); }
 
         /* 错误提示浮层（服务端 err 消息，如私聊对象不存在） */
         .error-toast {
@@ -963,8 +966,8 @@
             transform: translateX(-50%) translateY(20px);
             max-width: 80vw;
             padding: 10px 18px;
-            background: #ff4d4d;
-            color: #fff;
+            background: var(--danger);
+            color: var(--on-danger);
             border-radius: 10px;
             font-size: 13px;
             box-shadow: 0 4px 16px rgba(255, 77, 77, .35);
@@ -1016,15 +1019,15 @@
         .inputbar button {
             padding: 9px 16px;
             background: var(--accent);
-            color: #fff;
+            color: var(--on-accent);
             border: none;
             border-radius: 8px;
             font-size: 14px;
             cursor: pointer;
         }
-        .inputbar button:hover { background: #3f68e8; }
-        .inputbar button.ghost { background: #eef1f8; color: var(--text); }
-        .inputbar button.ghost:hover { background: #e2e6f2; }
+        .inputbar button:hover { background: var(--accent-hover); }
+        .inputbar button.ghost { background: var(--fill); color: var(--text); }
+        .inputbar button.ghost:hover { background: var(--fill-strong); }
 
         /* 图片消息缩略图（配合 ImageB64: 前缀协议） */
         .img-message {
@@ -1130,6 +1133,7 @@
         <div class="meta">
             <span id="meName" class="me"></span>
             <a href="/userList">查看用户列表</a>
+            <a class="nav-setting" href="/setting" title="设置">⚙ 设置</a>
         </div>
     </header>
 
