@@ -56,10 +56,46 @@
     const MAX_PAGE = 50;      // 与后端 Search.MAX_PAGE 一致
     let keyword = '', page = 1, numPages = 1;
     let type = 'video';       // 'video' | 'user'
+    // 上一次成功渲染用的数据。从播放页退回来（页面被重建）时照它重画，
+    // 不再请求 /searchByType —— 否则结果会变，看起来像"自己刷新了"。
+    let lastResult = null;
+
+    const CACHE_KEY = 'video_search';
 
     const orderSel = document.getElementById('order');
     // 排序只对视频生效；用户搜索不传 order
     function order() { return type === 'video' ? orderSel.value : ''; }
+
+    /** 按 lastResult 重画结果区（首次搜索与后退恢复共用） */
+    function renderList() {
+        if (!lastResult) return;
+        const list = lastResult.list;
+        page = lastResult.page;
+        numPages = lastResult.numPages;
+        results.innerHTML = '';
+
+        if (!list.length) {
+            showHint(results, type === 'user' ? '没有找到相关用户' : '没有找到相关视频');
+            return;
+        }
+
+        const grid = document.createElement('div');
+        if (type === 'user') {
+            grid.className = 'ugrid';
+            list.forEach(u => grid.appendChild(userCard(u)));
+        } else {
+            grid.className = 'grid';
+            // 搜索接口的字段与推荐流不同（author/play 是平铺的），用 opts 适配共享卡片
+            list.forEach(r => grid.appendChild(videoCard(r, { play: r.play, duration: r.duration })));
+        }
+        results.appendChild(grid);
+
+        pager.style.display = 'flex';
+        const unit = type === 'user' ? '个用户' : '个视频';
+        pageInfo.textContent = `第 ${page} / ${numPages} 页 · 共 ${fmtNum(lastResult.numResults)} ${unit}`;
+        document.getElementById('prev').disabled = page <= 1;
+        document.getElementById('next').disabled = page >= numPages;
+    }
 
     async function search(p) {
         if (!keyword) return;
@@ -73,31 +109,16 @@
             const o = order();
             if (o) params.order = o;
             const data = await api('/searchByType', params);
-            const list = data.result || [];
-            numPages = Math.min(data.numPages || 1, MAX_PAGE);
-            results.innerHTML = '';
-
-            if (!list.length) {
-                showHint(results, type === 'user' ? '没有找到相关用户' : '没有找到相关视频');
-                return;
-            }
-
-            const grid = document.createElement('div');
-            if (type === 'user') {
-                grid.className = 'ugrid';
-                list.forEach(u => grid.appendChild(userCard(u)));
-            } else {
-                grid.className = 'grid';
-                // 搜索接口的字段与推荐流不同（author/play 是平铺的），用 opts 适配共享卡片
-                list.forEach(r => grid.appendChild(videoCard(r, { play: r.play, duration: r.duration })));
-            }
-            results.appendChild(grid);
-
-            pager.style.display = 'flex';
-            const unit = type === 'user' ? '个用户' : '个视频';
-            pageInfo.textContent = `第 ${data.page || page} / ${numPages} 页 · 共 ${fmtNum(data.numResults)} ${unit}`;
-            document.getElementById('prev').disabled = page <= 1;
-            document.getElementById('next').disabled = page >= numPages;
+            lastResult = {
+                list: data.result || [],
+                page: data.page || p,
+                numPages: Math.min(data.numPages || 1, MAX_PAGE),
+                numResults: data.numResults || 0
+            };
+            renderList();
+            pageCache.set(CACHE_KEY, {
+                keyword: keyword, type: type, order: o, result: lastResult
+            });
         } catch (e) {
             showError(results, '搜索失败：' + e.message);
         }
@@ -145,8 +166,29 @@
     }
     if (type === 'video' && o && [...orderSel.options].some(x => x.value === o)) orderSel.value = o;
     orderSel.disabled = type !== 'video';
-    if (q) { kw.value = q; runSearch(); }
-    else showHint(results, '输入关键词后回车搜索');
+
+    /**
+     * 后退进入且快照对得上（同一关键词/类型/排序）时，照上次的结果重画，不重新请求。
+     * 对不上就照常搜 —— 用户可能是从别的关键词的搜索结果页退回来的。
+     */
+    function restore() {
+        const snap = pageCache.get(CACHE_KEY);
+        if (!snap || !snap.result) return false;
+        if (snap.keyword !== q) return false;
+        if (snap.type !== type) return false;
+        if ((snap.order || '') !== orderSel.value) return false;
+        keyword = snap.keyword;
+        kw.value = snap.keyword;
+        lastResult = snap.result;
+        renderList();
+        return true;
+    }
+
+    if (q) {
+        if (!(cameBack() && restore())) { kw.value = q; runSearch(); }
+    } else {
+        showHint(results, '输入关键词后回车搜索');
+    }
 </script>
 </body>
 </html>

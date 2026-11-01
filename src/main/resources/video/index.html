@@ -41,6 +41,25 @@
 
     let fresh = 0;
     let loading = false;
+    // 已经画到页面上的全部条目，用于「从播放页退回来时照原样重画」
+    let allItems = [];
+
+    const CACHE_KEY = 'video_feed';
+
+    /** 用快照重画列表（只在后退进入时走这里，见 common.js 的 cameBack） */
+    function restore() {
+        const snap = pageCache.get(CACHE_KEY);
+        if (!snap || !snap.items || !snap.items.length) return false;
+        allItems = snap.items;
+        fresh = snap.fresh || 1;
+        feedEl.innerHTML = '';
+        const grid = document.createElement('div');
+        grid.className = 'grid';
+        allItems.forEach(v => grid.appendChild(videoCard(v)));
+        feedEl.appendChild(grid);
+        if (fresh >= 10) moreBtn.style.display = 'none';
+        return true;
+    }
 
     async function load() {
         if (loading) return;
@@ -65,8 +84,11 @@
                 feedEl.appendChild(grid);
             }
             items.forEach(v => grid.appendChild(videoCard(v)));
+            allItems = allItems.concat(items);
             fresh++;
             if (fresh >= 10) moreBtn.style.display = 'none';
+            // 记下"现在页面上是什么"，从播放页退回来（页面被重建时）照这个重画
+            pageCache.set(CACHE_KEY, { items: allItems, fresh: fresh });
         } catch (e) {
             if (fresh === 0) {
                 feedEl.innerHTML = '';
@@ -89,7 +111,8 @@
         if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 320) load();
     });
 
-    load();
+    // 后退进入且有快照：直接照原样画，不请求 /recommend（否则列表会换一批）
+    if (!(cameBack() && restore())) load();
 </script>
 </body>
 </html>

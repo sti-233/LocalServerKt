@@ -250,12 +250,6 @@
         120: '4K', 125: 'HDR', 126: '杜比视界', 127: '8K'
     };
 
-    /** 兼容后端返回的 base_url / baseUrl 两种字段名 */
-    function streamBaseUrl(x) {
-        if (!x) return '';
-        return x.base_url || x.baseUrl || (x.backup_url && x.backup_url[0]) || (x.backupUrl && x.backupUrl[0]) || '';
-    }
-
     /** 解析地址栏，拿到 bvid 或 aid，然后加载 */
     async function boot() {
         const sp = new URLSearchParams(location.search);
@@ -512,7 +506,10 @@
     function applyStream() {
         const qn = Number(qualitySel.value);
         const codecid = Number(codecSel.value);
-        let vUrl = '', aUrl = '';
+        const fmt = formatSel.value === 'mp4' ? 'mp4' : 'dash';
+        const bvid = (info && info.bvid) || '';
+        const cid = currentCid;
+        let vSrc = '', aSrc = '';
 
         const dash = playData && playData.dash;
         if (dash && dash.video && dash.video.length) {
@@ -523,28 +520,30 @@
                 cands = dash.video.filter(v => v.id === best);
             }
             const pick = cands.find(v => v.codecid === codecid) || cands[0];
-            if (pick) vUrl = streamBaseUrl(pick);
+            // 用语义参数拼地址（不用上游签名地址），同一路流的 URL 跨会话恒定，
+            // 浏览器缓存才复用得了；服务端负责换成真实地址并跟随签名续期。
+            if (pick) vSrc = streamUrlOf(bvid, cid, pick.id, pick.codecid, 'v', fmt);
             if (dash.audio && dash.audio.length) {
                 // 选码率最高的音频
                 const a = dash.audio.slice().sort((x, y) => (y.bandwidth || 0) - (x.bandwidth || 0))[0];
-                aUrl = streamBaseUrl(a);
+                aSrc = streamUrlOf(bvid, cid, 0, 0, 'a', fmt);
             }
         } else if (playData && playData.durl && playData.durl.length) {
-            vUrl = playData.durl[0].url;
+            vSrc = streamUrlOf(bvid, cid, qn, 0, 'm', 'mp4');
         }
 
-        if (!vUrl) {
+        if (!vSrc) {
             playMsg.textContent = '没有拿到可用的视频流地址。';
             return;
         }
 
         const wasPlaying = !player.paused && player.currentTime > 0;
-        player.src = streamUrl(vUrl);
+        player.src = vSrc;
         if (wasPlaying) player.play().catch(() => {});
 
         // DASH 视频流不含音轨，单独挂一个 <audio> 跟随 <video>（主时钟）播放。
         // 同步策略见 bindSync：playbackRate 微调收敛漂移，避免跳表。
-        if (aUrl) {
+        if (aSrc) {
             if (!audioEl) {
                 audioEl = document.createElement('audio');
                 audioEl.preload = 'auto';
@@ -552,7 +551,7 @@
                 document.body.appendChild(audioEl);
                 bindSync();
             }
-            audioEl.src = streamUrl(aUrl);
+            audioEl.src = aSrc;
         } else {
             // MP4：清掉 DASH 音轨（pause + 清空 src，必须 load() 真正停掉取流）
             if (audioEl) { audioEl.pause(); audioEl.removeAttribute('src'); audioEl.load(); }
@@ -636,7 +635,7 @@
 
     // ---------- 截取当前画面 ----------
     // 把 <video> 当前帧画到 canvas，转成 dataURL 交给共用的 lightbox 打开；
-    // 之后点 💾 保存到 cache/picture/、点 ✎ 裁剪，两个能力都复用 lib/lightbox.js。
+    // 之后点 💾 保存到自己的 cache/picture/<用户名>/、点 ✎ 裁剪，两个能力都复用 lib/lightbox.js。
     const shotBtn = document.getElementById('shot');
     shotBtn.addEventListener('click', () => {
         // 没有可画的画面时 canvas 会得到全黑图，先挡掉

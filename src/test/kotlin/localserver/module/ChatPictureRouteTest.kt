@@ -10,6 +10,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsBytes
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.application.install
@@ -29,6 +30,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -42,6 +44,9 @@ class ChatPictureRouteTest {
     private val json = Json { ignoreUnknownKeys = true }
     private val cacheDir = File("cache")
     private val pictureDir = File(Chat.PICTURE_DIR)
+
+    // 图片现在按用户分目录存：userList 里 localhost → tester，所以测试用户的目录是 cache/picture/tester
+    private val testerDir = File(pictureDir, "tester")
 
     // 1x1 透明 PNG，用作"合法图片"的字节来源
     private val pngBytes: ByteArray = Base64.getDecoder().decode(
@@ -91,7 +96,7 @@ class ChatPictureRouteTest {
     }
 
     @Test
-    fun `savePicture writes into cache-picture and is idempotent`() = withApp { client ->
+    fun `savePicture writes into the caller directory and is idempotent`() = withApp { client ->
         val expected = sha256Hex(pngBytes) + ".png"
 
         val resp = client.post("/savePicture") {
@@ -102,11 +107,13 @@ class ChatPictureRouteTest {
         val body = json.parseToJsonElement(resp.bodyAsText()).jsonObject
         assertEquals(true, body["ok"]?.jsonPrimitive?.boolean)
         assertEquals("ImageRef:/img/$expected", body["ref"]?.jsonPrimitive?.content)
-        assertEquals("cache/picture", body["dir"]?.jsonPrimitive?.content)
+        // 目录名由请求 IP 推导：userList 里 localhost 是 tester
+        assertEquals("cache/picture/tester", body["dir"]?.jsonPrimitive?.content)
+        assertEquals("tester", body["user"]?.jsonPrimitive?.content)
         assertEquals(false, body["existed"]?.jsonPrimitive?.boolean, "首次保存不该命中已有缓存")
 
-        val file = File(pictureDir, expected)
-        assertTrue(file.exists(), "图片应落在 cache/picture/$expected")
+        val file = File(testerDir, expected)
+        assertTrue(file.exists(), "图片应落在 cache/picture/tester/$expected")
         assertTrue(file.readBytes().contentEquals(pngBytes), "落盘必须是原始字节")
 
         // 同一张图再存一次：哈希相同，命中已有文件，不产生副本
@@ -118,7 +125,7 @@ class ChatPictureRouteTest {
         assertEquals(true, againBody["existed"]?.jsonPrimitive?.boolean, "重复保存应命中已有缓存")
         assertEquals(
             1,
-            pictureDir.listFiles()?.size,
+            testerDir.listFiles()?.size,
             "重复保存不能产生第二份文件"
         )
     }
@@ -148,20 +155,32 @@ class ChatPictureRouteTest {
             setBody(buildJsonObject { put("data", huge) }.toString())
         }
         assertEquals(HttpStatusCode.PayloadTooLarge, tooBig.status)
-        assertFalse(pictureDir.exists() && (pictureDir.listFiles()?.isNotEmpty() == true), "非法请求不该落盘")
+        assertFalse(testerDir.exists() && (testerDir.listFiles()?.isNotEmpty() == true), "非法请求不该落盘")
     }
 
     @Test
-    fun `img endpoint serves from new dir and falls back to legacy cache root`() = withApp { client ->
+    fun `img endpoint finds pictures in user dirs and in both legacy locations`() = withApp { client ->
         val name = sha256Hex(pngBytes) + ".png"
-        pictureDir.mkdirs()
-        File(pictureDir, name).writeBytes(pngBytes)
+        testerDir.mkdirs()
+        File(testerDir, name).writeBytes(pngBytes)
 
-        val fromNew = client.get("/img/$name")
-        assertEquals(HttpStatusCode.OK, fromNew.status)
-        assertTrue(fromNew.bodyAsBytes().contentEquals(pngBytes))
+        val fromUserDir = client.get("/img/$name")
+        assertEquals(HttpStatusCode.OK, fromUserDir.status)
+        assertTrue(fromUserDir.bodyAsBytes().contentEquals(pngBytes))
+        // 文件名是内容寻址的，必须让浏览器能长缓存：否则列表里的缩略图下过一遍，
+        // 点开全屏查看器（新 <img> 同一个 src）还得整张重下
+        val cacheControl = fromUserDir.headers[HttpHeaders.CacheControl]
+        assertNotNull(cacheControl, "Cache-Control should be set for content-addressed images")
+        assertTrue(cacheControl.contains("max-age="), "should carry a max-age, got: $cacheControl")
 
-        // 旧目录里的文件（还没跑迁移）也要能取到，避免存档整片裂图
+        // 改成按用户分目录之前存在 cache/picture/ 根上的图，老存档仍要能取到
+        val inRoot = sha256Hex("root".toByteArray()) + ".png"
+        File(pictureDir, inRoot).writeBytes(pngBytes)
+        val fromRoot = client.get("/img/$inRoot")
+        assertEquals(HttpStatusCode.OK, fromRoot.status)
+        assertTrue(fromRoot.bodyAsBytes().contentEquals(pngBytes))
+
+        // 更早的 cache/ 根目录里的图同样兜底
         val legacy = sha256Hex("legacy".toByteArray()) + ".png"
         File(cacheDir, legacy).writeBytes(pngBytes)
         val fromLegacy = client.get("/img/$legacy")
@@ -171,6 +190,92 @@ class ChatPictureRouteTest {
         // 路径校验仍然生效
         assertEquals(HttpStatusCode.NotFound, client.get("/img/notahash.png").status)
         assertEquals(HttpStatusCode.NotFound, client.get("/img/${"a".repeat(64)}.png").status)
+    }
+
+    @Test
+    fun `pictures only lists the caller's own images`() = withApp { client ->
+        // 自己的目录里有一张
+        testerDir.mkdirs()
+        val mine = sha256Hex("mine".toByteArray()) + ".png"
+        File(testerDir, mine).writeBytes(pngBytes)
+
+        // 别人的目录里也有一张：不能出现在自己的列表里
+        val otherDir = File(pictureDir, "someone-else")
+        otherDir.mkdirs()
+        val theirs = sha256Hex("theirs".toByteArray()) + ".png"
+        File(otherDir, theirs).writeBytes(pngBytes)
+
+        // 旧版不区分用户时落在根上的图同样不属于任何人，不该出现在列表里
+        val legacyRoot = sha256Hex("legacyroot".toByteArray()) + ".png"
+        File(pictureDir, legacyRoot).writeBytes(pngBytes)
+
+        val body = json.parseToJsonElement(client.get("/pictures").bodyAsText()).jsonObject
+        assertEquals("tester", body["user"]?.jsonPrimitive?.content)
+        assertEquals(1, body["total"]?.jsonPrimitive?.int, "只统计自己目录里的图")
+        val items = body["items"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(1, items.size)
+        assertEquals(mine, items[0]["name"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `deletePicture removes the callers own file`() = withApp { client ->
+        testerDir.mkdirs()
+        val name = sha256Hex("deleteme".toByteArray()) + ".png"
+        val file = File(testerDir, name)
+        file.writeBytes(pngBytes)
+        assertTrue(file.exists())
+
+        val resp = client.post("/deletePicture") {
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { put("name", name) }.toString())
+        }
+        assertEquals(HttpStatusCode.OK, resp.status)
+        val body = json.parseToJsonElement(resp.bodyAsText()).jsonObject
+        assertEquals(true, body["ok"]?.jsonPrimitive?.boolean)
+        assertEquals(name, body["name"]?.jsonPrimitive?.content)
+        assertEquals("tester", body["user"]?.jsonPrimitive?.content)
+        assertFalse(file.exists(), "文件应已被删掉")
+
+        // 再删一次：已经没了，回 404 而不是静默成功
+        val again = client.post("/deletePicture") {
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { put("name", name) }.toString())
+        }
+        assertEquals(HttpStatusCode.NotFound, again.status)
+    }
+
+    @Test
+    fun `deletePicture refuses names outside the content addressed format`() = withApp { client ->
+        testerDir.mkdirs()
+        val victim = File(testerDir, "keep.png")
+        victim.writeBytes(pngBytes)
+
+        // 路径穿越、扩展名不在白名单、长度不对，都应该在正则这一步就被挡下
+        for (bad in listOf("../keep.png", "../../userList.json", "keep.png", "a".repeat(63) + ".png")) {
+            val resp = client.post("/deletePicture") {
+                contentType(ContentType.Application.Json)
+                setBody(buildJsonObject { put("name", bad) }.toString())
+            }
+            assertEquals(HttpStatusCode.BadRequest, resp.status, "应拒绝非法名字：$bad")
+        }
+        assertTrue(victim.exists(), "非法请求不该删掉任何文件")
+    }
+
+    @Test
+    fun `deletePicture never touches another users directory`() = withApp { client ->
+        // 同一张图别人也存了一份：删自己的那份不能连带删掉别人的
+        val otherDir = File(pictureDir, "someone-else")
+        otherDir.mkdirs()
+        val name = sha256Hex("shared".toByteArray()) + ".png"
+        File(otherDir, name).writeBytes(pngBytes)
+
+        val resp = client.post("/deletePicture") {
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { put("name", name) }.toString())
+        }
+        // 自己目录里没有这份文件 → 404，别人的文件毫发无伤
+        assertEquals(HttpStatusCode.NotFound, resp.status)
+        assertTrue(File(otherDir, name).exists(), "不能删别人的图")
     }
 
     @Test
@@ -213,24 +318,24 @@ class ChatPictureRouteTest {
     }
 
     @Test
-    fun `pictures lists cache dir newest first and skips non images`() = withApp { client ->
-        // 空目录：合法响应但列表为空，前端据此显示"缓存里还没有图片"
+    fun `pictures lists the caller directory newest first and skips non images`() = withApp { client ->
+        // 空目录：合法响应但列表为空，前端据此显示"你还没有保存过图片"
         val empty = client.get("/pictures")
         assertEquals(HttpStatusCode.OK, empty.status)
         val emptyBody = json.parseToJsonElement(empty.bodyAsText()).jsonObject
-        assertEquals("cache/picture", emptyBody["dir"]?.jsonPrimitive?.content)
+        assertEquals("cache/picture/tester", emptyBody["dir"]?.jsonPrimitive?.content)
         assertEquals(0, emptyBody["total"]?.jsonPrimitive?.int)
         assertEquals(0, emptyBody["items"]?.jsonArray?.size)
 
-        pictureDir.mkdirs()
+        testerDir.mkdirs()
         val older = sha256Hex("older".toByteArray()) + ".png"
         val newer = sha256Hex("newer".toByteArray()) + ".jpg"
-        File(pictureDir, older).writeBytes(pngBytes)
-        File(pictureDir, newer).writeBytes(pngBytes)
-        File(pictureDir, older).setLastModified(1_600_000_000_000)
-        File(pictureDir, newer).setLastModified(1_700_000_000_000)
+        File(testerDir, older).writeBytes(pngBytes)
+        File(testerDir, newer).writeBytes(pngBytes)
+        File(testerDir, older).setLastModified(1_600_000_000_000)
+        File(testerDir, newer).setLastModified(1_700_000_000_000)
         // 非图片文件名不该出现在列表里
-        File(pictureDir, "notes.txt").writeText("not a picture")
+        File(testerDir, "notes.txt").writeText("not a picture")
 
         val resp = client.get("/pictures")
         assertEquals(HttpStatusCode.OK, resp.status)

@@ -515,15 +515,45 @@ object Video {
 
         // 提前预取"默认档位的视频流 + 最高码率音频流"的前若干字节，
         // 这样前端紧接着请求 /videoStream 时能直接命中内存、瞬时起播。
+        // 视频优先取 AVC(7)：前端 refreshCodecOptions() 默认就选它，
+        // 预取别的编码（HEVC/AV1）会白预取 —— 首段缓存按上游地址为键，对不上就命中不了。
         val heads = if (dash) {
+            val sameQuality = data.dash?.video?.filter { it.id == best }.orEmpty()
+            val defaultVideo = sameQuality.firstOrNull { it.codecid == 7 } ?: sameQuality.firstOrNull()
             listOfNotNull(
-                data.dash?.video?.firstOrNull { it.id == best }?.baseUrl?.takeIf { it.isNotBlank() },
+                defaultVideo?.baseUrl?.takeIf { it.isNotBlank() },
                 data.dash?.audio?.maxByOrNull { it.bandwidth ?: 0 }?.baseUrl?.takeIf { it.isNotBlank() }
             )
         } else {
             listOfNotNull(data.durl.firstOrNull()?.url?.takeIf { it.isNotBlank() })
         }
         heads.forEach(::prefetchHead)
+
+        // 把这批签名地址登记到 StreamResolver：前端随后用 bvid/cid/qn/codecid 请求
+        // /videoStream 时直接复用同一个地址，既不会重复协商，也保证了首段缓存命中。
+        // 全部档位都登记（不止默认档），这样切清晰度/编码也不必再回源协商。
+        val fmt = if (dash) "dash" else "mp4"
+        if (dash) {
+            data.dash?.video?.forEach { v ->
+                if (v.baseUrl.isNotBlank()) {
+                    StreamResolver.remember(bvid, cid, v.id, v.codecid, StreamResolver.KIND_VIDEO, fmt, v.baseUrl)
+                }
+            }
+            data.dash?.audio?.forEach { a ->
+                if (a.baseUrl.isNotBlank()) {
+                    StreamResolver.remember(bvid, cid, 0, 0, StreamResolver.KIND_AUDIO, fmt, a.baseUrl)
+                }
+            }
+        } else {
+            // MP4：B 站可能降档（请求 480P 只给 360P），前端下拉回显的是实际协商到的
+            // `data.quality`，所以两个键都登记，避免前端按实际值来取时缓存落空。
+            data.durl.firstOrNull()?.url?.takeIf { it.isNotBlank() }?.let { u ->
+                StreamResolver.remember(bvid, cid, qn, 0, StreamResolver.KIND_MP4, fmt, u)
+                if (data.quality != qn) {
+                    StreamResolver.remember(bvid, cid, data.quality, 0, StreamResolver.KIND_MP4, fmt, u)
+                }
+            }
+        }
 
         call.respondText(prettyJson.encodeToString(JsonObject(obj)))
     }
@@ -580,11 +610,48 @@ object Video {
     /**
      * 转发视频字节。B 站视频流有 Referer 防盗链，浏览器 <video> 直接播会 403，
      * 故由服务端带 Referer/UA 取流；同时必须透传 Range 才能拖动进度条。
+     *
+     * 两种入参形式：
+     *  1. 语义参数 `bvid=&cid=&qn=&codecid=&kind=&format=` —— **推荐**。URL 只跟"要哪一路流"
+     *     有关，跨会话恒定，浏览器缓存因此能真正复用（响应带 `immutable`）。真实签名地址
+     *     由 [StreamResolver] 内部维护并在过期前自动换新。
+     *  2. `url=<上游签名地址>` —— 兼容旧链接。这种 URL 每次都不同，缓存实际复用不了。
      */
     private fun Route.videoStream() = get("/videoStream") {
-        val url = call.parameters["url"]
-            ?: return@get call.respondText("Please provide \"url\".", status = HttpStatusCode.BadRequest)
         val range = call.request.headers[HttpHeaders.Range]
+
+        // 非 control 来源限速（按 IP 共用一个令牌桶，见 StreamThrottle）。
+        // control 客户端拿到的是 null，下面所有写出口都原样全速。
+        val bucket = StreamThrottle.bucketFor(call.request.local.remoteAddress)
+
+        val legacyUrl = call.parameters["url"]?.takeIf { it.isNotBlank() }
+        val bvid = call.parameters["bvid"]?.takeIf { it.isNotBlank() }
+        val cid = call.parameters["cid"]?.toLongOrNull()
+
+        // 语义参数优先；缺了才回落到 url。URL 稳定时给长缓存，不稳定时只给 1 小时。
+        val url: String
+        val immutable: Boolean
+        if (bvid != null && cid != null) {
+            val qn = call.parameters["qn"]?.toIntOrNull()?.coerceAtLeast(6) ?: PlayUrl.QN_1080P
+            val codecid = call.parameters["codecid"]?.toIntOrNull() ?: 0
+            val kind = call.parameters["kind"]?.takeIf { it in KIND_SET } ?: StreamResolver.KIND_VIDEO
+            val format = if (call.parameters["format"] == "mp4") "mp4" else "dash"
+            url = StreamResolver.resolve(bvid, cid, qn, codecid, kind, format)
+                ?: return@get call.respondText("Failed to resolve stream.", status = HttpStatusCode.BadGateway)
+            immutable = true
+        } else if (legacyUrl != null) {
+            url = legacyUrl
+            immutable = false
+        } else {
+            return@get call.respondText(
+                "Please provide \"bvid\" and \"cid\", or \"url\".",
+                status = HttpStatusCode.BadRequest
+            )
+        }
+        // 语义 URL 的字节永不改变，可长期缓存；上游签名地址只活 1 小时，别给 immutable。
+        // 用 7 天而不是 1 年：同一 bvid/cid/qn 的字节基本不变，但万一是重传过的稿件，
+        // 一周内也能自愈，不至于让浏览器永久留着旧版本。
+        val cacheControl = if (immutable) "public, max-age=604800, immutable" else "public, max-age=3600"
 
         // 快路径：命中预取的首段缓存，且是"起播"场景（无 Range / 开放式 bytes=0-）。
         // 先把缓存字节瞬时写出去，再从缓存末尾继续向上游续传，
@@ -594,10 +661,10 @@ object Video {
         if (head != null && System.currentTimeMillis() - head.at < PREFETCH_TTL_MS) {
             when (val mode = headServeMode(range, head.bytes.size)) {
                 is HeadMode.Whole -> {
-                    if (call.serveWholeFromHead(url, head, range != null)) return@get
+                    if (call.serveWholeFromHead(url, head, range != null, bucket, cacheControl)) return@get
                 }
                 is HeadMode.Slice -> {
-                    if (call.serveSliceFromHead(head, mode.endInclusive)) return@get
+                    if (call.serveSliceFromHead(head, mode.endInclusive, bucket, cacheControl)) return@get
                 }
                 null -> { /* 不适用，回落普通代理 */ }
             }
@@ -612,7 +679,7 @@ object Video {
         response.header(HttpHeaders.ContentType)?.let { call.response.headers.append(HttpHeaders.ContentType, it) }
         response.header(HttpHeaders.ContentRange)?.let { call.response.headers.append(HttpHeaders.ContentRange, it) }
         // 视频分片是不可变内容，允许浏览器缓存：拖动进度条时重复请求可直接命中本地缓存
-        call.response.headers.append(HttpHeaders.CacheControl, "public, max-age=3600")
+        call.response.headers.append(HttpHeaders.CacheControl, cacheControl)
 
         val status = HttpStatusCode.fromValue(response.status)
         call.respondBytesWriter(
@@ -620,9 +687,12 @@ object Video {
             status = status,
             contentLength = response.header(HttpHeaders.ContentLength)?.toLongOrNull()
         ) {
-            pipeInput(response.body, this)
+            pipeInput(response.body, this, bucket)
         }
     }
+
+    /** 语义参数里 `kind` 的合法取值 */
+    private val KIND_SET = setOf(StreamResolver.KIND_VIDEO, StreamResolver.KIND_AUDIO, StreamResolver.KIND_MP4)
 
     /** 首段缓存能覆盖哪种请求 */
     private sealed interface HeadMode {
@@ -651,13 +721,17 @@ object Video {
     /** 有界区间完全命中缓存：直接从内存切片返回 */
     private suspend fun io.ktor.server.application.ApplicationCall.serveSliceFromHead(
         head: Head,
-        endInclusive: Long
+        endInclusive: Long,
+        bucket: TokenBucket?,
+        cacheControl: String
     ): Boolean {
         val len = (endInclusive + 1).toInt().coerceAtMost(head.bytes.size)
         val slice = head.bytes.copyOfRange(0, len)
         response.headers.append(HttpHeaders.AcceptRanges, "bytes")
-        response.headers.append(HttpHeaders.CacheControl, "public, max-age=3600")
+        response.headers.append(HttpHeaders.CacheControl, cacheControl)
         response.headers.append(HttpHeaders.ContentRange, "bytes 0-$endInclusive/${head.total}")
+        // 走缓存也要计费：否则非 control 客户端只要反复发小 Range 就能绕开限速
+        StreamThrottle.await(bucket, len)
         return try {
             respondBytes(
                 bytes = slice,
@@ -678,7 +752,9 @@ object Video {
     private suspend fun io.ktor.server.application.ApplicationCall.serveWholeFromHead(
         url: String,
         head: Head,
-        ranged: Boolean
+        ranged: Boolean,
+        bucket: TokenBucket?,
+        cacheControl: String
     ): Boolean {
         val total = head.total
         if (total <= 0) return false
@@ -686,7 +762,7 @@ object Video {
         val contentType = ContentType.parse(head.contentType ?: "application/octet-stream")
 
         response.headers.append(HttpHeaders.AcceptRanges, "bytes")
-        response.headers.append(HttpHeaders.CacheControl, "public, max-age=3600")
+        response.headers.append(HttpHeaders.CacheControl, cacheControl)
         if (ranged) {
             response.headers.append(HttpHeaders.ContentRange, "bytes 0-${total - 1}/$total")
         }
@@ -699,6 +775,7 @@ object Video {
                 contentLength = total
             ) {
                 // 1) 先把缓存的首段瞬时写出
+                StreamThrottle.await(bucket, headLen)
                 writeFully(head.bytes, 0, headLen)
                 flush()
 
@@ -711,7 +788,7 @@ object Video {
                     Logger.debug("head 续传失败，剩余部分可能缺失")
                     return@respondBytesWriter
                 }
-                pipeInput(cont.body, this)
+                pipeInput(cont.body, this, bucket)
             }
             true
         } catch (e: Exception) {
@@ -724,10 +801,14 @@ object Video {
      * 把上游字节逐段转发给客户端，每段显式 flush。
      * 必须显式 flush：否则数据会被整段缓冲，播放器要等全部读完才能起播。
      * 阻塞的 InputStream 读取放到 IO 线程池，避免占用事件循环。
+     *
+     * [bucket] 非空时按 300 KB/s 限速（非 control 来源）：每段写完先向桶领额度，
+     * 额度不够就等，等待期间不去读上游 —— 背压传回 CDN，内存不会被灌爆。
      */
     private suspend fun pipeInput(
         input: java.io.InputStream,
-        out: ByteWriteChannel
+        out: ByteWriteChannel,
+        bucket: TokenBucket? = null
     ) {
         withContext(Dispatchers.IO) {
             input.use { ins ->
@@ -735,6 +816,7 @@ object Video {
                 while (true) {
                     val read = ins.read(buffer)
                     if (read <= 0) break
+                    StreamThrottle.await(bucket, read)
                     out.writeFully(buffer, 0, read)
                     out.flush()
                 }

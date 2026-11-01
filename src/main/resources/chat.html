@@ -34,17 +34,29 @@
             document.getElementById('sidebarToggle').addEventListener('click', function () {
                 document.getElementById('sidebar').classList.toggle('open');
             });
+            // 记住用户有没有自己往上翻：只有仍贴着底部时才自动跟随新消息/图片撑高。
+            // 自己刚触发的滚动（含 smooth 动画进行中）跳过，否则动画每帧都"没到底"，
+            // 会把 stickBottom 误置 false，之后新消息就再也不跟随了。
+            document.getElementById('MsgBox').addEventListener('scroll', function () {
+                if (Date.now() < autoScrollUntil) return;
+                stickBottom = nearBottom();
+            });
             // 图片缩略图双击全屏查看：统一交给 /resources/lib/lightbox.js
             // （与 B 站各页共用同一实现；缩放/平移/手势/关闭、以及设置页的控件显隐都在那边）
-            // 聊天图已在服务端 cache/picture 里（ImageRef 指的就是它自己），
-            // 所以这里关掉「保存」与「裁剪」两个按钮，只保留查看
-            Lightbox.mount({ dblclick: 'img.img-message', save: false, edit: false });
-            // 图片发送：点 🖼️ 打开选择面板（本地选取 / 从 cache/picture 里挑），两个 tab
+            // 聊天图本身已在服务端缓存里，但保存按钮仍然开放：点 💾 会把它复制一份到
+            // cache/picture/<当前用户名>/，这样它才会出现在自己「从缓存中选取」的列表里；
+            // 裁剪不开放（聊天图直接改内容容易误伤存档）。
+            Lightbox.mount({ dblclick: 'img.img-message', save: true, edit: false });
+            // 图片发送：点 🖼️ 打开选择面板（本地选取 / 从自己的 cache/picture/<用户名>/ 里挑），两个 tab
             document.getElementById('imgBtn').addEventListener('click', openPickPanel);
             document.getElementById('pickClose').addEventListener('click', closePickPanel);
             document.getElementById('pickMask').addEventListener('click', closePickPanel);
             document.getElementById('pickTabLocal').addEventListener('click', function () { switchPickTab('local'); });
             document.getElementById('pickTabCache').addEventListener('click', function () { switchPickTab('cache'); });
+            // 点中缩略图后的三个动作：查看（走共用查看器）/ 删除（只删自己目录）/ 发送（发引用）
+            document.getElementById('pickView').addEventListener('click', viewPicked);
+            document.getElementById('pickDelete').addEventListener('click', deletePicked);
+            document.getElementById('pickSend').addEventListener('click', sendPicked);
             // 本地选取：面板上的大按钮转去点隐藏的 file input
             document.getElementById('pickLocalBtn').addEventListener('click', function () {
                 document.getElementById('imgInput').click();
@@ -99,6 +111,8 @@
             function closePickPanel() {
                 document.getElementById('pickMask').classList.remove('show');
                 document.getElementById('pickPanel').classList.remove('show');
+                // 关掉时清掉选中态，下次打开是干净的
+                selectPick(null);
             }
 
             function switchPickTab(tab) {
@@ -106,16 +120,108 @@
                 document.getElementById('pickTabCache').classList.toggle('active', tab === 'cache');
                 document.getElementById('pickBodyLocal').classList.toggle('hidden', tab !== 'local');
                 document.getElementById('pickBodyCache').classList.toggle('hidden', tab !== 'cache');
+                // 操作条只服务于缓存里的图，切到本地选取时收起
+                if (tab !== 'cache') selectPick(null);
                 // 每次切到缓存都重拉：刚保存的图要能立刻出现在列表里
                 if (tab === 'cache') loadPickCache();
             }
 
-            // 拉 cache/picture 列表渲染成缩略图网格（缩略图走 /img/<name>，由浏览器缓存）
+            // 当前选中的缓存图片（{name, ref} 或 null）。点缩略图只是选中并浮出「查看/删除/发送」，
+            // 不再像旧版那样单击直接发送 —— 发错了撤回也麻烦，多一步确认更稳。
+            var pickSel = null;
+
+            function selectPick(item) {
+                pickSel = item;
+                const actions = document.getElementById('pickActions');
+                const nameEl = document.getElementById('pickSelName');
+                if (item) {
+                    actions.classList.add('show');
+                    // 只显示哈希前 8 位，完整名字在 title 里（64 位哈希全显示会把按钮挤走）
+                    nameEl.textContent = item.name.substring(0, 8) + '…';
+                    nameEl.title = item.name;
+                } else {
+                    actions.classList.remove('show');
+                    nameEl.textContent = '';
+                    nameEl.title = '';
+                }
+                // 同步缩略图的选中框
+                const imgs = document.getElementById('pickGrid').querySelectorAll('img');
+                for (let i = 0; i < imgs.length; i++) {
+                    const on = !!item && imgs[i].getAttribute('data-name') === item.name;
+                    imgs[i].classList.toggle('sel', on);
+                }
+            }
+
+            // 发送当前选中的图：服务端已有这份文件，只发引用，不走 base64 重传
+            function sendPicked() {
+                if (!pickSel) return;
+                // 面板开着的时候可能切到了旧日群聊，这里再挡一次（与本地选取一致）
+                if (inOldGroupDay()) {
+                    showError('正在浏览旧日群聊记录，该日不可发送图片');
+                    return;
+                }
+                const ref = pickSel.ref;
+                closePickPanel();
+                sendRaw('ImageRef:' + ref);
+            }
+
+            // 查看当前选中的图：交给共用查看器（缩放/保存都在那边，裁剪仍关闭）
+            function viewPicked() {
+                if (!pickSel || !window.Lightbox) return;
+                Lightbox.open(pickSel.ref);
+            }
+
+            // 删除当前选中的图：只删自己目录里的那一份，成功后从网格里摘掉
+            async function deletePicked() {
+                if (!pickSel) return;
+                const item = pickSel;
+                const btn = document.getElementById('pickDelete');
+                btn.disabled = true;
+                btn.textContent = '删除中…';
+                try {
+                    const res = await fetch('/deletePicture', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: item.name })
+                    });
+                    const data = await res.json().catch(function () { return {}; });
+                    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+                    // 摘掉对应缩略图
+                    const imgs = document.getElementById('pickGrid').querySelectorAll('img');
+                    for (let i = 0; i < imgs.length; i++) {
+                        if (imgs[i].getAttribute('data-name') === item.name) {
+                            imgs[i].parentNode.removeChild(imgs[i]);
+                            break;
+                        }
+                    }
+                    selectPick(null);
+                    if (!document.getElementById('pickGrid').querySelectorAll('img').length) {
+                        // 全删光了：重拉一次，让空态文案正常显示
+                        loadPickCache();
+                    } else {
+                        const count = document.getElementById('pickCount');
+                        const m = /^最近 (\d+) \/ 共 (\d+) 张$/.exec(count.textContent || '');
+                        if (m) {
+                            count.textContent = '最近 ' + (Number(m[1]) - 1) + ' / 共 ' + (Number(m[2]) - 1) + ' 张';
+                        }
+                    }
+                } catch (err) {
+                    showError('删除失败：' + err.message);
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = '删除';
+                }
+            }
+
+            // 拉自己的图片列表渲染成缩略图网格（服务端只返回本 IP 用户名目录下的图；
+            // 缩略图走 /img/<name>，由浏览器缓存）
             async function loadPickCache() {
                 const grid = document.getElementById('pickGrid');
                 const hint = document.getElementById('pickHint');
                 const count = document.getElementById('pickCount');
                 grid.textContent = '';
+                // 重拉时清掉选中态（旧选中项的节点已经不在了）
+                selectPick(null);
                 hint.style.display = 'block';
                 hint.textContent = '加载中…';
                 count.textContent = '';
@@ -126,7 +232,7 @@
                     const items = data.items || [];
                     count.textContent = items.length ? ('最近 ' + items.length + ' / 共 ' + data.total + ' 张') : '';
                     if (!items.length) {
-                        hint.textContent = '缓存里还没有图片';
+                        hint.textContent = '你还没有保存过图片（全屏查看时点 💾 即可存到这里）';
                         return;
                     }
                     hint.style.display = 'none';
@@ -137,15 +243,10 @@
                         img.title = it.name;
                         img.loading = 'lazy';
                         img.decoding = 'async';
+                        img.setAttribute('data-name', it.name);
                         img.addEventListener('click', function () {
-                            // 面板开着的时候可能切到了旧日群聊，这里再挡一次（与本地选取一致）
-                            if (inOldGroupDay()) {
-                                showError('正在浏览旧日群聊记录，该日不可发送图片');
-                                return;
-                            }
-                            // 服务端已有这份文件，只发引用，不走 base64 重传
-                            closePickPanel();
-                            sendRaw('ImageRef:' + it.ref);
+                            // 单击只选中，浮出「查看 / 删除 / 发送」；发不发由用户点按钮决定
+                            selectPick({ name: it.name, ref: it.ref });
                         });
                         grid.appendChild(img);
                     });
@@ -210,6 +311,15 @@
             return last.time > (readTime || '');
         }
 
+        // 从私聊归档文件名（getTarget 排序后 "名A-名B"）反推"对方"是谁。
+        // 自己发给自己时两个名字相同，归档名是 "我-我"，按老逻辑找"不等于 me"的那段会落空，
+        // 于是整个会话被跳过、侧边栏不显示 —— 这里显式把对方判定为自己。
+        function partnerOf(name, self) {
+            if (name === self + '-' + self) return self;
+            const parts = name.split('-');
+            return parts.find(function (x) { return x !== self && x !== ''; }) || null;
+        }
+
         async function loadConversations() {
             let names = [];
             let today = null;
@@ -235,8 +345,7 @@
             // 私聊归档按"对方"归并取最新（同一对方可能对应新旧多份归档，换用户名产生）；
             // 无条件缓存，供 onWsUnread/switchPrivate 实时判断未读
             for (const p of privs) {
-                const parts = p.split('-');
-                const other = me ? parts.find(x => x !== me && x !== '') : null;
+                const other = me ? partnerOf(p, me) : null;
                 const last = convLast[p];
                 if (other && last) {
                     const cur = privLastMap[other];
@@ -273,11 +382,10 @@
             const shownOthers = new Set(); // 按"对方"去重：新旧归档（换用户名后产生）可能映射到同一对象
             privPartners = new Set();
             for (const p of privs) {
-                const parts = p.split('-');
                 let other = null;
                 if (me) {
-                    if (!parts.includes(me)) continue; // 归档里没有自己（旧用户名残留），跳过
-                    other = parts.find(x => x !== me && x !== '');
+                    if (!p.split('-').includes(me)) continue; // 归档里没有自己（旧用户名残留），跳过
+                    other = partnerOf(p, me);
                     if (!other || shownOthers.has(other)) continue; // 无法解析或已有同一对象的项，跳过
                     shownOthers.add(other);
                 }
@@ -337,9 +445,10 @@
             updateUnreadState();
         }
 
-        // 对方还没出现在侧边栏（第一次私聊）时补一个可点击的项
+        // 对方还没出现在侧边栏（第一次私聊）时补一个可点击的项。
+        // 自己发给自己也算一个合法会话（归档名 "我-我"），不能按"对方 === 自己"过滤掉
         function ensurePrivItem(other) {
-            if (!me || !other || other === me || privPartners.has(other)) return;
+            if (!me || !other || privPartners.has(other)) return;
             privPartners.add(other);
             const list = document.getElementById('privList');
             const empty = list.querySelector('.conv-empty');
@@ -558,7 +667,9 @@
         function addMessage(msg) {
             if (!isRelevant(msg)) return;
             document.getElementById('MsgBox').appendChild(crtMsg(msg.name, msg.time, msg.text));
-            scrollToBottom();
+            // 自己正往上翻旧消息时不强行拽到底；否则跟随新消息
+            if (stickBottom) scrollToBottom(true);
+            stickToImages();
         }
 
         function crtMsg(sender, time, content) {
@@ -657,7 +768,11 @@
             for (const msg of history) {
                 container.appendChild(crtMsg(msg.name, msg.time, msg.text));
             }
-            scrollToBottom();
+            // 切会话/切日期/刷新后一律回到最新一条：先瞬时到底（不走动画），
+            // 再给懒加载的图片挂回调，等它们把高度撑开后继续贴底
+            stickBottom = true;
+            scrollToBottom(false);
+            stickToImages();
         }
 
         async function sendMsg() {
@@ -710,8 +825,49 @@
             await renderHistory();
         }
 
-        function scrollToBottom() {
-            document.getElementById('end').scrollIntoView({ behavior: 'smooth' });
+        // 是否"贴着底部"：切进会话后图片懒加载会不断撑高消息区，
+        // 只有用户没自己往上翻（仍贴底）时才继续跟着滚，否则会把他正在看的位置拽走
+        let stickBottom = true;
+
+        // 自己触发的滚动期间，不能用 scroll 事件反推用户意图：smooth 动画的每一帧
+        // 都还"没到底"，若据此把 stickBottom 置 false，后面新消息就再也不跟随了。
+        let autoScrollUntil = 0;
+
+        function nearBottom() {
+            const box = document.getElementById('MsgBox');
+            return box.scrollHeight - box.scrollTop - box.clientHeight < 8;
+        }
+
+        // 滚到最新一条。必须直接改消息区自己的 scrollTop —— 页面本身不滚动
+        // （body 固定 100vh，滚动条在 .chat-area 上），scrollIntoView 那类
+        // 对 window 生效的调用在这里没有效果，这正是之前"切会话没滚到底"的原因。
+        // smooth 只给新消息用；切换会话要瞬时到底，否则会看到从顶部一路滑下去的动画。
+        function scrollToBottom(smooth) {
+            const box = document.getElementById('MsgBox');
+            if (!box) return;
+            autoScrollUntil = Date.now() + (smooth ? 800 : 120);
+            if (smooth && box.scrollTo) {
+                box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
+            } else {
+                box.scrollTop = box.scrollHeight;
+            }
+        }
+
+        // 给还没加载完的图片挂一次性回调：加载完高度才最终确定，这时再补一次贴底
+        function stickToImages() {
+            const imgs = document.getElementById('MsgBox').querySelectorAll('img');
+            for (let i = 0; i < imgs.length; i++) {
+                const img = imgs[i];
+                if (img.complete) continue; // 已加载好的不用管
+                img.addEventListener('load', onImageSettle);
+                img.addEventListener('error', onImageSettle);
+            }
+        }
+
+        function onImageSettle() {
+            this.removeEventListener('load', onImageSettle);
+            this.removeEventListener('error', onImageSettle);
+            if (stickBottom) scrollToBottom(false);
         }
 
         // 输入框随内容自动增高（有上限），发送后重置
@@ -1081,6 +1237,63 @@
             display: block;
         }
         .pick-grid img:hover { border-color: var(--accent); }
+        /* 选中的那张：加一圈 accent 边，和操作条呼应 */
+        .pick-grid img.sel {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+        /* 点中缩略图后浮出的操作条（查看 / 删除 / 发送），钉在面板底部 */
+        .pick-actions {
+            display: none;
+            align-items: center;
+            padding: 8px 10px;
+            border-top: 1px solid var(--border);
+            background: var(--fill);
+        }
+        .pick-actions.show { display: flex; }
+        .pick-sel-name {
+            flex: 1 1 auto;
+            min-width: 0;               /* 允许收缩，否则长文件名把按钮挤出去 */
+            margin-right: 8px;
+            font-size: 12px;
+            color: var(--muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        /* 同样要带 .pick-panel 前缀压过 `.inputbar button`（见上） */
+        .pick-panel .pick-actions button {
+            padding: 6px 12px;
+            margin-left: 6px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+            color: var(--text);
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .pick-panel .pick-actions button:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .pick-panel .pick-actions button.primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--on-accent);
+        }
+        .pick-panel .pick-actions button.primary:hover {
+            background: var(--accent-hover);
+            border-color: var(--accent-hover);
+            color: var(--on-accent);
+        }
+        .pick-panel .pick-actions button.danger {
+            color: var(--danger);
+            border-color: var(--danger-border);
+        }
+        .pick-panel .pick-actions button.danger:hover {
+            background: var(--danger-soft);
+            color: var(--danger);
+        }
         .pick-hint {
             padding: 18px 8px;
             text-align: center;
@@ -1153,10 +1366,16 @@
                             点击选择本地图片（≤10MB）
                         </button>
                     </div>
+                    <!-- 点中缩略图后浮出的操作条：查看 / 删除 / 发送 -->
+                    <div id="pickActions" class="pick-actions">
+                        <span id="pickSelName" class="pick-sel-name"></span>
+                        <button type="button" id="pickView">查看</button>
+                        <button type="button" id="pickDelete" class="danger">删除</button>
+                        <button type="button" id="pickSend" class="primary">发送</button>
+                    </div>
                 </div>
             </footer>
         </div>
     </div>
-    <div id="end"></div>
 </body>
 </html>

@@ -35,7 +35,7 @@
     var BTN_RATE = 1.25;    // ＋ − 按钮每档
     var DBL_RATE = 2.5;     // 双击大图
 
-    var SAVE_URL = '/savePicture';  // 落盘到服务端 cache/picture/<sha256>.<ext>
+    var SAVE_URL = '/savePicture';  // 落盘到服务端 cache/picture/<用户名>/<sha256>.<ext>（按当前 IP 的用户名分目录）
     var CROP_MIME = 'image/png';    // 裁剪结果统一转 PNG（无损，避免二次有损压缩）
 
     var DEFAULTS = { buttons: true, scale: true };
@@ -99,7 +99,7 @@
         el.innerHTML = '<img alt="全屏查看">' +
             '<button id="lbClose" title="关闭 (Esc)">✕</button>' +
             '<button id="lbEdit" title="裁剪图片">✎</button>' +
-            '<button id="lbSave" title="保存到 cache/picture">💾</button>' +
+            '<button id="lbSave" title="保存到我的图片缓存">💾</button>' +
             '<div class="lb-controls">' +
             '<button id="lbZoomIn" class="lb-btn" title="放大">+</button>' +
             '<span id="lbScale">100%</span>' +
@@ -285,7 +285,8 @@
         document.getElementById('lbClose').addEventListener('click', close);
 
         // ===== 保存 / 裁剪 =====
-        // 保存：把当前图片原样（原始字节，不重新编码）发给服务端落到 cache/picture/。
+        // 保存：把当前图片原样（原始字节，不重新编码）发给服务端，落到当前用户自己的
+        // cache/picture/<用户名>/ 下（服务端按请求 IP 推导目录，前端无法指定）。
         // 走原始字节而不是 canvas 重编码，是为了让聊天图「保存」后命中同一份缓存
         // （服务端按 SHA-256 命名，字节一致就不会产生副本）。
         // 裁剪：先在遮罩上框选区域，再按原图像素裁出来（canvas），结果转 PNG 后走同一个端点。
@@ -310,7 +311,7 @@
         function resetSaveState() {
             if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
             saveBusy = false;
-            setSaveState(ICON_SAVE, '保存到 cache/picture');
+            setSaveState(ICON_SAVE, '保存到我的图片缓存');
         }
 
         function blobToDataUrl(url) {
@@ -376,7 +377,7 @@
         saveBtn.addEventListener('click', function () {
             if (!lb || crop.on || !bigImg.src || saveBusy) return;
             saveBusy = true;
-            setSaveState(ICON_BUSY, '正在写入 cache/picture');
+            setSaveState(ICON_BUSY, '正在保存…');
             currentDataUrl().then(postPicture).then(function (obj) {
                 setSaveState(ICON_OK, '已保存到 ' + obj.dir + '/' + obj.name);
                 saveTimer = setTimeout(resetSaveState, 1500);

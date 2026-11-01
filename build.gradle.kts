@@ -46,6 +46,8 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("io.ktor:ktor-server-test-host-jvm:$ktorVersion")
+    // 私聊/群聊的 WS 广播去重需要真的开一条 WebSocket 连接来验（自己发给自己时只能收到一条）
+    testImplementation("io.ktor:ktor-client-websockets-jvm:$ktorVersion")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
     implementation("io.ktor:ktor-server-netty:$ktorVersion")

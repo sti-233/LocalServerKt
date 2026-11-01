@@ -12,9 +12,10 @@
 | `/message` | — | WebSocket：聊天/私聊（`sendTo` 参数），图片 `ImageB64:` 前缀，2 分钟内可撤回 |
 | `/clients` | — | 当前在线 WS 客户端列表 |
 | `/wsSever` | — | 纯文本服务信息（typo 路由，沿用） |
-| `/img/{*}` | — | 聊天图片（`cache/picture/<sha256>.<ext>`，未命中回落旧 `cache/`） |
-| `/pictures` | — | 图片列表：`?limit=`（默认 60，上限 200）→ `{dir,total,items:[{name,ref,size,mtime}]}`，按修改时间倒序；聊天页「缓存图片」面板用 |
-| `/savePicture`（POST） | — | 保存图片：JSON `{"data":"data:image/...;base64,..."}` → 去重落盘 `cache/picture/`（全屏查看器的「保存」与「裁剪并保存」共用此端点） |
+| `/img/{*}` | — | 聊天图片（按文件名在 `cache/picture/<用户名>/` 各子目录 → `cache/picture/` 根 → 旧 `cache/` 根依次查找） |
+| `/pictures` | — | 我的图片列表（**只列自己目录下的**）：`?limit=`（默认 60，上限 200）→ `{dir,user,total,items:[{name,ref,size,mtime}]}`，按修改时间倒序；聊天页「缓存图片」面板用 |
+| `/savePicture`（POST） | — | 保存图片：JSON `{"data":"data:image/...;base64,..."}` → 去重落盘 `cache/picture/<当前 IP 的用户名>/`（全屏查看器的「保存」与「裁剪并保存」共用此端点；返回 `{ok,ref,name,dir,user,existed}`） |
+| `/deletePicture`（POST） | — | 删除我的图片：JSON `{"name":"<sha256>.<ext>"}` → 只删 `cache/picture/<当前 IP 的用户名>/` 里的那一份（同一内容别人也存过则互不影响）；名字不合法 400、文件不存在 404；返回 `{ok,name,user}`，删失败时带 `error`。聊天页「缓存图片」面板的「删除」用 |
 | `/migrateImages` | control | 聊天记录图片消息迁移（`ImageB64:` → `ImageRef:`） |
 | `/migratePictures` | control | 图片目录迁移（旧 `cache/<sha256>.<ext>` → `cache/picture/`） |
 
@@ -48,7 +49,8 @@
 | `/searchByType?keyword=&type=video\|user&page=` | — | 搜索（`/searchUser` 等价专用入口） |
 | `/videoInfo?bvid=或aid=` | — | 视频详情（分P、UP主、统计） |
 | `/videoStreamInfo?bvid=&cid=&qn=&tryLook=` | — | DASH 取流信息；`tryLook=1` 免登录 1080P |
-| `/videoStream?url=&range=` | — | 视频流代理（仅 B 站 CDN 域名，透传 Range） |
+| `/videoStream?bvid=&cid=&qn=&codecid=&kind=&format=` | — | 视频流代理（透传 Range）。语义参数由服务端换成真实签名地址，同一路流 URL 恒定、可长缓存；`kind` = `v` 视频 / `a` 音频 / `m` MP4 单流，`format` = `dash`/`mp4` |
+| `/videoStream?url=` | — | 旧式直传上游地址（保留兼容，每次地址都不同、缓存复用不了）。两种入参都只放行 B 站 CDN 域名；非 control 客户端限速 300 KB/s |
 | `/biliImg?url=` | — | 图片代理（任意 http(s) 图片地址）；落盘 `cache/bilibili/`，同一 URL 只回源一次，目录每次启动清空 |
 | `/videoComments?aid=&page=&sort=` | — | 评论（3 热度/2 时间/1 混合，游标翻页） |
 | `/userInfo?mid=` | — | UP 主资料（App 优先，Web 降级） |

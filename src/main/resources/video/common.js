@@ -27,6 +27,26 @@ function streamUrl(u) {
     return PROXY_SERVER + '/videoStream?url=' + encodeURIComponent(u);
 }
 
+/**
+ * 按语义参数拼取流地址 —— 优先用这个，不要用上面的 streamUrl(上游地址)。
+ *
+ * 原因：B 站上游地址带签名与 `deadline`（120 分钟），每次 /videoStreamInfo 拿到的
+ * 都不一样。把上游地址塞进 URL，浏览器缓存就永远命中不了（换会话/刷新都要重下）。
+ * 改用 bvid/cid/qn/codecid/kind/format 后同一路流的 URL 恒定，服务端内部换成真实
+ * 地址并在过期前自动换新，响应带 `immutable`，缓存能长期复用。
+ *
+ * @param kind 'v' 视频流 / 'a' 音频流 / 'm' MP4 单流
+ */
+function streamUrlOf(bvid, cid, qn, codecid, kind, format) {
+    var q = '/videoStream?bvid=' + encodeURIComponent(bvid)
+        + '&cid=' + encodeURIComponent(cid)
+        + '&qn=' + encodeURIComponent(qn || 0)
+        + '&codecid=' + encodeURIComponent(codecid || 0)
+        + '&kind=' + encodeURIComponent(kind)
+        + '&format=' + encodeURIComponent(format || 'dash');
+    return PROXY_SERVER + q;
+}
+
 /** 毫秒/秒级时间戳 -> yyyy-MM-dd HH:mm */
 function fmtTime(sec) {
     if (!sec) return '-';
@@ -114,6 +134,52 @@ function bindSearchBox(inputId, btnId) {
     if (btn) btn.onclick = run;
     input.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
 }
+
+/* ------------------------------------------------------------------ *
+ * 从播放页返回时保持原样
+ *
+ * 背景：首页/搜索页点卡片是 location.href 整页跳转，从播放页退回来时浏览器
+ * 有两种表现 —— 命中 bfcache（页面不重新执行，最理想）或页面被重建（重新拉
+ * 一次接口，列表就换了一批，看起来像"自己刷新了"）。后者取决于扩展、DevTools、
+ * 页面用到的 API 等因素，前端控制不了。所以这里不依赖 bfcache：把上一次渲染
+ * 用的数据存进会话快照，重建时直接照原样画出来。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 本次导航是不是"后退/前进"（即页面被重建的情况；命中 bfcache 时这段代码根本不执行）。
+ * 只有后退时才恢复快照 —— 用户主动点链接进来应该看到新内容。
+ */
+function cameBack() {
+    try {
+        const nav = performance.getEntriesByType('navigation')[0];
+        return !!nav && nav.type === 'back_forward';
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * 会话级快照，只活在这个标签页里，关掉就没了。
+ * 不用 PageStore：列表动辄几十条，远超单个 Cookie 的 4KB。
+ * 不用 localStorage：隐私模式下 setItem 会抛异常（见 CLAUDE.md 的约定）。
+ */
+const pageCache = {
+    get: function (key) {
+        try {
+            const raw = sessionStorage.getItem(key);
+            return raw ? JSON.parse(raw) : null;
+        } catch (e) {
+            return null;
+        }
+    },
+    set: function (key, value) {
+        try {
+            sessionStorage.setItem(key, JSON.stringify(value));
+        } catch (e) {
+            /* 存不下就算了，只是退回来会重新拉一次 */
+        }
+    }
+};
 
 /**
  * 生成一张视频卡片（封面 + 时长 + 标题 + UP + 播放量）。
