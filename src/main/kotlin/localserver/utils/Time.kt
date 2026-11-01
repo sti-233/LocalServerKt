@@ -22,6 +22,9 @@ object Time {
         return currentTime().format(formatter)
     }
 
+    /** 当前时刻（Asia/Shanghai）。需要星期、时分等多个字段时用这个，别在别处另取 ZoneId。 */
+    fun now(): ZonedDateTime = currentTime()
+
     fun withinTwoMin(givenTimeStr: String): Boolean {
         val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
         val givenDateTime = LocalDateTime.parse(givenTimeStr, formatter)

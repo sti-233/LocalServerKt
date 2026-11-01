@@ -3,6 +3,7 @@ package localserver.module
 import localserver.serverIp
 import localserver.types.User
 import localserver.utils.Logger
+import localserver.utils.Timetable
 import localserver.utils.Util
 
 import io.ktor.server.auth.*
@@ -13,6 +14,16 @@ import kotlinx.serialization.json.*
 
 object Control {
     var state: Boolean = true
+
+    /**
+     * 按课表自动开关服务：正课（上午+下午 9 节，体育/自习除外）期间把 [state] 设为 false。
+     *
+     * 由 Server.kt 的后台协程每 30 秒调一次。只做「跟随课表」这一件事：
+     * 阶段没变就什么都不做，绝不覆盖手动设置的状态（见 [ClassGate]）。
+     */
+    private val gate = ClassGate { inClass -> state = !inClass }
+
+    fun followTimetable() = gate.apply(Timetable.phaseKey())
 
     // control realm 的 IP 白名单，/canControl 与 Authentication 共用，避免前缀列表两份
     fun allowed(remoteAddress: String) =

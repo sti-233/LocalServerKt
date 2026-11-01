@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>课表</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            min-height: 56px; /* 与其他页统一的顶栏高度（含 border） */
+            padding: 10px 18px;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+        }
+        .topbar h1 { margin: 0; font-size: 18px; }
+        .topbar .hint {
+            margin-left: 12px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+        .topbar .nav-setting { margin-left: auto; }
+        .topbar .now-hint { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+        /* 表格比屏幕宽时横向滚动，而不是把列挤扁 */
+        .wrap {
+            flex: 1;
+            overflow: auto;
+            padding: 18px;
+        }
+
+        .tt-title {
+            max-width: 1080px;
+            margin: 0 auto 8px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--muted);
+        }
+        .tt-title + .tt { margin-bottom: 26px; }
+
+        .tt {
+            border-collapse: collapse;
+            width: 100%;
+            max-width: 1080px;
+            margin: 0 auto;
+            background: var(--card);
+            font-size: 13px;
+            box-shadow: var(--shadow);
+        }
+        .tt.main { min-width: 760px; }
+        .tt.sat  { min-width: 340px; }
+        .tt th, .tt td { border: 1px solid var(--border); }
+
+        .tt thead th {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            height: 38px;
+            background: var(--fill);
+            font-weight: 600;
+            font-size: 13px;
+        }
+        .tt thead th.today { color: var(--accent); background: var(--accent-soft-strong); }
+        .tt thead th.c-part { width: 42px; }
+        .tt thead th.c-time { width: 96px; }
+
+        /* 左侧「上午 / 下午 / 晚自习」竖列：一段一格，纵向合并 */
+        .tt td.part {
+            width: 42px;
+            padding: 4px 2px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-weight: 600;
+            font-size: 12px;
+            text-align: center;
+            vertical-align: middle;
+            line-height: 1.35;
+        }
+
+        /* 时间列：上面一行是第几节，下面一行是起止时间 */
+        .tt th.time {
+            width: 96px;
+            padding: 6px 4px;
+            background: var(--fill);
+            font-weight: 400;
+            text-align: center;
+            line-height: 1.35;
+        }
+        .tt th.time b {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+        }
+        .tt th.time span {
+            display: block;
+            font-size: 11px;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+        .tt th.time.now { background: var(--accent-soft-strong); }
+        .tt th.time.now b { color: var(--accent); }
+
+        /* 课间/午休/晚饭/早自习：整行跨列，弱化成分隔条 */
+        .tt tr.brk td {
+            height: 26px;
+            background: var(--fill);
+            color: var(--muted);
+            font-size: 12px;
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+        }
+        /* 早自习不分学科，只标时间；比课间稍微显眼一点 */
+        .tt tr.brk.pre td { color: var(--text); }
+
+        /* 科目格：只读展示 */
+        .tt td.cell {
+            height: 52px;
+            padding: 6px 8px;
+            text-align: center;
+            vertical-align: middle;
+            word-break: break-word;
+        }
+        .tt td.cell:empty::before {
+            content: '—';
+            color: var(--muted);
+            opacity: .45;
+        }
+        /* 没有这段课（周日白天、周日第三节晚自习） */
+        .tt td.cell.na {
+            background: var(--fill);
+            color: var(--muted);
+        }
+        .tt td.cell.today { background: var(--accent-soft); }
+        .tt td.cell.now {
+            background: var(--accent);
+            color: var(--on-accent);
+            font-weight: 600;
+        }
+        .tt td.cell.now:empty::before { color: var(--on-accent); opacity: .6; }
+
+        /* 周六 A/B 课表切换 */
+        .sat-switch {
+            margin-left: 10px;
+            font-weight: 400;
+        }
+        .sat-switch button {
+            margin-right: 6px;
+            padding: 3px 10px;
+            font-size: 12px;
+            color: var(--text);
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            cursor: pointer;
+        }
+        .sat-switch button.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--on-accent);
+        }
+        /* 当前是单周还是双周：服务端给周次，决定默认选中 A 还是 B */
+        .sat-week {
+            margin-right: 8px;
+            color: var(--muted);
+            font-weight: 400;
+        }
+        .sat-note {
+            margin-left: 4px;
+            color: var(--muted);
+            font-weight: 400;
+            font-size: 12px;
+        }
+        /* 自动选中的那个按钮加个点，和手动点击区分开 */
+        .sat-switch button.auto::after {
+            content: '·';
+            margin-left: 3px;
+            opacity: .75;
+        }
+
+        @media print {
+            .topbar { display: none; }
+            .wrap { overflow: visible; padding: 0; }
+            body { height: auto; background: #fff; }
+            .tt { max-width: none; box-shadow: none; }
+            .tt thead th { position: static; }
+            .tt td.cell.today { background: transparent; }
+            .tt td.cell.now { background: transparent; color: inherit; font-weight: 400; }
+        }
+    </style>
+</head>
+<body>
+<header class="topbar">
+    <h1>课表</h1>
+    <span class="hint">默认课表（只读），改 <code>timetable.json</code> 即更新</span>
+    <span class="now-hint" id="nowHint"></span>
+    <a class="nav-setting" href="/setting" title="设置">⚙ 设置</a>
+</header>
+<div class="wrap">
+    <h2 class="tt-title">周一 – 周五 · 周日</h2>
+    <table class="tt main">
+        <thead id="thead"></thead>
+        <tbody id="tbody"></tbody>
+    </table>
+
+    <h2 class="tt-title">周六<span class="sat-switch" id="satSwitch">
+        <span class="sat-week" id="satWeek"></span>
+        <button type="button" class="active" data-sat="A">A 课表</button><button type="button" data-sat="B">B 课表</button>
+        <span class="sat-note">单周 A · 双周 B</span>
+    </span></h2>
+    <table class="tt sat">
+        <thead id="satThead"></thead>
+        <tbody id="satBody"></tbody>
+    </table>
+</div>
+<script>
+    (function () {
+        'use strict';
+
+        // 默认课表来源（只读）：改 src/main/resources/timetable.json 即可更新内容，
+        // 页面不再保存个人课表（不写 Cookie、不推 /api/prefs）。
+        var DEFAULT_URL = '/resources/timetable.json';
+
+        // 主表列：周一~周五 + 周日（周日只有晚自习，白天是空的）
+        var MAIN_COLS = [
+            { title: '周一', day: 0 }, { title: '周二', day: 1 }, { title: '周三', day: 2 },
+            { title: '周四', day: 3 }, { title: '周五', day: 4 }, { title: '周日', day: 6 }
+        ];
+        // 周六单独一张表：作息与平时不同（没有大课间，上午 5 节 40 分钟、12:00 放学）
+        var SAT_COLS = [{ title: '周六', day: 5 }];
+        // 周序 -> 名称（周一=0），与后端 /timetable/now 的 day 字段同一套编号
+        var DAY_NAMES = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+
+        // 平时（周一~周五、周日）作息：
+        //   早自习 07:30-08:00；上午 5 节从 08:00 开始，每节 40 分钟、课间 10 分钟，
+        //   第二节后 09:30-09:50 大课间，第三节 10:00 开始；第五节 50 分钟到 12:30。
+        //   午休 12:30-14:30；下午 4 节 14:30 开始；晚饭 17:40-18:30；
+        //   晚自习 18:30-20:00 / 20:10-21:30 / 21:40-22:30。
+        var WEEK_BELL = [
+            { part: '上午', kind: 'pre',    label: '早自习', from: '07:30', to: '08:00' },
+            { part: '上午', kind: 'period', n: 1, from: '08:00', to: '08:40' },
+            { part: '上午', kind: 'break',  label: '课间', from: '08:40', to: '08:50' },
+            { part: '上午', kind: 'period', n: 2, from: '08:50', to: '09:30' },
+            { part: '上午', kind: 'break',  label: '大课间', from: '09:30', to: '09:50' },
+            { part: '上午', kind: 'break',  label: '课间', from: '09:50', to: '10:00' },
+            { part: '上午', kind: 'period', n: 3, from: '10:00', to: '10:40' },
+            { part: '上午', kind: 'break',  label: '课间', from: '10:40', to: '10:50' },
+            { part: '上午', kind: 'period', n: 4, from: '10:50', to: '11:30' },
+            { part: '上午', kind: 'break',  label: '课间', from: '11:30', to: '11:40' },
+            { part: '上午', kind: 'period', n: 5, from: '11:40', to: '12:30' },
+            { part: '下午', kind: 'break',  label: '午休', from: '12:30', to: '14:30' },
+            { part: '下午', kind: 'period', n: 6, from: '14:30', to: '15:10' },
+            { part: '下午', kind: 'break',  label: '课间', from: '15:10', to: '15:20' },
+            { part: '下午', kind: 'period', n: 7, from: '15:20', to: '16:00' },
+            { part: '下午', kind: 'break',  label: '课间', from: '16:00', to: '16:10' },
+            { part: '下午', kind: 'period', n: 8, from: '16:10', to: '16:50' },
+            { part: '下午', kind: 'break',  label: '课间', from: '16:50', to: '17:00' },
+            { part: '下午', kind: 'period', n: 9, from: '17:00', to: '17:40' },
+            { part: '晚自习', kind: 'break', label: '晚饭', from: '17:40', to: '18:30' },
+            { part: '晚自习', kind: 'night', n: 1, label: '晚自习一', from: '18:30', to: '20:00' },
+            { part: '晚自习', kind: 'break', label: '课间', from: '20:00', to: '20:10' },
+            { part: '晚自习', kind: 'night', n: 2, label: '晚自习二', from: '20:10', to: '21:30' },
+            { part: '晚自习', kind: 'break', label: '课间', from: '21:30', to: '21:40' },
+            { part: '晚自习', kind: 'night', n: 3, label: '晚自习三', from: '21:40', to: '22:30' }
+        ];
+
+        // 周六作息：没有大课间，上午 5 节都是 40 分钟 + 10 分钟课间，
+        // 08:00 开始 → 12:00 正好上完（200 分钟课 + 4 个 10 分钟间隔 = 240 分钟）。
+        // 下午与平时相同；周六没有晚自习。
+        var SAT_BELL = [
+            { part: '上午', kind: 'pre',    label: '早自习', from: '07:30', to: '08:00' },
+            { part: '上午', kind: 'period', n: 1, from: '08:00', to: '08:40' },
+            { part: '上午', kind: 'break',  label: '课间', from: '08:40', to: '08:50' },
+            { part: '上午', kind: 'period', n: 2, from: '08:50', to: '09:30' },
+            { part: '上午', kind: 'break',  label: '课间', from: '09:30', to: '09:40' },
+            { part: '上午', kind: 'period', n: 3, from: '09:40', to: '10:20' },
+            { part: '上午', kind: 'break',  label: '课间', from: '10:20', to: '10:30' },
+            { part: '上午', kind: 'period', n: 4, from: '10:30', to: '11:10' },
+            { part: '上午', kind: 'break',  label: '课间', from: '11:10', to: '11:20' },
+            { part: '上午', kind: 'period', n: 5, from: '11:20', to: '12:00' },
+            { part: '下午', kind: 'break',  label: '午休', from: '12:00', to: '14:30' },
+            { part: '下午', kind: 'period', n: 6, from: '14:30', to: '15:10' },
+            { part: '下午', kind: 'break',  label: '课间', from: '15:10', to: '15:20' },
+            { part: '下午', kind: 'period', n: 7, from: '15:20', to: '16:00' },
+            { part: '下午', kind: 'break',  label: '课间', from: '16:00', to: '16:10' },
+            { part: '下午', kind: 'period', n: 8, from: '16:10', to: '16:50' },
+            { part: '下午', kind: 'break',  label: '课间', from: '16:50', to: '17:00' },
+            { part: '下午', kind: 'period', n: 9, from: '17:00', to: '17:40' }
+        ];
+
+        var thead = document.getElementById('thead');
+        var tbody = document.getElementById('tbody');
+        var satThead = document.getElementById('satThead');
+        var satBody = document.getElementById('satBody');
+
+        var data = { cells: {}, satB: {} };
+        // 周六上午的课表：单周 A、双周 B（第 1 周从 2026-08-31 算，服务端给周次）。
+        // satAuto 为真时跟着周次自动选；用户手动点过按钮就置 false，本次会话内以手动为准。
+        var satMode = 'A';
+        var satAuto = true;
+        var weekNo = 0;   // 教学周次，0 表示还没从服务端拿到（此时只能靠手动切换）
+
+        function esc(s) {
+            return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+        }
+
+        function toMin(s) {
+            return parseInt(s.slice(0, 2), 10) * 60 + parseInt(s.slice(3, 5), 10);
+        }
+
+        // 把 BELL 切成连续的时段段（上午 / 下午 / 晚自习），用于左侧竖列的 rowspan
+        function segsOf(bell) {
+            var segs = [];
+            for (var i = 0; i < bell.length; i++) {
+                var name = bell[i].part;
+                if (!segs.length || segs[segs.length - 1].name !== name) {
+                    segs.push({ name: name, count: 0 });
+                }
+                segs[segs.length - 1].count++;
+            }
+            return segs;
+        }
+
+        function headOf(cols) {
+            var h = ['<tr><th class="c-part">时段</th><th class="c-time">时间</th>'];
+            for (var i = 0; i < cols.length; i++) {
+                h.push('<th data-day="' + cols[i].day + '">' + esc(cols[i].title) + '</th>');
+            }
+            h.push('</tr>');
+            return h.join('');
+        }
+
+        /**
+         * 渲染一张表。
+         * @param bell  BELL 数组
+         * @param cols  [{title, day}]
+         * @param textOf (day, b) => 格子文字（'' 表示空）
+         * @param isNa   (day, b) => 这一段是否没有课（灰底）
+         */
+        function render(bell, cols, textOf, isNa) {
+            var segs = segsOf(bell);
+            var si = 0, left = segs[0].count;
+            var rows = [];
+            for (var i = 0; i < bell.length; i++) {
+                var b = bell[i];
+                var tr = [];
+                // 段首行输出左侧竖列（rowspan 覆盖整段）
+                if (left === segs[si].count) {
+                    tr.push('<td class="part" rowspan="' + segs[si].count + '">' +
+                        esc(segs[si].name) + '</td>');
+                }
+                if (b.kind === 'period' || b.kind === 'night') {
+                    var label = b.kind === 'night' ? b.label : ('第' + b.n + '节');
+                    tr.push('<th class="time"><b>' + esc(label) + '</b><span>' +
+                        esc(b.from) + '–' + esc(b.to) + '</span></th>');
+                    for (var c = 0; c < cols.length; c++) {
+                        var day = cols[c].day;
+                        var na = isNa ? !!isNa(day, b) : false;
+                        tr.push('<td class="cell' + (na ? ' na' : '') + '" data-day="' + day + '"' +
+                            (na ? '' : ' title="' + esc(textOf(day, b) || '') + '"') + '>' +
+                            esc(na ? '' : textOf(day, b)) + '</td>');
+                    }
+                } else {
+                    tr.push('<td colspan="' + (cols.length + 1) + '">' +
+                        esc(b.label) + ' ' + esc(b.from) + '–' + esc(b.to) + '</td>');
+                }
+                var cls = (b.kind === 'period' || b.kind === 'night') ? ''
+                    : ' class="brk' + (b.kind === 'pre' ? ' pre' : '') + '"';
+                rows.push('<tr data-i="' + i + '"' + cls + '>' + tr.join('') + '</tr>');
+
+                left--;
+                if (left === 0) {
+                    si++;
+                    if (si < segs.length) left = segs[si].count;
+                }
+            }
+            return rows.join('');
+        }
+
+        // 主表：平时作息；周日白天没课、第三节晚自习也没有
+        function mainText(day, b) {
+            if (b.kind === 'night') return '';            // 晚自习不分学科，格子留空
+            return data.cells[day + '-' + b.n] || '';
+        }
+        function mainNa(day, b) {
+            if (day !== 6) return false;                  // 只有周日有"没课"的时段
+            if (b.kind === 'period') return true;         // 周日白天不上课
+            if (b.kind === 'night') return b.n === 3;     // 周日只有前两段晚自习
+            return false;
+        }
+
+        // 周六表：上午 A/B 两套课表，下午共用
+        function satText(day, b) {
+            var key = day + '-' + b.n;
+            if (satMode === 'B' && b.n <= 5) return data.satB[key] || '';
+            return data.cells[key] || '';
+        }
+
+        function renderMain() {
+            thead.innerHTML = headOf(MAIN_COLS);
+            tbody.innerHTML = render(WEEK_BELL, MAIN_COLS, mainText, mainNa);
+        }
+
+        function renderSat() {
+            satThead.innerHTML = headOf(SAT_COLS);
+            satBody.innerHTML = render(SAT_BELL, SAT_COLS, satText, null);
+        }
+
+        // 高亮「今天」那一列：day 是周序（周一=0 … 周日=6），不在表里的列自动忽略
+        function markToday(head, body, day) {
+            var th = head.querySelector('th[data-day="' + day + '"]');
+            if (!th) return;
+            th.classList.add('today');
+            var tds = body.querySelectorAll('td.cell[data-day="' + day + '"]');
+            for (var t = 0; t < tds.length; t++) {
+                if (tds[t].className.indexOf('na') < 0) tds[t].classList.add('today');
+            }
+        }
+
+        // 高亮当前正在上的那一节（晚自习也算）
+        function markNow(body, bell, day, mins) {
+            for (var i = 0; i < bell.length; i++) {
+                var b = bell[i];
+                if (b.kind !== 'period' && b.kind !== 'night') continue;
+                if (mins < toMin(b.from) || mins >= toMin(b.to)) continue;
+                var row = body.querySelector('tr[data-i="' + i + '"]');
+                if (!row) return;
+                var th = row.querySelector('th.time');
+                if (th) th.classList.add('now');
+                var cell = row.querySelector('td.cell[data-day="' + day + '"]');
+                if (cell && cell.className.indexOf('na') < 0) cell.classList.add('now');
+                return;
+            }
+        }
+
+        // ---- 当前时间：以服务端为准 ----
+        // 为什么不直接用 new Date()：笔记本休眠唤醒后系统时钟常偏，浏览器时区也可能被改，
+        // 那样高亮会落到错的列/错的那一节。加载时向 /timetable/now 校一次时，
+        // 记下「服务端毫秒时间戳」和「当时的本地单调时钟」，之后本地推进即可，不必轮询。
+        var NOW_URL = '/timetable/now';
+        var clock = null;   // { serverMs, at, localAt }
+        var SHANGHAI_OFFSET = 8 * 60 * 60 * 1000;   // 课表作息按北京时间，与客户端时区无关
+
+        // 当前时刻的毫秒时间戳：校时成功用服务端时间 + 已流逝时长，失败退回本机时钟
+        function nowMs() {
+            if (!clock) return new Date().getTime();
+            var elapsed = (window.performance && performance.now)
+                ? (performance.now() - clock.at)
+                : (new Date().getTime() - clock.localAt);
+            return clock.serverMs + elapsed;
+        }
+
+        // 把毫秒时间戳换成北京时间的 { day: 周一=0…周日=6, mins: 当天已过分钟数, hh, mm }
+        // 走 UTC 取值再手动加 8 小时，这样浏览器时区设成什么都不影响课表高亮
+        function beijing(ms) {
+            var d = new Date(ms + SHANGHAI_OFFSET);
+            return {
+                day: (d.getUTCDay() + 6) % 7,
+                mins: d.getUTCHours() * 60 + d.getUTCMinutes(),
+                hh: d.getUTCHours(),
+                mm: d.getUTCMinutes()
+            };
+        }
+
+        function syncClock(cb) {
+            var xhr = new XMLHttpRequest();
+            var localAt = new Date().getTime();
+            try { xhr.open('GET', NOW_URL, true); } catch (e) { cb(); return; }
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState !== 4) return;
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        var o = JSON.parse(xhr.responseText);
+                        if (o && typeof o.epochMs === 'number') {
+                            clock = {
+                                serverMs: o.epochMs,
+                                at: (window.performance && performance.now) ? performance.now() : 0,
+                                localAt: localAt
+                            };
+                            // 教学周次：单周 A、双周 B。服务端给什么就用什么，
+                            // 页面不再自己算（避免 8/31 这类基准日两边写不一样）。
+                            if (typeof o.week === 'number') weekNo = o.week;
+                            if (o.satTrack === 'A' || o.satTrack === 'B') applySatAuto(o.satTrack);
+                        }
+                    } catch (e) { /* 解析失败就继续用本机时钟 */ }
+                }
+                cb();
+            };
+            xhr.onerror = function () { cb(); };
+            try { xhr.send(null); } catch (e) { cb(); }
+        }
+
+        function highlight() {
+            var marked = document.querySelectorAll('.now, .today');
+            for (var m = 0; m < marked.length; m++) marked[m].classList.remove('now', 'today');
+
+            var t = beijing(nowMs());
+            var day = t.day;    // 周一=0 … 周日=6
+            var mins = t.mins;
+
+            if (day === 5) {                    // 周六在单独那张表里
+                markToday(satThead, satBody, 5);
+                markNow(satBody, SAT_BELL, 5, mins);
+            } else {                            // 周一~周五、周日在主表
+                markToday(thead, tbody, day);
+                markNow(tbody, WEEK_BELL, day, mins);
+            }
+        }
+
+        // A/B 切换：默认跟着单双周自动选，手动点过就固定成手动选择（本次会话内）
+        function applySatAuto(track) {
+            if (!satAuto || track === satMode) {
+                paintSatSwitch();
+                return;
+            }
+            satMode = track;
+            renderSat();
+            paintSatSwitch();
+        }
+
+        function paintSatSwitch() {
+            var btns = document.querySelectorAll('.sat-switch button');
+            for (var i = 0; i < btns.length; i++) {
+                var on = btns[i].getAttribute('data-sat') === satMode;
+                btns[i].className = on ? 'active' : '';
+                if (on && satAuto) btns[i].className = 'active auto';
+            }
+            var w = document.getElementById('satWeek');
+            if (w) {
+                w.textContent = weekNo > 0
+                    ? ('第 ' + weekNo + ' 周 · ' + (weekNo % 2 === 0 ? '双周' : '单周'))
+                    : '';
+            }
+        }
+
+        var tabs = document.querySelectorAll('.sat-switch button');
+        for (var i = 0; i < tabs.length; i++) {
+            tabs[i].addEventListener('click', function () {
+                satMode = this.getAttribute('data-sat');
+                satAuto = false;      // 手动选择后不再被周次覆盖
+                paintSatSwitch();
+                renderSat();
+                highlight();
+            });
+        }
+
+        // 顶栏提示：现在星期几、几点、正在上哪一节（服务端校时后与高亮同源，不会互相矛盾）
+        function paintHint() {
+            var el = document.getElementById('nowHint');
+            if (!el) return;
+            var t = beijing(nowMs());
+            var day = t.day;
+            var mins = t.mins;
+            var bell = (day === 5) ? SAT_BELL : WEEK_BELL;
+            var where = '';
+            for (var i = 0; i < bell.length; i++) {
+                var b = bell[i];
+                if (mins < toMin(b.from) || mins >= toMin(b.to)) continue;
+                if (b.kind === 'period') where = '第' + b.n + '节';
+                else if (b.kind === 'night') where = b.label;
+                else where = b.label;
+                break;
+            }
+            el.textContent = DAY_NAMES[day] + ' ' +
+                (t.hh < 10 ? '0' : '') + t.hh + ':' + (t.mm < 10 ? '0' : '') + t.mm +
+                (where ? ' · ' + where : '');
+        }
+
+        // 作息优先用 timetable.json 里的 bells（服务端也读这份，判断正课时间）；
+        // JSON 里没有或格式不对时退回上面硬编码的这两份，保证页面不会空白。
+        function adoptBells(obj) {
+            if (!obj || !obj.bells) return;
+            var w = obj.bells.week, s = obj.bells.sat;
+            if (validBell(w)) WEEK_BELL = w;
+            if (validBell(s)) SAT_BELL = s;
+        }
+        function validBell(a) {
+            if (!a || !a.length) return false;
+            for (var i = 0; i < a.length; i++) {
+                var b = a[i];
+                if (!b || typeof b.from !== 'string' || typeof b.to !== 'string' ||
+                    typeof b.kind !== 'string' || typeof b.part !== 'string') return false;
+            }
+            return true;
+        }
+
+        function load() {
+            var xhr = new XMLHttpRequest();
+            try { xhr.open('GET', DEFAULT_URL, true); } catch (e) { return; }
+            xhr.onreadystatechange = function () {
+                if (xhr.readyState !== 4) return;
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        var obj = JSON.parse(xhr.responseText);
+                        if (obj && typeof obj === 'object') {
+                            if (obj.cells && typeof obj.cells === 'object') data.cells = obj.cells;
+                            if (obj.satB && typeof obj.satB === 'object') data.satB = obj.satB;
+                            adoptBells(obj);
+                        }
+                    } catch (e) { /* 解析失败就保持空白表 */ }
+                }
+                finish();
+            };
+            xhr.onerror = function () {
+                finish();
+            };
+            try { xhr.send(null); } catch (e) { /* 忽略 */ }
+        }
+
+        // 校时完成后统一刷新（渲染 → 高亮 → 顶栏提示），保证三处用的是同一个"现在"
+        function finish() {
+            renderMain();
+            renderSat();
+            paintSatSwitch();
+            highlight();
+            paintHint();
+        }
+
+        // 先拉课表内容，再向服务端校时，最后一次性画出来
+        syncClock(function () {
+            load();
+        });
+        // 每 30 秒重算高亮；跨天或跨节自动跟上（时间来源是服务端校时后的本地推进）
+        setInterval(function () {
+            highlight();
+            paintHint();
+        }, 30000);
+        // 页面从后台切回来时立刻重算（休眠唤醒场景，本地推进可能被冻结）
+        document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'visible') {
+                syncClock(function () {
+                    highlight();
+                    paintHint();
+                });
+            }
+        });
+    })();
+</script>
+</body>
+</html>

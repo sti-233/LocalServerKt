@@ -7,6 +7,8 @@ import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -19,6 +21,7 @@ import java.nio.file.Path
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.time.format.DateTimeFormatter
 import java.util.zip.ZipFile
 import kotlin.system.exitProcess
 import localserver.serverIp
@@ -34,6 +37,7 @@ object Network {
         configJs()
         download()
         browser()
+        timetable()
         fileDir()
         update()
     }
@@ -315,12 +319,60 @@ object Network {
 
     private fun Route.browser() = authenticate("auth") {
         get("/") {
-            call.respondRedirect("/resources/browser.html")
+            call.respondRedirect("http://$serverIp/resources/browser.html")
         }
         get("/question/{...}") {
-            call.respondRedirect("/resources/browser.html")
+            call.respondRedirect("http://$serverIp/resources/browser.html")
         }
     }
+
+    // 课表页：页面只读，作息硬编码在 timetable.html 的 BELL 数组里，科目内容来自 resources/timetable.json
+    private fun Route.timetable() {
+        authenticate("auth") {
+            get("/timetable") {
+                call.respondRedirect("/resources/timetable.html")
+            }
+            get("/timetable/now") {
+                call.respondText(timetableNowJson(), ContentType.Application.Json)
+            }
+        }
+    }
+
+    /**
+     * 课表高亮用的"现在"：星期与时分由服务端给，避免依赖客户端时钟。
+     *
+     * 为什么要服务端出时间：笔记本休眠唤醒后系统时钟常偏、浏览器时区也可能被改，
+     * 页面自己 `new Date()` 会高亮到错的那一列/那一节。页面加载后调这个接口对一次时，
+     * 之后本地按"服务端时间 + 已流逝时长"推进，所以不必轮询，也能在隔夜打开时保持正确。
+     *
+     * 字段：`day` 周序（周一=0 … 周日=6，与 timetable.json 的格子键一致）、
+     * `hour`/`minute` 本地时分、`minutes` 当天已过分钟数、`date` `yyyy-MM-dd`、
+     * `epochMs` 服务端当前毫秒时间戳（客户端据此算出与本机时钟的差，不要用 `offsetMs`
+     * 那种"客户端减服务端"的字段 —— 服务端拿不到客户端时钟，只能给出自己的绝对时间）。
+     */
+    private fun timetableNowJson(): String {
+        val now = Time.now()
+        // java.time.DayOfWeek 是周一=1 … 周日=7，减 1 正好对上页面/JSON 的周序
+        val day = now.dayOfWeek.value - 1
+        val date = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+        val minutes = now.hour * 60 + now.minute
+        return buildJsonObject {
+            put("day", day)
+            put("dayName", DAY_NAMES[day])
+            put("hour", now.hour)
+            put("minute", now.minute)
+            put("minutes", minutes)
+            put("date", date)
+            put("time", now.format(DateTimeFormatter.ofPattern("HH:mm")))
+            put("epochMs", now.toInstant().toEpochMilli())
+            // 教学周：第 1 周从 2026-08-31（周一）算，单周周六上午 A 课表、双周 B 课表
+            put("week", Timetable.weekOf(now))
+            put("satTrack", if (Timetable.isEvenWeek(now)) "B" else "A")
+        }.toString()
+    }
+
+    // 周序与名称的对应（周一=0），与前端 DAY 常量一致
+    private val DAY_NAMES = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
     private fun Route.download() = get("/download") {
         val fileUrl = call.request.queryParameters["url"]

@@ -26,6 +26,8 @@ import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.plugins.NotFoundException
 import io.ktor.server.sse.*
 import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.seconds
 
 private const val chunkSize = 8192
@@ -40,7 +42,7 @@ fun main() {
     embeddedServer(Netty, port = 80, host = "0.0.0.0") {
         install(Authentication) {
             form("auth") {
-                challenge("https://h5.lezhiyun.com/multi_wjdc/?host=www.lezhiyun.com&token=")
+                challenge("http://$serverIp/resources/timetable.html")
                 skipWhen { call ->
                     call.parameters["p"]?.equals(password) ?: false || Control.allowed(call.request.local.remoteAddress) || if (!Control.state) {
                         Logger.error("${call.request.local.remoteAddress} request when server is closing.")
@@ -79,6 +81,18 @@ fun main() {
             masking = false
         }
         install(SSE)
+        // 正课时段（课表里上午+下午 9 节，体育/自习除外）自动把 Control.state 置 false，
+        // 让 auth 拒绝非白名单 IP；下课自动恢复。只跟随课表切换，不覆盖手动 /start、/exit。
+        launch {
+            while (true) {
+                try {
+                    Control.followTimetable()
+                } catch (e: Exception) {
+                    Logger.error("followTimetable failed: $e")
+                }
+                delay(30.seconds)
+            }
+        }
         routing {
             staticResources("/resources", "")
             aiRoute()
