@@ -631,6 +631,8 @@
 
     global.Lightbox = {
         mount: mount,
+        /** 用任意图片地址打开查看器（视频截帧等场景用，不必是页面里的 <img>） */
+        open: function (src) { if (instance) instance.open(src); },
         close: function () { if (instance) instance.close(); },
         prefs: {
             get: function () { return { buttons: !!prefs.buttons, scale: !!prefs.scale }; },

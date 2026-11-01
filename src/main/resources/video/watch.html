@@ -6,6 +6,7 @@
     <title>视频观看 - B站</title>
     <link rel="stylesheet" href="/resources/lib/theme.css">
     <script src="/resources/lib/theme.js"></script>
+    <script src="/resources/lib/page-store.js"></script>
     <script src="/resources/config.js"></script>
     <link rel="stylesheet" href="/resources/video/video.css">
     <link rel="stylesheet" href="/resources/lib/lightbox.css">
@@ -37,6 +38,16 @@
         .ws-row label { display: block; margin-bottom: 4px; font-size: 12px; color: var(--muted); }
         .ws-row .select { width: 100%; }
         .ws-info { margin-top: 4px; }
+        /* 侧边栏里的音量子行：滑块吃掉剩余宽度（margin 兜底，不用 flex gap） */
+        .ws-vol { display: flex; align-items: center; }
+        .ws-vol > * + * { margin-left: 6px; }
+        .ws-vol input[type="range"] { flex: 1 1 auto; min-width: 0; accent-color: var(--accent, var(--pink)); }
+        /* 音量百分比跟在 label 文字后面，字号与 label 一致但颜色浅一档 */
+        .ws-vol-val { margin-left: 4px; font-weight: 400; color: var(--text); }
+        /* 侧边栏里第二张及以后的卡片与上方留间距 */
+        .ws-card + .ws-card { margin-top: 14px; }
+        /* 侧边栏里的整行按钮：撑满宽度，字号跟侧边栏其它控件一致 */
+        .ws-btn { width: 100%; padding: 7px 10px; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -74,6 +85,28 @@
             </div>
             <span class="small muted ws-info" id="streamInfo"></span>
         </div>
+
+        <!-- 音量与倍速收进侧边栏：原先贴在播放器下方，鼠标划到视频边缘容易误触滑块。
+             侧边栏默认收起，要调时点 ☰ 展开，代价是多一次点击，换来播放区不被误碰。 -->
+        <div class="ws-card">
+            <h3>播放</h3>
+            <div class="ws-row">
+                <label for="vol">音量 <span class="ws-vol-val muted" id="volVal">10%</span></label>
+                <div class="ws-vol">
+                    <span style="font-size:14px">🔊</span>
+                    <input id="vol" type="range" min="0" max="1" step="0.01" value="0.1">
+                </div>
+            </div>
+            <div class="ws-row">
+                <label for="rate">倍速</label>
+                <!-- 倍速用 <select> 而非自定义下拉：Chrome 80 直接可用，也不抢键盘快捷键 -->
+                <select id="rate" class="select" title="播放倍速"></select>
+            </div>
+            <div class="ws-row" style="margin-bottom:0">
+                <!-- 截帧：把当前画面画到 canvas 再交给 lightbox，保存/裁剪在那边（共用 lib/lightbox.js） -->
+                <button id="shot" class="btn ws-btn" title="截取当前画面，可在预览里保存或裁剪">📷 截取当前画面</button>
+            </div>
+        </div>
     </aside>
 
     <div class="wmain">
@@ -85,12 +118,6 @@
             <!-- preload=auto：设置 src 后立刻开始缓冲，用户点播放时已经有数据。
                  配合服务端的首段预取，起播基本是瞬时的。 -->
             <video id="player" controls playsinline preload="auto"></video>
-            <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-                <span style="font-size:14px">🔊</span>
-                <input id="vol" type="range" min="0" max="1" step="0.01" value="0.1"
-                       style="flex:1;accent-color:var(--accent,var(--pink))">
-                <span id="volVal" class="small muted" style="width:38px;text-align:right">10%</span>
-            </div>
         </div>
 
         <div id="playMsg" class="small muted" style="margin-top:8px"></div>
@@ -168,6 +195,48 @@
     };
     volSlider.oninput = e => setVol(Number(e.target.value));
 
+    // ---------- 播放倍速 ----------
+    // 可选档位：0.1~3.0。0.1x/0.25x 用来逐帧抠动作或看快速闪过的字幕。
+    // <video> 的 playbackRate 是主时钟，DASH 的 <audio> 音轨由 bindSync 的
+    // ratechange 监听跟随，纠偏逻辑在 0.05s 内把微调速率清掉。
+    const RATES = [0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+    const rateSel = document.getElementById('rate');
+    // 倍速偏好走 PageStore（Cookie ls_video_rate，与项目其它页一致，不用 localStorage）
+    const videoStore = (window.PageStore ? PageStore.create('video') : null);
+    let rateTimer = null;
+    let desiredRate = 1;    // 用户选的倍速：换源后要重新盖回去（见 applyStream 末尾）
+
+    RATES.forEach(r => {
+        const o = document.createElement('option');
+        o.value = String(r);
+        o.textContent = r + 'x';
+        rateSel.appendChild(o);
+    });
+
+    function applyRate(r) {
+        desiredRate = r;
+        player.playbackRate = r;
+        if (audioEl) audioEl.playbackRate = r;
+        rateSel.value = String(r);
+        rateSel.title = r === 1 ? '播放倍速' : ('播放倍速 ' + r + 'x');
+    }
+
+    rateSel.onchange = () => {
+        const r = Number(rateSel.value) || 1;
+        applyRate(r);
+        // 下拉是离散的，但键盘连按/滚动选档仍可能连发 change，去抖 400ms 少写几次 Cookie
+        if (videoStore) {
+            if (rateTimer) clearTimeout(rateTimer);
+            rateTimer = setTimeout(() => { rateTimer = null; videoStore.set('rate', String(r)); }, 400);
+        }
+    };
+
+    // 换源/换清晰度时浏览器可能在 media load 阶段把 playbackRate 重置为 defaultPlaybackRate，
+    // 时机晚于 applyStream 的赋值，所以在元数据就绪后再盖一次，确保不掉回 1x。
+    player.addEventListener('loadedmetadata', () => {
+        if (player.playbackRate !== desiredRate) player.playbackRate = desiredRate;
+    });
+
     let info = null;        // videoInfo.data
     let playData = null;    // playStreamInfo
     let currentCid = 0;
@@ -239,6 +308,9 @@
         // 命中并发请求的结果、且正是第一个分P 时直接复用，避免重复请求
         if (prefetched && Number(first.cid) === Number(cidHint)) {
             playData = prefetched;
+            // 必须记住当前分P：否则此后切"格式"（MP4/DASH）时 currentCid 为 0，
+            // formatSel.onchange 的 `if (currentCid)` 直接吞掉，表现为切了没反应。
+            currentCid = first.cid;
             highlightPage(first.cid);
             buildQualityOptions();
             applyStream();
@@ -333,20 +405,36 @@
         await fetchStream(cid);
     }
 
-    async function fetchStream(cid) {
+    /**
+     * 取当前播放地址。
+     * @param cid  分P 的 cid
+     * @param qn   目标清晰度；只在 MP4 模式下有意义 —— MP4 返回的是**一次协商好的单条 durl**，
+     *             改清晰度必须回服务端重新协商（DASH 一次就返回全部档位，切档在本地完成）。
+     */
+    async function fetchStream(cid, qn) {
         try {
             // format 由"格式"下拉决定（默认 mp4）：mp4 音画合一单流，dash 音画分离
-            playData = await api('/videoStreamInfo', { bvid: info.bvid, cid, format: formatSel.value });
+            const params = { bvid: info.bvid, cid, format: formatSel.value };
+            if (qn) params.qn = qn;
+            playData = await api('/videoStreamInfo', params);
         } catch (e) {
             showError(statusEl, '获取播放地址失败：' + e.message);
             return;
         }
-        buildQualityOptions();
+        buildQualityOptions(qn);
         applyStream();
     }
 
-    /** 依据后端返回的 availableQualities 生成清晰度下拉项 */
-    function buildQualityOptions() {
+    /** 当前取流结果是不是 MP4 单流（没有 dash 段）。MP4 的清晰度是"请求时定档"的 */
+    function isMp4Mode() {
+        return !(playData && playData.dash && playData.dash.video && playData.dash.video.length);
+    }
+
+    /**
+     * 依据取流结果重建清晰度下拉。
+     * @param keepQn 切格式前用户选中的档位，能保留就保留，避免 MP4↔DASH 来回切时档位乱跳
+     */
+    function buildQualityOptions(keepQn) {
         qualitySel.innerHTML = '';
         // 后端已算好"实际可用清晰度"（降序），直接采用，避免前端猜错档位
         const dash = playData && playData.dash;
@@ -361,21 +449,35 @@
                 o.textContent = QN_NAME[id] || ('qn' + id);
                 qualitySel.appendChild(o);
             });
+            // DASH 一次拿到全部档位，切档只需在本地换流地址，永远不必禁用
             qualitySel.disabled = false;
-            // bestQuality 是服务端选定的默认档（免登录可用的最高清晰度）
+            // 优先沿用用户之前选的档位；否则用服务端选的默认档（免登录可用的最高清晰度）
             const best = Number(playData.bestQuality || 0);
-            qualitySel.value = avail.includes(best) ? String(best) : String(avail[0]);
+            const prefer = Number(keepQn || 0);
+            if (avail.includes(prefer)) qualitySel.value = String(prefer);
+            else qualitySel.value = avail.includes(best) ? String(best) : String(avail[0]);
         } else {
-            // MP4(html5) 单流：清晰度档位来自 accept_quality/accept_description，无独立编码档
-            (playData.accept_quality || []).forEach((q, i) => {
+            // MP4(html5) 单流：档位来自 accept_quality/accept_description，无独立编码档。
+            // 注意 accept_quality 是"该模式下 B 站愿意提供的档位"（本片只有 720P/360P，
+            // 虽然 DASH 下有 480P，MP4 模式却不给 —— 所以这里必须以它为准，不能自己拼 QN_NAME）。
+            const qs = playData.accept_quality || [];
+            qs.forEach((q, i) => {
                 const o = document.createElement('option');
                 o.value = q;
                 o.textContent = (playData.accept_description && playData.accept_description[i]) || ('qn' + q);
                 qualitySel.appendChild(o);
             });
-            qualitySel.value = String(playData.quality || 32);
-            // 单流只有 durl[0]，档位切换无意义，禁下拉
-            qualitySel.disabled = (playData.durl || []).length <= 1;
+            // 之前以为"单流只有 durl[0] 所以切档无意义"而禁用下拉 —— 那是错的：
+            // durl 只有一条，但服务端按 qn 参数重新协商会返回对应档位的流（实测 qn=16/64 各回各的）。
+            // 所以只有"可用档位确实只有一档"时才禁用。
+            qualitySel.disabled = qs.length <= 1;
+            // 用服务端**实际协商到**的 quality，而不是用户请求的 qn：
+            // 比如本片 MP4 选 480P(32) 时服务端只能给 360P(16)，下拉要如实回显 360P。
+            const actual = Number(playData.quality || 0);
+            const prefer = Number(keepQn || 0);
+            if (qs.includes(prefer)) qualitySel.value = String(prefer);
+            else if (qs.includes(actual)) qualitySel.value = String(actual);
+            else if (qs.length) qualitySel.value = String(qs[0]);
         }
         refreshCodecOptions();
     }
@@ -457,6 +559,10 @@
         }
 
         streamInfo.textContent = `当前: ${QN_NAME[qn] || qn} · ${CODEC_NAME[codecid] || '默认'}`;
+        // 换源会把 playbackRate 打回 1（置 src 等同于换媒体，速率重置为 defaultPlaybackRate），
+        // 这里重新盖上用户选的倍速，切清晰度/切分P/切格式都不会掉回 1x。
+        player.playbackRate = desiredRate;
+        if (audioEl) audioEl.playbackRate = desiredRate;
     }
 
     /**
@@ -528,9 +634,65 @@
         });
     }
 
-    qualitySel.onchange = () => { refreshCodecOptions(); applyStream(); };
-    // 切换格式（MP4/DASH）时重新取流：后端按 format 参数返回对应结构
-    formatSel.onchange = () => { if (currentCid) fetchStream(currentCid); };
+    // ---------- 截取当前画面 ----------
+    // 把 <video> 当前帧画到 canvas，转成 dataURL 交给共用的 lightbox 打开；
+    // 之后点 💾 保存到 cache/picture/、点 ✎ 裁剪，两个能力都复用 lib/lightbox.js。
+    const shotBtn = document.getElementById('shot');
+    shotBtn.addEventListener('click', () => {
+        // 没有可画的画面时 canvas 会得到全黑图，先挡掉
+        if (!player.videoWidth || !player.videoHeight) {
+            showError(playMsg, '还没有画面可截取，等视频加载出第一帧再试');
+            return;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = player.videoWidth;
+        canvas.height = player.videoHeight;
+        const ctx = canvas.getContext('2d');
+        try {
+            ctx.drawImage(player, 0, 0, canvas.width, canvas.height);
+        } catch (e) {
+            // 跨域画面（理论上都走 /videoStream 同源代理，这里只是兜底）
+            showError(playMsg, '截取失败：' + e.message);
+            return;
+        }
+        // 统一用 PNG：无损、且与 lightbox 裁剪后落盘的格式一致（都是 image/png）
+        let url;
+        try {
+            url = canvas.toDataURL('image/png');
+        } catch (e) {
+            showError(playMsg, '截取失败：' + e.message);
+            return;
+        }
+        if (!url || url === 'data:,') {
+            showError(playMsg, '截取失败：画面不可用');
+            return;
+        }
+        if (window.Lightbox) Lightbox.open(url);
+    });
+
+    // 切清晰度：DASH 一次就拿到所有档位，本地换流地址即可；
+    // MP4 是单条 durl，必须带新 qn 回服务端重新协商，否则改了没反应。
+    qualitySel.onchange = () => {
+        if (isMp4Mode()) {
+            if (currentCid) fetchStream(currentCid, Number(qualitySel.value));
+            return;
+        }
+        refreshCodecOptions();
+        applyStream();
+    };
+    // 切换格式（MP4/DASH）时重新取流：后端按 format 参数返回对应结构。
+    // 带上当前清晰度，让两种格式尽量停在同一个档位。
+    formatSel.onchange = () => {
+        if (currentCid) fetchStream(currentCid, Number(qualitySel.value));
+    };
+
+    // 恢复上次用的倍速（没有记录/值非法就回到 1x）
+    (function restoreRate() {
+        let saved = null;
+        try { saved = videoStore ? videoStore.get('rate') : null; } catch (e) { saved = null; }
+        const r = RATES.indexOf(Number(saved)) >= 0 ? Number(saved) : 1;
+        applyRate(r);
+    })();
 
     // 顶栏搜索：统一按关键词搜索
     bindSearchBox('kw', 'go');
