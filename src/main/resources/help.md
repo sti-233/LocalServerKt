@@ -49,6 +49,7 @@
 | `/videoInfo?bvid=或aid=` | — | 视频详情（分P、UP主、统计） |
 | `/videoStreamInfo?bvid=&cid=&qn=&tryLook=` | — | DASH 取流信息；`tryLook=1` 免登录 1080P |
 | `/videoStream?url=&range=` | — | 视频流代理（仅 B 站 CDN 域名，透传 Range） |
+| `/biliImg?url=` | — | 图片代理（任意 http(s) 图片地址）；落盘 `cache/bilibili/`，同一 URL 只回源一次，目录每次启动清空 |
 | `/videoComments?aid=&page=&sort=` | — | 评论（3 热度/2 时间/1 混合，游标翻页） |
 | `/userInfo?mid=` | — | UP 主资料（App 优先，Web 降级） |
 | `/userSpace?mid=&cursor=&order=&pageSize=` | — | 空间投稿（App 游标翻页优先） |

@@ -48,6 +48,10 @@ object Hashs {
     val ByteArray.md5Hex: String
         get() = hash(inputStream(), "MD5")?.toHexString().orEmpty()
 
+    /** 字符串（UTF-8）的 sha256，用来把 URL 之类的键换成稳定的文件名 */
+    val String.sha256Hex: String
+        get() = hash(toByteArray(Charsets.UTF_8).inputStream(), "SHA256")?.toHexString().orEmpty()
+
     val String.urlEncoded: String
         inline get() = URLEncoder.encode(this, "UTF-8")
 

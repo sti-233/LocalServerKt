@@ -10,12 +10,16 @@ const PROXY_SERVER = (location.origin && location.origin.startsWith('http'))
     ? location.origin
     : ('http://' + SERVER_IP);
 
-/** B 站图片(封面/头像)有 Referer 限制，统一走 /download 代理 */
+/**
+ * B 站图片(封面/头像)有 Referer 限制，统一走 /biliImg 代理。
+ * 与 /download 的区别：这个端点会把图落盘到 cache/bilibili/，同一张图只回源一次，
+ * 首页来回滚动时不再重复下载；目录每次启动清空。
+ */
 function imgUrl(u) {
     if (!u) return '';
     // 接口常返回 //i0.hdslb.com/... 这种协议相对地址
     let full = u.startsWith('//') ? 'https:' + u : u;
-    return PROXY_SERVER + '/download?url=' + encodeURIComponent(full);
+    return PROXY_SERVER + '/biliImg?url=' + encodeURIComponent(full);
 }
 
 /** 播放地址需经 /videoStream 转发（带 Referer 且支持 Range） */
@@ -213,7 +217,7 @@ function createCommentSection(container, aid) {
 
         // 图片评论（content.pictures，与 PiliPlus 同一字段）：正文下方显示缩略图，
         // 带 data-lb 交给全局 lightbox 点击预览。img_src 常是 //i0.hdslb.com/... 协议相对
-        // 地址且 B 站图片有 Referer 防盗链，统一走 imgUrl() 的 /download 代理。
+        // 地址且 B 站图片有 Referer 防盗链，统一走 imgUrl() 的 /biliImg 代理。
         // 固定 96px 高度、宽度自适应，不同比例的图片也不把评论区撑乱。
         const pics = ((c.content && c.content.pictures) || [])
             .filter(p => p && p.img_src && p.img_src.length > 0);

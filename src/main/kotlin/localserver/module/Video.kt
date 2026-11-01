@@ -22,6 +22,7 @@ import localserver.lib.bilibili.User
 import localserver.lib.bilibili.View
 import localserver.lib.bilibili.PlayUrl
 import localserver.lib.bilibili.USER_AGENT
+import localserver.utils.BiliImg
 import localserver.utils.Http
 import localserver.utils.Logger
 import localserver.utils.Util.prettyJson
@@ -41,6 +42,62 @@ object Video {
         userInfo()
         userSpace()
         userDynamic()
+        biliImage()
+    }
+
+    // ---------- 图片代理（带磁盘缓存） ----------
+
+    /**
+     * 代理 B 站的封面/头像/动态图。图片有 Referer 防盗链，浏览器直连会 403，
+     * 所以必须由服务端带 Referer 取；取回来的图落盘到 `cache/bilibili/`，
+     * 同一 URL 第二次请求直接 `respondFile`（自带 ETag/Range），不再回源。
+     *
+     * 与 `/download` 的区别：那个端点每次新建临时文件、返回后即删，纯透传；
+     * 音乐封面和 help 页的 marked.js 还在用它，故这里另开端点互不影响。
+     */
+    private fun Route.biliImage() = get("/biliImg") {
+        val url = call.parameters["url"]
+            ?: return@get call.respondText("Please provide \"url\".", status = HttpStatusCode.BadRequest)
+        // 协议相对地址（//i0.hdslb.com/...）接口里很常见，先补全
+        val full = if (url.startsWith("//")) "https:$url" else url
+
+        val file = BiliImg.fileFor(full)
+        if (file.isFile && file.length() > 0) {
+            // 命中缓存：respondFile 会带 Last-Modified/ETag，浏览器二次访问走 304
+            call.response.headers.append(HttpHeaders.CacheControl, "public, max-age=86400")
+            call.respondFile(file)
+            return@get
+        }
+
+        val up = Http.openUpstream(full, null, USER_AGENT, "https://www.bilibili.com/", "https://www.bilibili.com")
+            ?: return@get call.respondText("Failed to fetch image.", status = HttpStatusCode.BadGateway)
+        try {
+            if (up.status !in 200..299) {
+                return@get call.respondText("Failed to fetch image: ${up.status}", status = HttpStatusCode.BadGateway)
+            }
+            val bytes = withContext(Dispatchers.IO) { up.body.readNBytes(BiliImg.MAX_BYTES) }
+            if (bytes.isEmpty()) {
+                return@get call.respondText("Empty image body.", status = HttpStatusCode.BadGateway)
+            }
+            // 超过上限的不落盘（readNBytes 会在满额时截断），但仍原样返回给浏览器
+            val contentType = up.header(HttpHeaders.ContentType)
+                ?: when (BiliImg.extOf(full)) {
+                    "png" -> "image/png"
+                    "webp" -> "image/webp"
+                    "gif" -> "image/gif"
+                    else -> "image/jpeg"
+                }
+            if (bytes.size < BiliImg.MAX_BYTES) {
+                withContext(Dispatchers.IO) { BiliImg.store(file, bytes) }
+                call.response.headers.append(HttpHeaders.CacheControl, "public, max-age=86400")
+            } else {
+                // 超大图不缓存，避免占满磁盘；下次请求仍会回源
+                call.response.headers.append(HttpHeaders.CacheControl, "public, max-age=600")
+            }
+            call.respondBytes(bytes, ContentType.parse(contentType))
+        } finally {
+            runCatching { up.body.close() }
+        }
     }
 
     // ---------- 页面 ----------

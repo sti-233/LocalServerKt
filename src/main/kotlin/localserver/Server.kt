@@ -9,6 +9,7 @@ import localserver.module.Music.musicRoute
 import localserver.module.Prefs.prefsRoute
 import localserver.module.Terminal.terminalRoute
 import localserver.module.Video.videoRoute
+import localserver.utils.BiliImg
 import localserver.utils.LocalIp
 import localserver.utils.Logger
 import localserver.utils.Network.network
@@ -39,6 +40,9 @@ val serverIp: String get() = LocalIp.current()
 private const val password = "114514"
 
 fun main() {
+    // B 站图片缓存只在单次运行内有效（URL 带签名与尺寸参数，跨启动复用意义不大），
+    // 启动时清空，避免目录无限增长。
+    BiliImg.reset()
     embeddedServer(Netty, port = 80, host = "0.0.0.0") {
         install(Authentication) {
             form("auth") {
