@@ -12,7 +12,11 @@
 | `/message` | — | WebSocket：聊天/私聊（`sendTo` 参数），图片 `ImageB64:` 前缀，2 分钟内可撤回 |
 | `/clients` | — | 当前在线 WS 客户端列表 |
 | `/wsSever` | — | 纯文本服务信息（typo 路由，沿用） |
-| `/migrateImages` | — | 聊天记录图片消息迁移工具 |
+| `/img/{*}` | — | 聊天图片（`cache/picture/<sha256>.<ext>`，未命中回落旧 `cache/`） |
+| `/pictures` | — | 图片列表：`?limit=`（默认 60，上限 200）→ `{dir,total,items:[{name,ref,size,mtime}]}`，按修改时间倒序；聊天页「缓存图片」面板用 |
+| `/savePicture`（POST） | — | 保存图片：JSON `{"data":"data:image/...;base64,..."}` → 去重落盘 `cache/picture/`（全屏查看器的「保存」与「裁剪并保存」共用此端点） |
+| `/migrateImages` | control | 聊天记录图片消息迁移（`ImageB64:` → `ImageRef:`） |
+| `/migratePictures` | control | 图片目录迁移（旧 `cache/<sha256>.<ext>` → `cache/picture/`） |
 
 ## Control（控制）
 | 端点 | 鉴权 | 用法 |

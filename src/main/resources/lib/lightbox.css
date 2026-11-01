@@ -1,0 +1,224 @@
+/* 图片预览遮罩（由 lib/lightbox.js 动态创建，聊天页与 B 站各页共用）
+   这是固定深色的媒体查看层，不随日间/夜间主题变化，因此直接写字面色值，
+   不引用 theme.css 的 var()（那些是为页面正文准备的）。
+   不用 inset: 0：Chrome < 87 不支持该简写，遮罩会塌缩成图片大小（背景/居中失效）。 */
+
+#imgLightbox {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, .85);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s;
+    /* 禁止浏览器默认手势（滚页/双指缩放页面），交给 Pointer Events 处理 */
+    touch-action: none;
+}
+
+#imgLightbox.show { opacity: 1; pointer-events: auto; }
+
+#imgLightbox > img {
+    max-width: 90vw;
+    max-height: 90vh;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, .5);
+    /* 让 Pointer Events 接管手势，禁用浏览器默认的触摸滚/捏合行为 */
+    touch-action: none;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+/* 右上角关闭/编辑/保存按钮与缩放按钮的公共底座 */
+#imgLightbox #lbClose,
+#imgLightbox #lbEdit,
+#imgLightbox #lbSave,
+#imgLightbox .lb-btn {
+    position: fixed;
+    z-index: 101;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, .12);
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s;
+}
+
+#imgLightbox #lbClose {
+    top: 16px;
+    right: 16px;
+    width: 40px;
+    height: 40px;
+    font-size: 20px;
+    line-height: 1;
+}
+
+#imgLightbox #lbClose:hover { background: rgba(255, 77, 77, .6); }
+
+/* 右侧竖排三件套：✕ 关闭(16) → ✎ 编辑(64) → 💾 保存(112)，间距 8px，不用 flex gap。
+   每格 40px，图标用 emoji/符号，靠 title 表达语义
+   （文字会撑破圆形按钮，而且三行中文把操作区拉得太高）
+   z-index 105 要高于裁剪层（102）与底部操作条（104）：
+   裁剪时 ✎ 要高亮可点（再点一次退出裁剪），✕ 也要能直接关掉整个查看器。 */
+#imgLightbox #lbEdit,
+#imgLightbox #lbSave {
+    right: 16px;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    font-size: 17px;
+    line-height: 1;
+    z-index: 105;
+}
+
+#imgLightbox #lbClose { z-index: 105; }
+
+#imgLightbox #lbEdit { top: 64px; }    /* 16 + 40 + 8 */
+#imgLightbox #lbSave { top: 112px; }   /* 64 + 40 + 8 */
+
+#imgLightbox #lbEdit:hover,
+#imgLightbox #lbSave:hover { background: rgba(255, 255, 255, .3); }
+
+/* 正在裁剪时，✎ 高亮（再点一次退出裁剪） */
+#imgLightbox.cropping #lbEdit { background: rgba(64, 158, 255, .85); }
+
+/* 顶部居中控制条：＋ 倍数 −（可由设置页整体隐藏 ＋−，或单独隐藏倍数） */
+#imgLightbox .lb-controls {
+    position: fixed;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 101;
+    display: flex;
+    align-items: center;
+}
+
+/* 旧版 Chrome 不支持 flex 的 gap（<84），用兄弟选择器给间距兜底 */
+#imgLightbox .lb-controls > * + * { margin-left: 8px; }
+
+#imgLightbox .lb-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 20px;
+    line-height: 1;
+    /* 覆盖上面 #lbClose/.lb-btn 的 fixed 定位，统一由 .lb-controls 定位 */
+    position: static;
+}
+
+#imgLightbox .lb-btn:hover { background: rgba(255, 255, 255, .3); }
+
+#imgLightbox #lbScale {
+    min-width: 52px;
+    text-align: center;
+    color: #fff;
+    font-size: 13px;
+    background: rgba(255, 255, 255, .12);
+    border-radius: 999px;
+    padding: 11px 8px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 可预览的图片：手型+放大光标提示（聊天缩略图自带 cursor: zoom-in） */
+img[data-lb] { cursor: zoom-in; }
+
+/* ===== 裁剪层 =====
+   进入裁剪模式后铺满遮罩：中间是"原尺寸适配屏幕"的图片（不带缩放/平移），
+   上面盖一层半透明黑来压暗未选区，选区本身露出原色，四角有拖拽柄。
+   不用 inset 简写、不用 flex gap（Chrome 80）。 */
+#imgLightbox .lb-crop {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 102;
+    display: none;
+    background: #000;
+    /* 裁剪层自己处理指针，禁止浏览器手势 */
+    touch-action: none;
+}
+
+#imgLightbox.cropping .lb-crop { display: flex; align-items: center; justify-content: center; }
+
+/* 裁剪模式下隐藏原本的大图与缩放条，避免两层图重影 */
+#imgLightbox.cropping > img { visibility: hidden; }
+#imgLightbox.cropping .lb-controls { display: none; }
+/* 裁剪态下 💾 让位给底部"裁剪并保存"，留个死按钮只会让人误点 */
+#imgLightbox.cropping #lbSave { display: none; }
+
+#imgLightbox .lb-crop-img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    user-select: none;
+    -webkit-user-drag: none;
+    touch-action: none;
+    /* 拖选时不触发浏览器图片拖拽 */
+    -webkit-user-select: none;
+}
+
+/* 选区框：用巨大的外阴影压暗四周（比四块遮罩省 DOM，且不会有缝隙） */
+#imgLightbox .lb-crop-sel {
+    position: fixed;
+    display: none;
+    z-index: 103;
+    border: 1px solid rgba(255, 255, 255, .95);
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55);
+    cursor: move;
+    touch-action: none;
+}
+
+/* 四角拖拽柄（12px 方块，命中区靠 padding 撑大一点） */
+#imgLightbox .lb-crop-h {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    background: #fff;
+    border-radius: 3px;
+    touch-action: none;
+}
+
+#imgLightbox .lb-crop-h.tl { top: -8px; left: -8px; cursor: nwse-resize; }
+#imgLightbox .lb-crop-h.tr { top: -8px; right: -8px; cursor: nesw-resize; }
+#imgLightbox .lb-crop-h.bl { bottom: -8px; left: -8px; cursor: nesw-resize; }
+#imgLightbox .lb-crop-h.br { bottom: -8px; right: -8px; cursor: nwse-resize; }
+
+/* 底部操作条 */
+#imgLightbox .lb-crop-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 20px;
+    z-index: 104;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#imgLightbox .lb-crop-bar > * + * { margin-left: 10px; }
+
+#imgLightbox .lb-crop-btn {
+    border: none;
+    border-radius: 999px;
+    padding: 9px 18px;
+    font-size: 13px;
+    line-height: 1.2;
+    color: #fff;
+    background: rgba(255, 255, 255, .16);
+    cursor: pointer;
+    transition: background .15s;
+}
+
+#imgLightbox .lb-crop-btn:hover { background: rgba(255, 255, 255, .3); }
+
+#imgLightbox .lb-crop-primary { background: rgba(64, 158, 255, .85); }
+#imgLightbox .lb-crop-primary:hover { background: rgba(64, 158, 255, 1); }

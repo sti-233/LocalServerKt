@@ -6,6 +6,8 @@
     <title>设置</title>
     <link rel="stylesheet" href="/resources/lib/theme.css">
     <script src="/resources/lib/theme.js"></script>
+    <link rel="stylesheet" href="/resources/lib/lightbox.css">
+    <script src="/resources/lib/lightbox.js"></script>
     <script src="/resources/config.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -97,6 +99,31 @@
         .theme-opt .sub { margin-left: 6px; font-weight: 400; font-size: 12px; color: var(--muted); }
         .theme-opt.active .sub { color: var(--accent); }
 
+        /* 图片预览控件开关：沿用 .theme-opt 的卡片外观，勾选态由 JS 加 class */
+        .switch-row { display: flex; flex-wrap: wrap; margin: -5px; }
+        .switch-opt {
+            display: flex;
+            align-items: center;
+            margin: 5px;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg);
+            cursor: pointer;
+            font-size: 13.5px;
+            user-select: none;
+        }
+        .switch-opt:hover { border-color: var(--accent); }
+        .switch-opt input { margin: 0 8px 0 0; cursor: pointer; }
+        .switch-opt.active {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-weight: 600;
+        }
+        .switch-opt .sub { margin-left: 6px; font-weight: 400; font-size: 12px; color: var(--muted); }
+        .switch-opt.active .sub { color: var(--accent); }
+
         /* 存储表格 */
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         th, td {
@@ -176,6 +203,23 @@
             </div>
         </section>
 
+        <!-- 图片查看（lightbox） -->
+        <section class="card">
+            <h2>图片查看</h2>
+            <p class="hint">
+                点开大图后顶部会显示 ＋ − 缩放按钮与当前倍数。这两个开关对所有页面生效
+                （存在 path=/ 的 Cookie 里，跨页面共享）；隐藏后仍可用滚轮、双指捏合和双击缩放。
+            </p>
+            <div class="switch-row" id="lbRow">
+                <label class="switch-opt" data-key="buttons">
+                    <input type="checkbox" id="lbButtons">显示 ＋ − 缩放按钮
+                </label>
+                <label class="switch-opt" data-key="scale">
+                    <input type="checkbox" id="lbScaleOpt">显示缩放倍数<span class="sub">（如 250%）</span>
+                </label>
+            </div>
+        </section>
+
         <!-- 服务端配置 -->
         <section class="card">
             <h2>服务端保存的配置</h2>
@@ -230,6 +274,31 @@
 
         Theme.onChange(paintTheme);
         paintTheme();
+
+        // ===== 图片查看（lightbox 顶部控件显隐） =====
+        // 偏好存在 path=/ 的 Cookie ls_lightbox 里（由 lib/lightbox.js 维护），全站共享
+        var lbOpts = document.querySelectorAll('.switch-opt');
+
+        function paintLightbox() {
+            var p = Lightbox.prefs.get();
+            for (var i = 0; i < lbOpts.length; i++) {
+                var el = lbOpts[i];
+                var on = !!p[el.getAttribute('data-key')];
+                el.classList.toggle('active', on);
+                var cb = el.querySelector('input');
+                if (cb) cb.checked = on;
+            }
+        }
+
+        document.getElementById('lbButtons').addEventListener('change', function () {
+            Lightbox.prefs.set({ buttons: this.checked });
+            paintLightbox();
+        });
+        document.getElementById('lbScaleOpt').addEventListener('change', function () {
+            Lightbox.prefs.set({ scale: this.checked });
+            paintLightbox();
+        });
+        paintLightbox();
 
         // ===== 服务端配置 =====
         function esc(s) {
