@@ -9,6 +9,7 @@ import localserver.module.Music.musicRoute
 import localserver.module.Prefs.prefsRoute
 import localserver.module.Terminal.terminalRoute
 import localserver.module.Video.videoRoute
+import localserver.utils.LocalIp
 import localserver.utils.Logger
 import localserver.utils.Network.network
 import localserver.utils.Util
@@ -29,10 +30,10 @@ import kotlin.time.Duration.Companion.seconds
 
 private const val chunkSize = 8192
 
-// "192.168.100.17"
-// "192.168.3.32"
-// "192.168.125.200"
-const val serverIp = "192.168.3.32"
+// 本机内网地址：启动时自动探测（见 utils/LocalIp.kt），不再手工改。
+// 探测不准时用 -Dlocalserver.ip=192.168.3.32 或环境变量 LOCALSERVER_IP 覆盖。
+// 属性每次访问都走 LocalIp 的 30 秒缓存，DHCP 换地址后无需重启。
+val serverIp: String get() = LocalIp.current()
 private const val password = "114514"
 
 fun main() {

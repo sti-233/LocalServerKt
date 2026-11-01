@@ -21,6 +21,7 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.util.zip.ZipFile
 import kotlin.system.exitProcess
+import localserver.serverIp
 
 // 运行中 jar 所在的目录（gradlew run 时为 classes 目录），供 /defaultFileDir 与 Terminal 默认目录使用；失败返回空串
 fun defaultDir(): String = runCatching {
@@ -30,6 +31,7 @@ fun defaultDir(): String = runCatching {
 
 object Network {
     fun Route.network() {
+        configJs()
         download()
         browser()
         fileDir()
@@ -38,6 +40,31 @@ object Network {
 
     // 零代码快传分享页基址（/update 抓分享页取短时效下载签名）
     private const val LDMKC_SHARE = "https://www.ldmkc.cn"
+
+    /**
+     * 动态下发 `/resources/config.js`，把写死的 SERVER_IP 换成启动时探测到的内网地址。
+     *
+     * 为什么放在服务端：静态资源里没法知道本机 IP。前端页面（chat 的 ws 地址、browser 的跳转、
+     * music 的代理前缀…）都读全局 `SERVER_IP`，这里按请求实时生成，DHCP 换地址后刷新页面就生效。
+     *
+     * 注意顺序：`staticResources("/resources", "")` 用的是 Ktor 的静态资源路由，
+     * 会先尝试命中文件；src/main/resources/config.js 已删除，所以请求会落到这里。
+     */
+    private fun Route.configJs() = get("/resources/config.js") {
+        val ip = serverIp
+        // 同源访问时前端其实用 location.origin 就够了，SERVER_IP 只在 file:// 打开时兜底；
+        // 但保留它能让"复制链接给手机"这类用法拿到可用的局域网地址。
+        val body = buildString {
+            append("// 由服务端动态生成（utils/Network.kt 的 /resources/config.js），勿手工改。\n")
+            append("// 地址来源：utils/LocalIp.kt 探测本机内网地址，可用 -Dlocalserver.ip= 或\n")
+            append("// 环境变量 LOCALSERVER_IP 覆盖；探测不准时优先看这个文件里的值对不对。\n")
+            append("const SERVER_IP = \"").append(ip).append("\";\n")
+            append("const VNC_URL = \"http://\" + SERVER_IP + \":5901\"; // VNC 查看器地址\n")
+        }
+        // no-store：地址会变，别让浏览器把旧 IP 缓存下来
+        call.response.header(HttpHeaders.CacheControl, "no-store")
+        call.respondText(body, contentType = ContentType.Application.JavaScript)
+    }
 
     private fun Route.fileDir() = authenticate("control") {
         get("/defaultFileDir") {
