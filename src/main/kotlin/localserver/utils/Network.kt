@@ -423,7 +423,14 @@ object Network {
                     append(HttpHeaders.ContentDisposition,
                         if (inline) "inline; filename=\"$originalFileName\""
                         else "attachment; filename=\"$originalFileName\"")
-                    append(HttpHeaders.CacheControl, "no-cache, no-store, must-revalidate")
+                    // 图片（music 页的封面走这里）URL 稳定、内容不变，给一天缓存，避免每次
+                    // 进页面都重新回源下载；音乐/其它文件保持 no-store，避免用户点"下载"
+                    // 时拿到磁盘缓存里的旧文件。
+                    if (contentType.startsWith("image/")) {
+                        append(HttpHeaders.CacheControl, "public, max-age=86400")
+                    } else {
+                        append(HttpHeaders.CacheControl, "no-cache, no-store, must-revalidate")
+                    }
                     append(HttpHeaders.ContentType, contentType)
                 }
                 call.respondFile(tempFile.toFile())

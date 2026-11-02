@@ -13,7 +13,7 @@ class ClassGateTest {
     @Test
     fun `first apply sets state from the timetable`() {
         var state = true
-        val gate = ClassGate { inClass -> state = !inClass }
+        val gate = ClassGate("服务") { inClass -> state = !inClass }
 
         assertTrue(gate.apply("class:2026-11-02:1"))
         assertFalse(state)
@@ -22,7 +22,7 @@ class ClassGateTest {
     @Test
     fun `repeated apply within one period keeps manual override`() {
         var state = true
-        val gate = ClassGate { inClass -> state = !inClass }
+        val gate = ClassGate("服务") { inClass -> state = !inClass }
 
         gate.apply("class:2026-11-02:1")   // 上课 → state = false
         state = true                       // 用户手动 /start
@@ -34,7 +34,7 @@ class ClassGateTest {
     @Test
     fun `next period overrides again`() {
         var state = true
-        val gate = ClassGate { inClass -> state = !inClass }
+        val gate = ClassGate("服务") { inClass -> state = !inClass }
 
         gate.apply("class:2026-11-02:1")
         state = true
@@ -45,7 +45,7 @@ class ClassGateTest {
     @Test
     fun `break restores the service`() {
         var state = true
-        val gate = ClassGate { inClass -> state = !inClass }
+        val gate = ClassGate("服务") { inClass -> state = !inClass }
 
         gate.apply("class:2026-11-02:1")
         assertFalse(state)
@@ -56,7 +56,7 @@ class ClassGateTest {
     @Test
     fun `manual exit during break survives until next class`() {
         var state = true
-        val gate = ClassGate { inClass -> state = !inClass }
+        val gate = ClassGate("服务") { inClass -> state = !inClass }
 
         gate.apply("free")
         state = false                      // 课间手动 /exit

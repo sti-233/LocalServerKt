@@ -9,6 +9,7 @@ import localserver.module.Music.musicRoute
 import localserver.module.Prefs.prefsRoute
 import localserver.module.Terminal.terminalRoute
 import localserver.module.Video.videoRoute
+import localserver.module.VideoGate
 import localserver.utils.BiliImg
 import localserver.utils.LocalIp
 import localserver.utils.Logger
@@ -25,7 +26,9 @@ import io.ktor.server.response.*
 import io.ktor.server.websocket.*
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.plugins.NotFoundException
+import io.ktor.server.plugins.conditionalheaders.ConditionalHeaders
 import io.ktor.server.sse.*
+import io.ktor.http.CacheControl
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -85,12 +88,12 @@ fun main() {
             masking = false
         }
         install(SSE)
-        // 正课时段（课表里上午+下午 9 节，体育/自习除外）自动把 Control.state 置 false，
-        // 让 auth 拒绝非白名单 IP；下课自动恢复。只跟随课表切换，不覆盖手动 /start、/exit。
+        // 正课时段（课表里上午+下午 9 节，体育/自习除外）只关视频模块，不再关整个服务器；
+        // 下课自动恢复。只跟随课表切换，不覆盖手动 /start、/exit。
         launch {
             while (true) {
                 try {
-                    Control.followTimetable()
+                    VideoGate.followTimetable()
                 } catch (e: Exception) {
                     Logger.error("followTimetable failed: $e")
                 }
@@ -98,7 +101,32 @@ fun main() {
             }
         }
         routing {
-            staticResources("/resources", "")
+            // 静态资源此前既没有 Cache-Control 也没人处理版本头：Ktor 的 LocalFileContent /
+            // JarFileContent 内部虽然带了 Last-Modified 的版本信息，但没人把它写回响应头、
+            // 也没人校验 If-Modified-Since，于是浏览器每次进页面都要重下全部 JS/CSS（约 48KB）。
+            // 这里两件事一起补：ConditionalHeaders 负责回 Last-Modified + 命中时回 304；
+            // cacheControl 负责给不同类别合适的 max-age。
+            install(ConditionalHeaders)
+            staticResources("/resources", "") {
+                cacheControl { resource ->
+                    // HTML / JSON 用 no-cache：允许存但每次都要带 If-Modified-Since 来验，
+                    // 改动页面后刷新立刻生效，不必等 max-age 过期。
+                    // JS/CSS 用长缓存 + must-revalidate 兜底：这些文件很少变，且改了就换版本。
+                    val name = resource.path.substringAfterLast('/').lowercase()
+                    when {
+                        name.endsWith(".html") || name.endsWith(".json") || name.endsWith(".md") ->
+                            listOf(CacheControl.NoCache(null))
+                        name.endsWith(".js") || name.endsWith(".css") ->
+                            listOf(CacheControl.MaxAge(7 * 24 * 3600, mustRevalidate = true))
+                        else -> listOf(CacheControl.NoCache(null))
+                    }
+                }
+            }
+            // 挂在根节点：视频页面是 staticResources 注册的，与 Video 模块平级，挂子路由拦不到
+            with(VideoGate) {
+                blockWhenClosed()
+                videoStatusRoute()
+            }
             aiRoute()
             chatRoute()
             controlRoute()

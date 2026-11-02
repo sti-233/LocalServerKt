@@ -165,6 +165,9 @@ object Chat {
         }
         val file = findPicture(name)
         if (file == null) {
+            // 图片被删后文件名是内容哈希、永远不会再出现，但浏览器没有缓存头就会每次进页面
+            // 重新请求一遍 404（实测聊天页每轮都发）。给个短缓存，删图后最多 5 分钟内不再问。
+            call.response.header(HttpHeaders.CacheControl, "public, max-age=300")
             call.respondText("image not found", status = HttpStatusCode.NotFound)
             return@get
         }

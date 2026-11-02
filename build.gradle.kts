@@ -57,6 +57,9 @@ dependencies {
     implementation("io.ktor:ktor-server-auth:$ktorVersion")
     implementation("io.ktor:ktor-server-sse:$ktorVersion")
     implementation("io.ktor:ktor-server-status-pages:$ktorVersion")
+    // 条件请求（If-Modified-Since → 304）：静态资源每次进页面都要重下的根源是既没有
+    // Cache-Control 也没人处理版本头，见 Server.kt 的 staticResources 配置
+    implementation("io.ktor:ktor-server-conditional-headers:$ktorVersion")
     implementation("io.ktor:ktor-client-core:$ktorVersion")
     implementation("io.ktor:ktor-client-cio:$ktorVersion")
     implementation("ch.qos.logback:logback-classic:1.5.26")

@@ -56,6 +56,7 @@
 | `/userInfo?mid=` | — | UP 主资料（App 优先，Web 降级） |
 | `/userSpace?mid=&cursor=&order=&pageSize=` | — | 空间投稿（App 游标翻页优先） |
 | `/userDynamic?mid=&cursor=` | — | 空间动态（软限流自动重试） |
+| `/videoStatus` | — | 视频模块是否开放，返回 `{"open":true\|false}`（`no-store`）。正课时段关闭视频模块，前端每 20 秒轮询它，见下方课表段 |
 
 ## Ai（AI 对话）
 | 端点 | 鉴权 | 用法 |
@@ -117,8 +118,13 @@
 服务端 `utils/Timetable.kt` 读这份判断"现在是否正课"，页面加载时也用 `adoptBells()` 覆盖自己那份
 （JSON 缺失或格式不对就保留硬编码，保证不白屏）——改作息请改 JSON，页面和服务端同时生效。
 
-**正课时段自动关闭服务**：`Server.kt` 起一个 30 秒轮询的协程调 `Control.followTimetable()`，
-正课（上午 + 下午 9 节，科目为「体育」「自习」的不算）期间把 `Control.state` 置 false，
-课间 / 早自习 / 晚自习 / 周日恢复 true。切换由 `ClassGate` 把门：只有"阶段"变化才动手，
-所以手动 `/start`、`/exit` 能一直保持到下一次上下课，不会被轮询覆盖。
-`state` 只影响 `auth` 的 `skipWhen`，`control` 白名单 IP 与 `?p=114514` 仍可进入。
+**正课时段自动关闭视频模块**：`Server.kt` 起一个 30 秒轮询的协程调 `VideoGate.followTimetable()`，
+正课（上午 + 下午 9 节，科目为「体育」「自习」的不算）期间把 `VideoGate.open` 置 false，
+课间 / 早自习 / 晚自习 / 周日恢复 true。切换由 `ClassGate` 把门：只有"阶段"变化才动手。
+**只关视频，不关整个服务器** —— 聊天、课表、文件、音乐照常可用；`Control.state`（`/start`、`/exit`）
+仍是全局手动开关，课表不再碰它。
+
+关闭期间：`/video` 及所有视频接口返回 403 JSON（`{"error":"现在是正课时间，视频模块已关闭"}`），
+`/resources/video/*` 整页 302 到课表页。**已经在播的页面**靠前端自救：`common.js` 每 20 秒（以及切回
+标签页时）请求 `GET /videoStatus`（永远可达、`no-store`，返回 `{"open":true|false}`），看到 `false`
+就 `location.replace('/resources/timetable.html')` 整页跳走，顺带终止媒体加载。

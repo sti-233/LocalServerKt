@@ -425,6 +425,44 @@ function initImgLightbox() {
     return Lightbox.mount({ click: 'img[data-lb]' });
 }
 
+/**
+ * 正课时段视频模块被关闭（服务端 VideoGate），各页轮询 /videoStatus 后自动跳去课表。
+ *
+ * 为什么要在前端轮询：服务端只能拒绝"新请求"，已经在播的页面（尤其是 watch.html 里
+ * 缓冲好的视频）不会自己停。所以每页都挂着这个轮询，一旦看到 open:false 就整页跳走，
+ * 顺带把播放停掉（整页跳转本身会终止媒体加载）。
+ *
+ * 20 秒一次：正课开始最多晚 20 秒被踢出去，对服务器负载可以忽略。
+ * 只在 http(s) 下轮询（file:// 打开时没有服务端，会一直失败刷日志）。
+ */
+const VIDEO_STATUS_URL = '/videoStatus';
+const VIDEO_STATUS_INTERVAL = 20000;
+
+function checkVideoGate() {
+    if (!(location.origin && location.origin.startsWith('http'))) return;
+    fetch(PROXY_SERVER + VIDEO_STATUS_URL, { cache: 'no-store' })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (o) {
+            if (o && o.open === false) {
+                // replace 而不是 assign：别把"被踢出去"记进历史，用户按后退不会再回来
+                location.replace('/resources/timetable.html');
+            }
+        })
+        .catch(function () { /* 网络抖一下不算关闭，下次再查 */ });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkVideoGate);
+} else {
+    checkVideoGate();
+}
+setInterval(checkVideoGate, VIDEO_STATUS_INTERVAL);
+
+// 切回标签页立刻查一次，别让用户盯着一个已经该关闭的页面
+document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) checkVideoGate();
+});
+
 // 页面加载完即启用（所有 B 站页面都引入 common.js）
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initImgLightbox);
