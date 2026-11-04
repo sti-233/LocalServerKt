@@ -111,7 +111,17 @@ class ChatSelfChatTest {
         // getTarget 排序后拼接：两个人同名时就是 "tester-tester"
         val file = File("message", "history_tester-tester.json")
         assertTrue(file.isFile, "self chat should land in ${file.path}, dir=${File("message").list()?.toList()}")
-        val list = json.parseToJsonElement(file.readText()).jsonArray
-        assertEquals("archived", list.last().jsonObject["text"]?.jsonPrimitive?.content)
+
+        // 服务端是先 send 再 addHistory，客户端收到帧时归档可能还没落盘
+        // （getHistory 会先写入一条 System 占位消息），所以这里轮询等一下，别断言中间态
+        var last: String? = null
+        val deadline = System.currentTimeMillis() + 3000
+        while (System.currentTimeMillis() < deadline) {
+            val list = runCatching { json.parseToJsonElement(file.readText()).jsonArray }.getOrNull()
+            last = list?.lastOrNull()?.jsonObject?.get("text")?.jsonPrimitive?.content
+            if (last == "archived") break
+            Thread.sleep(50)
+        }
+        assertEquals("archived", last)
     }
 }

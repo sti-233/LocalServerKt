@@ -74,6 +74,24 @@ object Control {
                 call.respondText("Server already stopped")
             }
         }
+
+        // 临时放行视频模块：正课期间让普通用户也能看，**只到这节课结束**
+        // （阶段变化时 VideoGate.followTimetable 会自动收回，见 VideoGate.manualOpen）
+        get("/openVideo") {
+            if (VideoGate.open) {
+                // 本来就开着，不必留一个会过期的标记
+                call.respondText("Video is already open")
+            } else {
+                val changed = VideoGate.setManualOpen(true)
+                call.respondText(
+                    if (changed) "Video opened for this period" else "Video already open for this period"
+                )
+            }
+        }
+        get("/closeVideo") {
+            val changed = VideoGate.setManualOpen(false)
+            call.respondText(if (changed) "Video closed" else "Video already closed")
+        }
     }
 
     private fun Route.log() = get("/log") {

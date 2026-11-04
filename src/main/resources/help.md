@@ -26,6 +26,7 @@
 | `/log` | — | 最近日志文本 |
 | `/userList` | — | 用户列表 JSON |
 | `/start`、`/exit` | control | 切换 `Control.state`（只影响 auth 放行逻辑，不停服） |
+| `/openVideo`、`/closeVideo` | control | 临时放行 / 收回视频模块，**只对当节课有效**（下节课的上下课切换会自动收回） |
 | `/addUser?ip=&username=` | control | 添加白名单用户 |
 | `/removeUser?ip=` | control | 移除白名单用户 |
 | `/resetName?ip=&username=` | control | 改名 |
@@ -128,3 +129,12 @@
 `/resources/video/*` 整页 302 到课表页。**已经在播的页面**靠前端自救：`common.js` 每 20 秒（以及切回
 标签页时）请求 `GET /videoStatus`（永远可达、`no-store`，返回 `{"open":true|false}`），看到 `false`
 就 `location.replace('/resources/timetable.html')` 整页跳走，顺带终止媒体加载。
+
+**control 用户不受限制**：`Control.allowed()` 白名单里的 IP（与 `/canControl`、取流限速是同一份）
+即使在正课期间也能正常打开视频页与接口，`GET /videoStatus` 对他们恒回 `{"open":true}`，
+免得页面被自己的轮询踢走。判据集中在 `VideoGate.availableTo()`，拦截器与状态接口共用它。
+
+**临时给普通用户放行**：control 用户调 `GET /openVideo` 可以把视频模块对所有人放开，
+`GET /closeVideo` 立刻收回。放行**只到这节课结束** —— 课表阶段一变（上下课切换）
+`VideoGate.followTimetable()` 就自动清掉，避免一次放行忘关、之后一直开着。
+`/openVideo`、`/closeVideo` 都走 `control` 鉴权，返回纯文本（如 `Video opened for this period`）。
