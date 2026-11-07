@@ -25,12 +25,12 @@
         .topbar {
             display: flex;
             align-items: center;
-            gap: 12px;
             min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
             padding: 10px 18px;
             background: var(--card);
             border-bottom: 1px solid var(--border);
         }
+        .topbar.topbar > * + * { margin-left: 12px; }
         .topbar h1 { margin: 0; font-size: 18px; }
         .topbar .back {
             margin-left: auto;

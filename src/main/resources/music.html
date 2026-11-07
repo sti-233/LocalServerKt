@@ -24,13 +24,14 @@
             position: relative;
             display: flex;
             align-items: center;
-            gap: 12px;
             min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
             padding: 10px 18px;
             background: var(--card);
             border-bottom: 1px solid var(--border);
         }
-        .topbar-left { display: flex; align-items: center; gap: 12px; }
+        .topbar.topbar > * + * { margin-left: 12px; }
+        .topbar-left { display: flex; align-items: center; }
+        .topbar-left.topbar-left > * + * { margin-left: 12px; }
         .topbar h1 { margin: 0; font-size: 18px; white-space: nowrap; }
         .search-container {
             position: absolute;
@@ -120,10 +121,10 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 8px;
             padding: 6px 8px;
             font-size: 13px;
         }
+        .setting-row.setting-row > * + * { margin-left: 8px; }
         .number-input {
             width: 70px;
             height: 30px;
@@ -147,8 +148,10 @@
             color: var(--muted);
             line-height: 1.5;
         }
-        .quality-options { display: flex; flex-direction: column; gap: 6px; padding: 0 8px; }
-        .quality-option { display: flex; align-items: center; gap: 8px; }
+        .quality-options { display: flex; flex-direction: column; padding: 0 8px; }
+        .quality-options.quality-options > * + * { margin-top: 6px; }
+        .quality-option { display: flex; align-items: center; }
+        .quality-option.quality-option > * + * { margin-left: 8px; }
         .quality-option input[type="radio"] {
             width: 16px;
             height: 16px;
@@ -215,7 +218,8 @@
         .music-info { flex: 1; min-width: 0; }
         .music-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; word-break: break-word; }
         .music-artist { font-size: 13px; color: var(--muted); word-break: break-word; }
-        .music-actions { display: flex; gap: 8px; }
+        .music-actions { display: flex; }
+        .music-actions.music-actions > * + * { margin-left: 8px; }
         .play-btn {
             background: var(--accent);
             border: none;
@@ -328,7 +332,8 @@
 
         /* 小屏适配：绝对定位的搜索框与标题组会重叠，改为独立整行 */
         @media (max-width: 600px) {
-            .topbar { gap: 8px; }
+            /* 小屏顶栏间距从 12px 收到 8px。gap 在 Chrome 80 不生效，改成子项 margin 覆盖 */
+            .topbar.topbar > * + * { margin-left: 8px; }
             .search-container {
                 position: static;
                 left: auto;

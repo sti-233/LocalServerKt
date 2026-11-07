@@ -20,17 +20,18 @@ body {
     position: relative;
     display: flex;
     align-items: center;
-    gap: 12px;
     min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
     padding: 10px 18px;
     background: var(--card);
     border-bottom: 1px solid var(--border);
     flex-wrap: wrap;
 }
+.topbar.topbar > * { margin-right: 12px; }
 .topbar h1 { margin: 0; font-size: 18px; white-space: nowrap; }
 /* 顶栏 BiliBili 图标（favicon.ico 直接当 logo 用） */
 .bili-logo { width: 28px; height: 28px; object-fit: contain; flex: 0 0 auto; }
-.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-left { display: flex; align-items: center; }
+.topbar-left.topbar-left > * + * { margin-left: 12px; }
 /* 设置入口靠右（search-container 是绝对定位，不占流内空间） */
 .topbar .nav-setting { margin-left: auto; }
 
@@ -173,7 +174,8 @@ body {
     padding: 1px 5px;
     border-radius: 4px;
 }
-.vcard .body { padding: 9px 10px 11px; display: flex; flex-direction: column; gap: 6px; }
+.vcard .body { padding: 9px 10px 11px; display: flex; flex-direction: column; }
+.vcard .body.body > * + * { margin-top: 6px; }
 .vcard .title {
     font-size: 13.5px;
     line-height: 1.4;
@@ -184,8 +186,10 @@ body {
     overflow: hidden;
     word-break: break-word;
 }
-.vcard .meta { font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
-.vcard .meta .up { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.vcard .meta { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; }
+.vcard .meta.meta > * { margin-right: 10px; }
+.vcard .meta .up { display: inline-flex; align-items: center; min-width: 0; }
+.vcard .meta .up.up > * + * { margin-left: 5px; }
 .vcard .meta .up img {
     width: 18px; height: 18px; border-radius: 50%;
     object-fit: cover; flex: 0 0 auto;
@@ -197,17 +201,19 @@ body {
 
 .video-title { font-size: 19px; font-weight: 700; margin: 14px 0 8px; line-height: 1.45; word-break: break-word; }
 
-.up-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.up-row { display: flex; align-items: center; margin-bottom: 12px; }
+.up-row.up-row > * + * { margin-left: 10px; }
 .up-row img { width: 42px; height: 42px; border-radius: 50%; object-fit: cover; background: var(--border); }
 
 .stat-row {
-    display: flex; flex-wrap: wrap; gap: 16px;
+    display: flex; flex-wrap: wrap;
     font-size: 13px; color: var(--muted);
     padding: 10px 0;
     border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
     margin-bottom: 12px;
 }
+.stat-row.stat-row > * { margin-right: 16px; }
 
 .desc {
     font-size: 13px;
@@ -218,7 +224,8 @@ body {
 }
 
 /* 分P 列表 */
-.pages { display: flex; flex-wrap: wrap; gap: 8px; }
+.pages { display: flex; flex-wrap: wrap; }
+.pages.pages > * { margin-right: 8px; }
 .page-chip {
     border: 1px solid var(--border);
     background: var(--bg);
@@ -236,9 +243,10 @@ body {
 
 /* ---------- 评论 ---------- */
 .cmt-toolbar {
-    display: flex; align-items: center; gap: 10px;
+    display: flex; align-items: center;
     flex-wrap: wrap; margin-bottom: 12px;
 }
+.cmt-toolbar.cmt-toolbar > * { margin-right: 10px; }
 .select, .input {
     padding: 7px 10px;
     border: 1px solid var(--border);
@@ -266,10 +274,10 @@ body {
 
 .cmt {
     display: flex;
-    gap: 11px;
     padding: 14px 0;
     border-bottom: 1px solid var(--border);
 }
+.cmt.cmt > * + * { margin-left: 11px; }
 .cmt:last-child { border-bottom: none; }
 .cmt > img.avatar {
     width: 40px; height: 40px;
@@ -279,11 +287,13 @@ body {
     background: var(--border);
 }
 .cmt .cbody { flex: 1; min-width: 0; }
-.cmt .chead { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 4px; }
+.cmt .chead { display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.cmt .chead.chead > * { margin-right: 7px; }
 .cmt .uname { font-size: 13px; font-weight: 600; color: var(--link); }
 .cmt .time { font-size: 12px; color: var(--muted); }
 .cmt .text { font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.cmt .cfoot { font-size: 12px; color: var(--muted); margin-top: 5px; display: flex; gap: 14px; }
+.cmt .cfoot { font-size: 12px; color: var(--muted); margin-top: 5px; display: flex; }
+.cmt .cfoot.cfoot > * + * { margin-left: 14px; }
 /* 图片评论缩略图行：位于正文下方，点击由全局 lightbox（data-lb）放大预览。
    用 margin 而非 flex gap 排版，兼容 Chrome 80（<84 不支持 flex gap）。 */
 .cmt-pics {
@@ -320,20 +330,21 @@ body {
     border-radius: 8px;
     display: flex;
     flex-direction: column;
-    gap: 9px;
 }
+.sub-cmts.sub-cmts > * + * { margin-top: 9px; }
 .sub-cmts .text { font-size: 13px; }
 
-.pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px; }
+.pager { display: flex; align-items: center; justify-content: center; margin-top: 16px; }
+.pager.pager > * + * { margin-left: 12px; }
 .pager .info { font-size: 13px; color: var(--muted); }
 
 /* ---------- 用户空间 ---------- */
 .space-header {
     display: flex;
     align-items: center;
-    gap: 16px;
     flex-wrap: wrap;
 }
+.space-header.space-header > * { margin-right: 16px; }
 .space-header img.face {
     width: 82px; height: 82px;
     border-radius: 50%;
@@ -343,9 +354,11 @@ body {
 }
 .space-header .sname { font-size: 20px; font-weight: 700; margin-bottom: 5px; }
 .space-header .ssign { font-size: 13px; color: var(--muted); line-height: 1.5; max-width: 620px; word-break: break-word; }
-.chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.chips { display: flex; flex-wrap: wrap; margin-top: 8px; }
+.chips.chips > * { margin-right: 7px; }
 
-.kv { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 14px; }
+.kv { display: flex; flex-wrap: wrap; margin-top: 14px; }
+.kv.kv > * { margin-right: 22px; }
 .kv .item { font-size: 13px; }
 .kv .item b { display: block; font-size: 16px; margin-bottom: 2px; }
 .kv .item span { color: var(--muted); font-size: 12px; }
@@ -378,10 +391,10 @@ body {
 /* ---------- 搜索类型切换（视频 / 用户） ---------- */
 .tabs {
     display: flex;
-    gap: 6px;
     margin-bottom: 14px;
     border-bottom: 1px solid var(--border);
 }
+.tabs.tabs > * + * { margin-left: 6px; }
 .tab {
     padding: 9px 16px;
     font-size: 14px;
@@ -421,7 +434,6 @@ body {
 }
 .ucard {
     display: flex;
-    gap: 13px;
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -429,6 +441,7 @@ body {
     cursor: pointer;
     transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
 }
+.ucard.ucard > * + * { margin-left: 13px; }
 .ucard:hover {
     transform: translateY(-3px);
     box-shadow: 0 8px 22px rgba(35, 42, 59, .1);
@@ -448,11 +461,11 @@ body {
     font-weight: 700;
     display: flex;
     align-items: center;
-    gap: 6px;
     flex-wrap: wrap;
     margin-bottom: 4px;
     word-break: break-word;
 }
+.ucard .uname.uname > * { margin-right: 6px; }
 .ucard .usign {
     font-size: 12.5px;
     color: var(--muted);
@@ -466,19 +479,19 @@ body {
 }
 .ucard .ustat {
     display: flex;
-    gap: 14px;
     font-size: 12.5px;
     color: var(--muted);
     flex-wrap: wrap;
 }
+.ucard .ustat.ustat > * { margin-right: 14px; }
 .ucard .ustat b { color: var(--text); font-weight: 600; }
 /* 用户搜索结果里附带的投稿预览小图 */
 .ucard .uprev {
     display: flex;
-    gap: 6px;
     margin-top: 9px;
     overflow: hidden;
 }
+.ucard .uprev.uprev > * + * { margin-left: 6px; }
 .ucard .uprev img {
     width: 56px; height: 32px;
     object-fit: cover;
@@ -515,9 +528,9 @@ body {
 .dyn-head {
     display: flex;
     align-items: center;
-    gap: 9px;
     margin-bottom: 9px;
 }
+.dyn-head.dyn-head > * + * { margin-left: 9px; }
 .dyn-face {
     width: 38px; height: 38px;
     border-radius: 50%;
@@ -553,7 +566,6 @@ body {
 /* 动态里附带的投稿视频 */
 .dyn-archive {
     display: flex;
-    gap: 10px;
     margin-top: 10px;
     padding: 8px;
     background: var(--bg);
@@ -561,6 +573,7 @@ body {
     cursor: pointer;
     align-items: center;
 }
+.dyn-archive.dyn-archive > * + * { margin-left: 10px; }
 .dyn-archive:hover { background: var(--accent-soft); }
 .dyn-archive img {
     width: 116px;
@@ -592,11 +605,11 @@ body {
 
 .dyn-foot {
     display: flex;
-    gap: 20px;
     font-size: 12.5px;
     color: var(--muted);
     margin-top: 10px;
 }
+.dyn-foot.dyn-foot > * + * { margin-left: 20px; }
 
 @media (max-width: 640px) {
     .search-container { position: static; transform: none; width: 100%; order: 3; }

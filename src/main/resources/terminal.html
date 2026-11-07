@@ -22,12 +22,12 @@
         .topbar {
             display: flex;
             align-items: center;
-            gap: 10px;
             min-height: 56px; /* 统一顶栏 56px（含 border）；其他页同值 */
             padding: 10px 16px;
             background: var(--card);
             border-bottom: 1px solid var(--border);
         }
+        .topbar.topbar > * + * { margin-left: 10px; }
         .topbar h1 { margin: 0; font-size: 16px; font-weight: 600; }
         .topbar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
         .topbar .dot.ok { background: var(--green); }
@@ -60,11 +60,11 @@
         .inputbar {
             display: flex;
             align-items: center;
-            gap: 8px;
             padding: 10px 16px;
             background: var(--card);
             border-top: 1px solid var(--border);
         }
+        .inputbar.inputbar > * + * { margin-left: 8px; }
         .inputbar .ps1 { color: var(--green); font-weight: 600; }
         #cmd {
             flex: 1;
