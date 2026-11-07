@@ -111,12 +111,17 @@ fun main() {
                 cacheControl { resource ->
                     // HTML / JSON 用 no-cache：允许存但每次都要带 If-Modified-Since 来验，
                     // 改动页面后刷新立刻生效，不必等 max-age 过期。
-                    // JS/CSS 用长缓存 + must-revalidate 兜底：这些文件很少变，且改了就换版本。
+                    // JS/CSS/图片用长缓存 + must-revalidate 兜底：这些文件很少变，改了就换文件名。
+                    // 图片也归进这一类，是因为 environment.html 那条「图片二次加载走缓存」的探测
+                    // 靠的就是它 —— 若图片仍走 no-cache，第二次只会拿到 304，量出来的传输量不是 0。
                     val name = resource.path.substringAfterLast('/').lowercase()
                     when {
                         name.endsWith(".html") || name.endsWith(".json") || name.endsWith(".md") ->
                             listOf(CacheControl.NoCache(null))
-                        name.endsWith(".js") || name.endsWith(".css") ->
+                        name.endsWith(".js") || name.endsWith(".css") ||
+                            name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") ||
+                            name.endsWith(".gif") || name.endsWith(".webp") || name.endsWith(".avif") ||
+                            name.endsWith(".svg") || name.endsWith(".ico") ->
                             listOf(CacheControl.MaxAge(7 * 24 * 3600, mustRevalidate = true))
                         else -> listOf(CacheControl.NoCache(null))
                     }

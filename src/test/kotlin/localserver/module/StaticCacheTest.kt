@@ -33,7 +33,10 @@ class StaticCacheTest {
                 when {
                     name.endsWith(".html") || name.endsWith(".json") || name.endsWith(".md") ->
                         listOf(CacheControl.NoCache(null))
-                    name.endsWith(".js") || name.endsWith(".css") ->
+                    name.endsWith(".js") || name.endsWith(".css") ||
+                        name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") ||
+                        name.endsWith(".gif") || name.endsWith(".webp") || name.endsWith(".avif") ||
+                        name.endsWith(".svg") || name.endsWith(".ico") ->
                         listOf(CacheControl.MaxAge(7 * 24 * 3600, mustRevalidate = true))
                     else -> listOf(CacheControl.NoCache(null))
                 }
@@ -110,5 +113,26 @@ class StaticCacheTest {
         }
         assertEquals(HttpStatusCode.OK, res.status, "a stale If-Modified-Since must not short circuit the body")
         assertTrue(res.bodyAsText().isNotEmpty())
+    }
+
+    @Test
+    fun `images get the same long max age so a second load costs nothing`() = testApplication {
+        application { routing { staticWithCache() } }
+
+        // environment.html 的「图片二次加载走缓存」探测依赖这条：图片若仍走 no-cache，
+        // 第二次只会拿到 304，transferSize 不为 0，探测就会误报「强缓存没生效」。
+        val res = client.get("/resources/lib/img/probe.png")
+        assertEquals(HttpStatusCode.OK, res.status)
+
+        val cacheControl = res.headers[HttpHeaders.CacheControl].orEmpty()
+        assertTrue(
+            cacheControl.contains("max-age=604800"),
+            "images should be strongly cacheable, got: $cacheControl"
+        )
+        assertTrue(
+            !cacheControl.contains("no-cache") && !cacheControl.contains("no-store"),
+            "images must not be revalidated on every load, got: $cacheControl"
+        )
+        assertNotNull(res.headers[HttpHeaders.LastModified], "images still need Last-Modified for revalidation")
     }
 }
