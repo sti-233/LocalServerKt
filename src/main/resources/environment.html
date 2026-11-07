@@ -6,6 +6,7 @@
     <title>环境检测</title>
     <link rel="stylesheet" href="/resources/lib/theme.css">
     <script src="/resources/lib/theme.js"></script>
+    <script src="/resources/lib/idb-store.js"></script>
     <style>
         /*
          * 这一页本身要用最保守的写法：它的职责就是告诉用户"当前浏览器缺什么"，
@@ -143,6 +144,21 @@
 
         .section { margin: 22px 0 8px; font-size: 15px; }
 
+        /* 上次检测对比：新增的不可用项要一眼看到 */
+        .lastrun {
+            margin: 0 0 12px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+            color: var(--text-2);
+            font-size: 13px;
+            line-height: 1.7;
+        }
+        .lastrun.hidden { display: none; }
+        .lastrun b { color: var(--text); }
+        .lastrun .regress { color: var(--danger); font-weight: 600; }
+
         .json {
             margin: 0;
             padding: 12px 14px;
@@ -183,6 +199,8 @@
         <span class="use none">无关</span>本项目没用到，仅供参考。
         所以看红叉数量没意义，顶栏那只「影响本项目且不可用」才是要处理的。
     </div>
+
+    <div class="lastrun hidden" id="lastRun"></div>
 
     <div id="groups"></div>
 
@@ -332,7 +350,7 @@
                     id: 'sessionStorage',
                     use: 'dep',
                     label: 'sessionStorage',
-                    hint: 'video 页的后退恢复快照（pageCache）用它',
+                    hint: 'video 页用它存标签页 ID，把 IndexedDB 快照按标签页隔开',
                     run: function (done) {
                         try {
                             sessionStorage.setItem('ls_envtest', '1');
@@ -346,9 +364,9 @@
                 },
                 {
                     id: 'indexedDB',
-                    use: 'none',
+                    use: 'dep',
                     label: 'IndexedDB',
-                    hint: '本项目没用；依赖它的脚本在隐私模式下会失败',
+                    hint: 'lib/idb-store.js 的底座：聊天历史、AI 会话、播放进度、列表快照、歌词、图片字节、本页报告；不可用时全部退化为内存',
                     run: function (done) {
                         if (!window.indexedDB) { done(false); return; }
                         try {
@@ -1041,9 +1059,87 @@
     var onlyBadEl = document.getElementById('onlyBad');
     var rerunEl = document.getElementById('rerun');
     var copyEl = document.getElementById('copyJson');
+    var lastRunEl = document.getElementById('lastRun');
 
     var state = [];      // [{ title, note, rows: [{ id, label, ok, detail, rowEl }] }]
     var jsonText = '';
+
+    /* ===== 检测结果留档（IndexedDB）=====
+       为什么留档：这页的用法就是"换了浏览器/改了代码之后跑一遍看看有没有退化"。
+       只把 JSON 摆在页面上，用户得自己复制粘贴两份来比 —— 留一份上一次的，
+       就能直接在页面顶部告诉他"这次多了哪几项不可用"。 */
+    var ENV_KEY = 'env_report';
+    var prevReport = null;   // 上一次（本机）保存的报告，用来做对比
+
+    function loadPrevReport() {
+        if (!window.IdbStore) return;
+        IdbStore.kvGet(ENV_KEY).then(function (v) {
+            if (!v || !v.report) return;
+            // 本轮检测已经出结果了（kvGet 是异步的，可能比探测还慢）：
+            // 这时 settleJson 已把本轮存成新基准，不能再拿旧报告覆盖 prevReport，
+            // 否则用户点「重新检测」会比错对象。
+            if (jsonText) return;
+            prevReport = v.report;
+            renderLastRun(null);   // 先只显示"上次是什么时候跑的"
+        }, function () {});
+    }
+
+    /* 把某份报告压成 id → ok 的映射，便于逐项对比 */
+    function okMap(report) {
+        var map = {};
+        if (!report || !report.groups) return map;
+        for (var i = 0; i < report.groups.length; i++) {
+            var g = report.groups[i];
+            for (var j = 0; j < g.items.length; j++) {
+                map[g.items[j].id] = g.items[j];
+            }
+        }
+        return map;
+    }
+
+    /* 对比上次与本轮，只讲两件有用的事：新坏的、修好的 */
+    function renderLastRun(cur) {
+        if (!prevReport) { lastRunEl.className = 'lastrun hidden'; return; }
+        var when = prevReport.generatedAt ? String(prevReport.generatedAt).replace('T', ' ').slice(0, 19) : '未知时间';
+        var html = '上次检测：<b>' + esc(when) + '</b>';
+        if (prevReport.url) html += '（' + esc(shortUrl(prevReport.url)) + '）';
+
+        if (cur) {
+            var before = okMap(prevReport);
+            var after = okMap(cur);
+            var broke = [], fixed = [];
+            for (var id in after) {
+                if (!Object.prototype.hasOwnProperty.call(after, id)) continue;
+                var a = after[id], b = before[id];
+                // 只在"明确可用/不可用"之间比较；未知项不参与，免得噪声
+                if (b && b.ok === true && a.ok === false) broke.push(a.label || id);
+                if (b && b.ok === false && a.ok === true) fixed.push(a.label || id);
+            }
+            if (broke.length) {
+                html += '<br><span class="regress">本次新不可用 ' + broke.length + ' 项：' +
+                    esc(broke.slice(0, 6).join('、')) + (broke.length > 6 ? '…' : '') + '</span>';
+            }
+            if (fixed.length) {
+                html += '<br>本次恢复 ' + fixed.length + ' 项：' +
+                    esc(fixed.slice(0, 6).join('、')) + (fixed.length > 6 ? '…' : '') + '';
+            }
+            if (!broke.length && !fixed.length) html += '<br>与上次相比没有变化。';
+        }
+        lastRunEl.innerHTML = html;
+        lastRunEl.className = 'lastrun';
+    }
+
+    function shortUrl(u) {
+        try {
+            var x = new URL(u);
+            return x.host + x.pathname;
+        } catch (e) { return u; }
+    }
+
+    function esc(v) {
+        return String(v == null ? '' : v)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
 
     uaEl.textContent = navigator.userAgent;
 
@@ -1266,8 +1362,15 @@
             setTimeout(settleJson, 120);
             return;
         }
-        jsonText = JSON.stringify(buildJson(), null, 2);
+        var report = buildJson();
+        jsonText = JSON.stringify(report, null, 2);
         jsonEl.textContent = jsonText;
+        // 留档：先对比上一次，再把本轮存成新的"上一次"
+        renderLastRun(report);
+        if (window.IdbStore) {
+            IdbStore.kvSet(ENV_KEY, { report: report, savedAt: Date.now() });
+        }
+        prevReport = report;
     }
 
     function copyText(text, cb) {
@@ -1323,6 +1426,8 @@
             }, 1400);
         });
     });
+
+    loadPrevReport();
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', start);

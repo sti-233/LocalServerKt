@@ -10,6 +10,7 @@
     <script src="/resources/lib/katex/katex.min.js"></script>
     <script src="/resources/lib/katex/auto-render.min.js"></script>
     <script src="/resources/lib/marked/marked.min.js"></script>
+    <script src="/resources/lib/idb-store.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -756,10 +757,63 @@
         newConvBtn.addEventListener('click', function () { newConversation(); });
         document.getElementById('anonConvBtn').addEventListener('click', function () { newAnonymousConversation(); });
 
+        /* ===== 本地缓存（IndexedDB）=====
+           两个用途：
+             1) 会话列表先画本地那份，再让服务端覆盖 —— 打开页面时侧边栏不会先空一下；
+             2) 每个会话的消息单独存一条，切回已经看过的会话时能立刻出内容。
+           所有缓存都只当加速层：读不到就等网络，写失败就下次再写，绝不影响主流程。
+           匿名会话刻意**不缓存**（服务端的语义是"关闭即销毁"，本地留一份就破约定了）。
+        ===== */
+        const AI_CONV_STORE = 'aiConvs';
+        const AI_LIST_KEY = 'ai_conv_list';
+        const AI_CONV_MAX_ROWS = 40;   // 最多留 40 个会话的消息副本（每个可能很大）
+
+        /* 消息数组指纹：判断本地副本与服务端是否一致，一致就不重绘（重绘会重排 markdown/KaTeX） */
+        function aiFingerprint(items) {
+            if (!Array.isArray(items) || !items.length) return '0';
+            var h = items.length + ':';
+            for (var i = 0; i < items.length; i++) {
+                var m = items[i] || {};
+                h += (m.role || '') + '\u0001' + ((m.content || '').length) + '\u0001'
+                    + ((m.reasoning_content || '').length) + '\u0001'
+                    + ((m.tool_calls && m.tool_calls.length) || 0) + '\u0001'
+                    + (m.tool_call_id || '') + ';';
+            }
+            return h;
+        }
+
+        /* 只留最近 AI_CONV_MAX_ROWS 个会话副本：AI 消息体量比聊天记录大得多，更要控量 */
+        async function pruneAiConvCache() {
+            if (!window.IdbStore) return;
+            var rows = await IdbStore.getAll(AI_CONV_STORE, {index: 'savedAt', direction: 'prev', limit: AI_CONV_MAX_ROWS + 20});
+            if (!rows || rows.length <= AI_CONV_MAX_ROWS) return;
+            for (var i = AI_CONV_MAX_ROWS; i < rows.length; i++) IdbStore.del(AI_CONV_STORE, rows[i].id);
+        }
+
+        async function cacheConvMessages(id, name, anon, messages) {
+            if (!window.IdbStore || !id || anon) return;
+            await IdbStore.set(AI_CONV_STORE, {
+                id: id,
+                name: name || '',
+                messages: messages || [],
+                savedAt: Date.now()
+            });
+        }
+
         /* ===== 会话列表（侧边栏）=====
            数据来自 /ai/conversations：{items:[{id,name,lastTime,count,preview}], active}
            按最后一条消息时间从新到旧排序（服务端已排好序） */
         async function loadConversations() {
+            var cached = null;
+            if (window.IdbStore) {
+                cached = await IdbStore.soon(IdbStore.kvGet(AI_LIST_KEY), 250);
+                // 本地那份先上，侧边栏立刻有内容；服务端回来再覆盖（列表点错了也无所谓，切过去会重拉）
+                if (cached && cached.items && cached.items.length) {
+                    renderConversations(cached.items);
+                    if (!currentConvId && cached.active) currentConvId = cached.active;
+                    syncActiveItem();
+                }
+            }
             try {
                 const resp = await fetch('/ai/conversations');
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -768,8 +822,16 @@
                 renderConversations(items);
                 if (!currentConvId && data.active) currentConvId = data.active;
                 syncActiveItem();
+                // 列表本身很小（id/名字/时间），存起来不心疼；过期时间给一天，够下次打开用。
+                // 匿名会话要剔掉：它只活在服务端内存里，刷新后就不存在了，
+                // 留在缓存里会让侧边栏出现一个点开必报错的条目。
+                if (window.IdbStore) {
+                    var keep = items.filter(function (it) { return !it.anonymous; });
+                    IdbStore.kvSet(AI_LIST_KEY, {items: keep, active: data.active || ''}, 24 * 3600 * 1000);
+                }
             } catch (err) {
                 debugLogWrite('error', '[loadConversations] 失败:', err);
+                // 网络挂了也不清缓存：至少侧边栏还能点开看过的会话
             }
         }
 
@@ -833,21 +895,49 @@
             }
         }
 
-        /* 切换会话：拉取该会话消息并重绘 */
-        function switchConversation(id) {
+        /* 切换会话：先画本地副本（有的话），再拉服务端对齐
+           为什么要 this 而不是直接 fetch：切回一个几万字的会话时，
+           服务端要读 JSON + 反序列化，前端还要重排 markdown/KaTeX，
+           两步加起来是肉眼可见的空白。本地副本能把第一步省掉。 */
+        let switchGen = 0;   // 切会话的代际令牌（连点两次时，先发起的那次自动作废）
+
+        async function switchConversation(id) {
             if (!id) return;
             currentConvId = id;
+            const gen = ++switchGen;
             syncActiveItem();
+
+            var local = null;
+            if (window.IdbStore) {
+                local = await IdbStore.soon(IdbStore.get(AI_CONV_STORE, id), 250);
+                // 这期间用户又点了别的会话 / 进了只读分享页，就别画了
+                if (gen !== switchGen || currentConvId !== id || readonly) return;
+                if (local && local.messages) {
+                    currentConvName = local.name || '';
+                    // 能落进本地副本的一定是非匿名会话（cacheConvMessages 会跳过匿名），
+                    // 顺手把上一个会话留下的匿名标记清掉，避免顶栏"分享"按钮继续隐身
+                    if (currentAnon) { currentAnon = false; updateShareBtn(); }
+                    renderMessages(local.messages, '这个会话还没有消息。');
+                    syncActiveItem();
+                }
+            }
+
             fetch('/ai/conversation?id=' + encodeURIComponent(id))
                 .then(function (r) {
                     if (!r.ok) throw new Error('HTTP ' + r.status);
                     return r.json();
                 })
                 .then(function (conv) {
+                    if (gen !== switchGen || currentConvId !== id || readonly) return;   // 已经切走了
                     currentConvName = conv.name || '';
                     currentAnon = !!conv.anonymous;
                     updateShareBtn();
-                    renderConversationMessages(conv.messages || []);
+                    var msgs = conv.messages || [];
+                    // 内容没变就不重绘：省掉一次全量 DOM 重建与 markdown 重排
+                    if (!local || aiFingerprint(local.messages) !== aiFingerprint(msgs)) {
+                        renderConversationMessages(msgs);
+                    }
+                    cacheConvMessages(id, currentConvName, currentAnon, msgs).then(pruneAiConvCache);
                     loadConversations();
                 })
                 .catch(function (err) { debugLogWrite('error', '[switchConversation] 失败:', err); });
@@ -1017,6 +1107,14 @@
                 })
                 .then(function () {
                     if (id === currentConvId) currentConvName = name.trim();
+                    // 本地副本的名字跟着改，否则下次切回来侧边栏/顶栏还是旧名
+                    if (window.IdbStore) {
+                        IdbStore.get(AI_CONV_STORE, id).then(function (row) {
+                            if (!row) return;
+                            row.name = name.trim();
+                            IdbStore.set(AI_CONV_STORE, row);
+                        });
+                    }
                     loadConversations();
                 })
                 .catch(function (err) { debugLogWrite('error', '[renameConversation] 失败:', err); });
@@ -1039,6 +1137,8 @@
                         currentConvId = '';
                         chatContainer.innerHTML = '<div class="message system">会话已删除。</div>';
                     }
+                    // 服务端删了就删；本地副本必须一起清，否则下次打开还会闪一下这个会话
+                    if (window.IdbStore) IdbStore.del(AI_CONV_STORE, id);
                     loadConversations();
                 })
                 .catch(function (err) { debugLogWrite('error', '[deleteConversation] 失败:', err); });
@@ -1542,10 +1642,20 @@
             if (readonly) return;
             debugLogWrite('log', '[clearHistory] 清除对话');
             var url = '/ai/clear' + (currentConvId ? '?conv=' + encodeURIComponent(currentConvId) : '');
+            var convId = currentConvId;
             fetch(url, { method: 'POST' })
                 .then(() => {
                     renderMessages([], '对话已清除。');
                     autoScrollEnabled = true;
+                    // 本地副本一并清空（置空而不是删行：会话还在，只是没有消息了）
+                    if (window.IdbStore && convId) {
+                        IdbStore.get(AI_CONV_STORE, convId).then(function (row) {
+                            if (!row) return;
+                            row.messages = [];
+                            row.savedAt = Date.now();
+                            IdbStore.set(AI_CONV_STORE, row);
+                        });
+                    }
                     loadConversations();
                 })
                 .catch(err => debugLogWrite('error', '[clearHistory] 失败:', err));
@@ -1632,15 +1742,33 @@
         }
 
         /* ===== 页面加载时从服务端恢复历史对话 ===== */
-        function loadHistory() {
+        /* 带 conv 时先画本地副本（与 switchConversation 同一套思路）；
+           不带 conv（服务端按 IP 的活动会话）没有稳定键可缓存，直接拉。 */
+        async function loadHistory() {
             var url = '/ai/history' + (currentConvId ? '?conv=' + encodeURIComponent(currentConvId) : '');
+            var convId = currentConvId;
+            var local = null;
+            if (window.IdbStore && convId) {
+                local = await IdbStore.soon(IdbStore.get(AI_CONV_STORE, convId), 250);
+                if (local && local.messages && local.messages.length) {
+                    if (currentConvId !== convId || readonly) return;
+                    // 本地有副本说明这是落过盘的普通会话，匿名标记必须清掉
+                    if (currentAnon) { currentAnon = false; updateShareBtn(); }
+                    renderMessages(local.messages, '暂无历史消息。');
+                }
+            }
             fetch(url)
                 .then(r => {
                     if (!r.ok) throw new Error('HTTP ' + r.status);
                     return r.json();
                 })
                 .then(items => {
-                    renderMessages(items, '暂无历史消息。');
+                    if (convId && currentConvId !== convId) return;   // 已经切走了
+                    // 与本地副本一致就不重绘（markdown/KaTeX 重排不便宜）
+                    if (!local || aiFingerprint(local.messages) !== aiFingerprint(items)) {
+                        renderMessages(items, '暂无历史消息。');
+                    }
+                    if (convId) cacheConvMessages(convId, currentConvName, currentAnon, items).then(pruneAiConvCache);
                     debugLogWrite('log', '[loadHistory] 已恢复', (items || []).length, '条消息');
                 })
                 .catch(err => debugLogWrite('error', '[loadHistory] 失败:', err));
@@ -1805,6 +1933,24 @@
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                 }
                 debugLogWrite('log', '[finalize] 完成，思考长度:', thinkingBuffer.length, '正文长度:', responseBuffer.length);
+                // 把这一轮追加进本地副本：下次打开这个会话能立刻看到最新几条。
+                // 工具调用/时间戳没完整还原，所以指纹会和服务端不一致，切过去时会再对齐一次（无害）。
+                if (!readonly && !currentAnon && currentConvId && window.IdbStore) {
+                    const convId = currentConvId;
+                    const turnTime = new Date().toTimeString().slice(0, 5);
+                    IdbStore.get(AI_CONV_STORE, convId).then(function (row) {
+                        if (!row || !row.messages) return;   // 本地没副本就不用管，服务端那份是权威
+                        row.messages.push({role: 'user', content: text, time: turnTime});
+                        row.messages.push({
+                            role: 'assistant',
+                            content: responseBuffer,
+                            reasoning_content: thinkingBuffer,
+                            time: turnTime
+                        });
+                        row.savedAt = Date.now();
+                        IdbStore.set(AI_CONV_STORE, row);
+                    });
+                }
             }
 
             let streamEnded = false;

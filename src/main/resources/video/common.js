@@ -159,27 +159,59 @@ function cameBack() {
 }
 
 /**
- * 会话级快照，只活在这个标签页里，关掉就没了。
- * 不用 PageStore：列表动辄几十条，远超单个 Cookie 的 4KB。
- * 不用 localStorage：隐私模式下 setItem 会抛异常（见 CLAUDE.md 的约定）。
+ * 列表快照的存活时间。半小时内退回来/恢复标签页还能照原样画出来，
+ * 再久就当过时了 —— 推荐流本来就该换一批。
  */
-const pageCache = {
-    get: function (key) {
-        try {
-            const raw = sessionStorage.getItem(key);
-            return raw ? JSON.parse(raw) : null;
-        } catch (e) {
-            return null;
+const SNAP_TTL = 30 * 60 * 1000;
+
+/**
+ * 快照存取（IndexedDB 的 kv store，带 TTL）。
+ *
+ * 为什么从 sessionStorage 换成 IndexedDB：
+ *   1. sessionStorage 只是"这个标签页的一份拷贝"，用户刷新/恢复标签页/新开一个标签页
+ *      再后退时快照都没了，白白重新请求一次接口、列表还换了一批；
+ *   2. 它只有 5MB 且按字符串存，推荐流翻几页（每页 12 条带标题封面 UP 主）就上兆，
+ *      写失败是静默的 —— 表现就是"偶尔能恢复、偶尔不能"，最难查的那种 bug；
+ *   3. IndexedDB 有 expiresAt 和排序索引，按时间整批淘汰不用自己扫全表。
+ *
+ * 不可用时（隐私模式）IdbStore 会退化成内存 Map，行为与"没有快照"一致，
+ * 调用方不需要判断 —— 只是退回来会重新请求一次。
+ */
+function snapGet(key) {
+    if (!window.IdbStore) return Promise.resolve(null);
+    // soon()：快照只是"省一次请求"，最多等 300ms；等不到就照常回源，
+    // 否则隐私模式下 open 的 1.5 秒超时会让"后退恢复"反而比重新请求还慢
+    return IdbStore.soon(IdbStore.kvGet(key), 300).then(v => v || null, () => null);
+}
+
+function snapSet(key, value) {
+    if (!window.IdbStore) return Promise.resolve(false);
+    return IdbStore.kvSet(key, value, SNAP_TTL).then(v => !!v, () => false);
+}
+
+/**
+ * 给快照键加上"本次标签页"的后缀。
+ *
+ * IndexedDB 是全站共享的（不像 sessionStorage 天然按标签页隔离），
+ * 两个标签页同时开着同一个页面时，谁后写谁覆盖，A 标签页后退可能恢复成
+ * B 标签页的列表。用 sessionStorage 里的一枚随机 ID 做后缀就恢复了隔离：
+ * sessionStorage 恰好是"按标签页 + 刷新后仍在 + 关标签页即消失"的语义。
+ * 读不到 sessionStorage（隐私模式）时退化为共享键 —— 只是可能拿到别人的列表，
+ * 仍然比"没有快照"好。
+ */
+function snapKey(key) {
+    let tab = '';
+    try {
+        tab = sessionStorage.getItem('ls_tab_id');
+        if (!tab) {
+            tab = String(Date.now()).slice(-6) + Math.random().toString(36).slice(2, 8);
+            sessionStorage.setItem('ls_tab_id', tab);
         }
-    },
-    set: function (key, value) {
-        try {
-            sessionStorage.setItem(key, JSON.stringify(value));
-        } catch (e) {
-            /* 存不下就算了，只是退回来会重新拉一次 */
-        }
+    } catch (e) {
+        return key;
     }
-};
+    return key + '@' + tab;
+}
 
 /**
  * 生成一张视频卡片（封面 + 时长 + 标题 + UP + 播放量）。

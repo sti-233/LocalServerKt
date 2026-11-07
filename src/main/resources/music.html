@@ -6,6 +6,7 @@
     <link rel="stylesheet" href="/resources/lib/theme.css">
     <script src="/resources/lib/theme.js"></script>
     <script src="/resources/config.js"></script>
+    <script src="/resources/lib/idb-store.js"></script>
     <style>
         * { box-sizing: border-box; }
         html, body { height: 100%; }
@@ -521,7 +522,24 @@
         }
 
         // 获取歌词
+        //
+        // 缓存理由：歌词是一旦发布就基本不变的静态文本，而 /getLyrics 每次都要
+        // 走一遍网易云 eapi（加密 POST + 解密），局域网里也要几百毫秒。
+        // 同一个歌点开两次歌词不该重新拉一遍 —— 这里存 30 天。
+        //
+        // 注意：**只有歌词能缓存**。getMusicUrl 返回的是带签名的直链，会过期，
+        // 缓存下来只会播"取流出错"，所以那个函数刻意不加缓存。
+        const LYRICS_TTL = 30 * 24 * 3600 * 1000;
+        function lyricsKey(songId) { return 'lyrics:' + songId; }
+
         async function getLyrics(songId) {
+            // 1) 本地
+            if (window.IdbStore) {
+                const hit = await IdbStore.soon(IdbStore.kvGet(lyricsKey(songId)), 250);
+                // "暂无歌词"也缓存、也认（见下），其余非法值一律当没命中
+                if (typeof hit === 'string' && hit) return hit;
+            }
+            // 2) 回源
             const url = `${PROXY_SERVER}/getLyrics?id=${songId}`;
             try {
                 const response = await fetch(url);
@@ -529,7 +547,11 @@
                     throw new Error(`获取歌词失败: ${response.status} ${response.statusText}`);
                 }
                 const data = await response.json();
-                return data.lrc || '暂无歌词';
+                const lrc = data.lrc || '暂无歌词';
+                // "暂无歌词"一起缓存：这首确实没歌词，重试也是白跑一趟网易云。
+                // 但不缓存"获取歌词失败" —— 那是网络/上游的问题，下次该重试。
+                if (window.IdbStore && lrc) IdbStore.kvSet(lyricsKey(songId), lrc, LYRICS_TTL);
+                return lrc;
             } catch (error) {
                 console.error('获取歌词时出错:', error);
                 return '获取歌词失败';

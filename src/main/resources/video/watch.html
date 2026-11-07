@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="/resources/video/video.css">
     <link rel="stylesheet" href="/resources/lib/lightbox.css">
     <script src="/resources/lib/lightbox.js"></script>
+    <script src="/resources/lib/idb-store.js"></script>
     <style>
         /* 左侧可收起的画质/音轨设置侧边栏：与 chat/music 侧边栏同款（230px、.open 展开、收起贴左）。
            内联在本页，避免影响 video.css 里 index/search/space 等其它共用页面。 */
@@ -48,6 +49,45 @@
         .ws-card + .ws-card { margin-top: 14px; }
         /* 侧边栏里的整行按钮：撑满宽度，字号跟侧边栏其它控件一致 */
         .ws-btn { width: 100%; padding: 7px 10px; font-size: 12px; }
+
+        /* 续播提示条：浮在播放器底部，几秒后自动淡出。
+           用 absolute 覆盖而不是插在播放器下方 —— 下方插入会把评论顶下去、
+           也会改变页面高度，用户正看着视频时整页跳一下很难受。 */
+        .player-wrap { position: relative; }
+        .resume-tip {
+            position: absolute;
+            left: 12px;
+            bottom: 68px;
+            z-index: 5;
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            border-radius: 8px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+            font-size: 13px;
+            opacity: 0;
+            transform: translateY(6px);
+            transition: opacity .18s ease, transform .18s ease;
+            pointer-events: none;
+        }
+        .resume-tip.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+        .resume-tip > * + * { margin-left: 8px; }
+        .resume-tip .resume-text { color: var(--text); }
+        .resume-tip button {
+            padding: 4px 10px;
+            font-size: 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--accent, var(--pink));
+            color: var(--on-accent, #fff);
+            cursor: pointer;
+        }
+        .resume-tip button.ghost-resume {
+            background: transparent;
+            color: var(--muted);
+        }
     </style>
 </head>
 <body>
@@ -118,6 +158,12 @@
             <!-- preload=auto：设置 src 后立刻开始缓冲，用户点播放时已经有数据。
                  配合服务端的首段预取，起播基本是瞬时的。 -->
             <video id="player" controls playsinline preload="auto"></video>
+            <!-- 续播提示：绝对定位浮在播放器上，避免插入 DOM 把下方内容顶下去 -->
+            <div id="resumeTip" class="resume-tip">
+                <span class="resume-text" id="resumeText"></span>
+                <button type="button" id="resumeGo">继续播放</button>
+                <button type="button" id="resumeNo" class="ghost-resume">从头开始</button>
+            </div>
         </div>
 
         <div id="playMsg" class="small muted" style="margin-top:8px"></div>
@@ -242,6 +288,145 @@
     let currentCid = 0;
     // B 站音频是独立流（DASH），这里用 <video> 播视频流，另用 <audio> 同步播放音频。
     let audioEl = null;
+
+    // ================= 播放进度持久化（IndexedDB） =================
+    // 为什么用 IndexedDB 而不是 Cookie/PageStore：
+    //   1. 进度是"每集一条"的多值数据（视频 × 分P），Cookie 只能放几十个键值且会被 4KB 上限挤掉，
+    //      每集一个 Cookie 更会在浏览器里堆出上百条；
+    //   2. 首页要做"继续观看"列表，需要按 updatedAt 排序取前 N 条 —— Spring 化的排序索引
+    //      IndexedDB 天生就有，Cookie/sessionStorage 都得自己全表读再排序；
+    //   3. 进度是"丢了也不致命"的附加数据，正好符合"只当加速层"的定位。
+    // 键为 `bvid|cid`：同一视频不同分P 各自记进度，切分P 不会互相覆盖。
+    const PROGRESS_STORE = 'progress';
+    const PROGRESS_SAVE_INTERVAL = 5000;  // timeupdate 很密（~4Hz），节流到 5 秒写一次
+    const PROGRESS_MIN_T = 5;             // 前 5 秒不记（刚点开还没看）
+    const PROGRESS_END_GAP = 30;          // 距结尾不足 30 秒视为看完，不再提示续播
+
+    let lastSavedT = -1;     // 上次落盘的时刻（节流用）
+    let playedCid = 0;       // 播放器当前装的是哪个分P —— 用于区分"换流"与"换集"
+    let resumeAt = 0;        // 待续播的时间点（applyStream 里消费）
+    let resumeShownFor = ''; // 已经对哪个 key 弹过提示，避免换源重复弹
+
+    function progressKey() {
+        const bvid = (info && info.bvid) || '';
+        return (bvid || 'x') + '|' + (currentCid || 0);
+    }
+
+    /** 读进度；拿不到（不可用/没存过）就返回 null */
+    function readProgress() {
+        if (!window.IdbStore) return Promise.resolve(null);
+        // soon()：进度只是"顺便提示一下"，最多等 300ms，等不到就当没看过
+        return IdbStore.soon(IdbStore.get(PROGRESS_STORE, progressKey()), 300)
+            .then(v => v || null, () => null);
+    }
+
+    /** 写进度。t 秒、d 总时长；只写必要的字段，别把整个视频对象塞进去 */
+    function writeProgress(t, d) {
+        if (!window.IdbStore || !info) return;
+        if (!isFinite(t) || t <= 0) return;
+        const dur = isFinite(d) && d > 0 ? d : 0;
+        IdbStore.set(PROGRESS_STORE, {
+            k: progressKey(),
+            t: Math.round(t),
+            d: Math.round(dur),
+            bvid: info.bvid || '',
+            cid: currentCid || 0,
+            title: info.title || '',
+            pic: (info.pic || '') || '',
+            owner: (info.owner && info.owner.name) || '',
+            page: currentPageNo(),
+            updatedAt: Date.now()
+        });
+    }
+
+    /** 当前分P 序号（用于"继续观看"卡片显示 P2 之类） */
+    function currentPageNo() {
+        const pages = (info && info.pages) || [];
+        for (let i = 0; i < pages.length; i++) {
+            if (Number(pages[i].cid) === Number(currentCid)) return pages[i].page || (i + 1);
+        }
+        return 1;
+    }
+
+    /** timeupdate / pause / 页面隐藏时调用：节流写入，避免每帧一次 IDB 事务。
+        force=true 时忽略节流窗口（暂停、切分P、页面隐藏时用）。 */
+    function scheduleSave(force) {
+        if (!info || !currentCid) return;
+        const now = Date.now();
+        if (!force && now - lastSavedT < PROGRESS_SAVE_INTERVAL) return;
+        if (now - lastSavedT < 3000 && force) return; // force 也别太密
+        lastSavedT = now;
+        writeProgress(player.currentTime, player.duration);
+    }
+
+    player.addEventListener('timeupdate', () => scheduleSave(false));
+    player.addEventListener('pause', () => scheduleSave(true));
+    // 用户绕过提示条直接点了原生播放键：把提示收掉，别一直浮在那儿
+    player.addEventListener('play', () => {
+        if (resumeAt > 0 && !player.paused && player.currentTime < 1) hideResumeTip();
+    });
+    // 播完就把这条进度删掉，下次进来是干净的「从头看」
+    player.addEventListener('ended', () => {
+        if (window.IdbStore && currentCid) IdbStore.del(PROGRESS_STORE, progressKey());
+        resumeShownFor = '';
+    });
+    // 关标签页/切后台时补一次：手机端上 pause 不一定来得及触发
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') scheduleSave(true);
+    });
+    window.addEventListener('pagehide', () => scheduleSave(true));
+
+    /** 取时长字符串：进度提示用 */
+    function fmtClock(sec) {
+        const s = Math.max(0, Math.floor(Number(sec) || 0));
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const ss = s % 60;
+        const p = n => String(n).padStart(2, '0');
+        return h > 0 ? (h + ':' + p(m) + ':' + p(ss)) : (m + ':' + p(ss));
+    }
+
+    let resumeTipTimer = null;
+
+    /** 显示续播提示；用户点"从头开始"则清掉这条记录 */
+    function showResumeTip(row) {
+        const key = progressKey();
+        if (resumeShownFor === key) return;
+        resumeShownFor = key;
+        const tip = document.getElementById('resumeTip');
+        const text = document.getElementById('resumeText');
+        if (!tip || !text) return;
+        text.textContent = '上次看到 ' + fmtClock(row.t) + (row.d ? ' / ' + fmtClock(row.d) : '');
+        resumeAt = Number(row.t) || 0;
+        tip.classList.add('show');
+        // 12 秒后自动收起：用户没理它就当继续从头看，不打扰
+        clearTimeout(resumeTipTimer);
+        resumeTipTimer = setTimeout(function () { tip.classList.remove('show'); }, 12000);
+    }
+
+    function hideResumeTip() {
+        const tip = document.getElementById('resumeTip');
+        if (tip) tip.classList.remove('show');
+        clearTimeout(resumeTipTimer);
+    }
+
+    document.getElementById('resumeGo').onclick = () => {
+        hideResumeTip();
+        if (resumeAt > 0) {
+            try { player.currentTime = resumeAt; } catch (e) { /* 元数据没到时忽略 */ }
+            if (audioEl) { try { audioEl.currentTime = resumeAt; } catch (e) { /* ignore */ } }
+        }
+        player.play().catch(() => {});
+    };
+
+    document.getElementById('resumeNo').onclick = () => {
+        hideResumeTip();
+        resumeAt = 0;
+        if (window.IdbStore) IdbStore.del(PROGRESS_STORE, progressKey());
+        try { player.currentTime = 0; } catch (e) { /* ignore */ }
+        player.play().catch(() => {});
+    };
+
 
     const CODEC_NAME = { 7: 'AVC/H.264', 12: 'HEVC/H.265', 13: 'AV1' };
     const QN_NAME = {
@@ -391,7 +576,13 @@
     }
 
     async function selectPage(cid, pageNo) {
+        // 切分P 前先把当前分P 的进度落盘（下面一改 currentCid，progressKey() 就变了）
+        if (currentCid && player.currentTime > 0) scheduleSave(true);
         currentCid = cid;
+        // 换分P 是"另一个播放位置"，续播提示要对新分P 重新判定
+        resumeShownFor = '';
+        resumeAt = 0;
+        hideResumeTip();
         // 高亮当前分P
         document.querySelectorAll('.page-chip').forEach(c => {
             c.classList.toggle('active', Number(c.dataset.cid) === Number(cid));
@@ -538,8 +729,39 @@
         }
 
         const wasPlaying = !player.paused && player.currentTime > 0;
+        // 必须先取进度再换源：player.src = ... 会立刻把 currentTime 清成 0
+        const keepTime = player.currentTime;
+        // 同一分P 内换流（切清晰度/编码/格式）才算"接着看"；换分P 是另一集，位置必须归零
+        const sameEpisode = playedCid > 0 && Number(playedCid) === Number(cid);
         player.src = vSrc;
+        playedCid = cid;
         if (wasPlaying) player.play().catch(() => {});
+
+        if (sameEpisode && keepTime > 0) {
+            // 切清晰度/编码/格式：把当前进度原样带过去，别让用户从头看，也不弹续播提示
+            // （他正看着呢，弹提示等于打断）。pause 状态下切档同样保留位置。
+            const restore = () => {
+                try { player.currentTime = keepTime; } catch (e) { /* ignore */ }
+                player.removeEventListener('loadedmetadata', restore);
+            };
+            player.addEventListener('loadedmetadata', restore);
+        } else {
+            // 首次进入页面 / 换分P：读本地进度，够长就浮出"上次看到 xx:xx"
+            // 判断挂在异步里，此时 duration 未必可信，所以用记录里存的总时长 d。
+            const key = progressKey();
+            if (resumeShownFor !== key) {
+                readProgress().then(row => {
+                    if (!row || !row.t) return;
+                    if (row.d && row.t >= row.d - PROGRESS_END_GAP) {
+                        // 已看完：静默丢掉这条，下次从头看
+                        if (window.IdbStore) IdbStore.del(PROGRESS_STORE, key);
+                        return;
+                    }
+                    if (row.t < PROGRESS_MIN_T) return;
+                    showResumeTip(row);
+                }).catch(() => {});
+            }
+        }
 
         // DASH 视频流不含音轨，单独挂一个 <audio> 跟随 <video>（主时钟）播放。
         // 同步策略见 bindSync：playbackRate 微调收敛漂移，避免跳表。

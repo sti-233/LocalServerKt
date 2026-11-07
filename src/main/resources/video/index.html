@@ -9,6 +9,7 @@
     <script src="/resources/config.js"></script>
     <link rel="stylesheet" href="/resources/video/video.css">
     <link rel="stylesheet" href="/resources/lib/lightbox.css">
+    <script src="/resources/lib/idb-store.js"></script>
     <script src="/resources/lib/lightbox.js"></script>
 </head>
 <body>
@@ -47,8 +48,8 @@
     const CACHE_KEY = 'video_feed';
 
     /** 用快照重画列表（只在后退进入时走这里，见 common.js 的 cameBack） */
-    function restore() {
-        const snap = pageCache.get(CACHE_KEY);
+    async function restore() {
+        const snap = await snapGet(snapKey(CACHE_KEY));
         if (!snap || !snap.items || !snap.items.length) return false;
         allItems = snap.items;
         fresh = snap.fresh || 1;
@@ -88,7 +89,7 @@
             fresh++;
             if (fresh >= 10) moreBtn.style.display = 'none';
             // 记下"现在页面上是什么"，从播放页退回来（页面被重建时）照这个重画
-            pageCache.set(CACHE_KEY, { items: allItems, fresh: fresh });
+            snapSet(snapKey(CACHE_KEY), { items: allItems, fresh: fresh });
         } catch (e) {
             if (fresh === 0) {
                 feedEl.innerHTML = '';
@@ -112,7 +113,12 @@
     });
 
     // 后退进入且有快照：直接照原样画，不请求 /recommend（否则列表会换一批）
-    if (!(cameBack() && restore())) load();
+    // 快照在 IndexedDB 里是异步读的，所以先等它；读不到再回源
+    if (cameBack()) {
+        restore().then(ok => { if (!ok) load(); });
+    } else {
+        load();
+    }
 </script>
 </body>
 </html>

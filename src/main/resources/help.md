@@ -155,7 +155,8 @@ JSON 里对应 `summary.depFail`，每项还有 `use` 字段。
 
 - **存储**：Cookie 读写、localStorage、sessionStorage、IndexedDB、BroadcastChannel 收发、
   Cache Storage、存储配额估算。隐私模式下 localStorage / IndexedDB 常常直接抛错，
-  这也是 `page-store.js` 不用 localStorage 的原因。
+  这也是 `page-store.js` 不用 localStorage 的原因。IndexedDB 现在**是本项目在用的**
+  （`lib/idb-store.js`），不可用时那些缓存全部静默退化为内存、页面功能不受影响，只是刷新后不再保留。
 - **缓存与图片**：这一组回答同一个问题 —— 同一张图第二次还要不要重新下载。
   探测图是随包发布的 `/resources/lib/img/probe.png`（96×96、约 25KB，故意做成压不动的噪声，
   体积够大才量得准）。判据是 Resource Timing 的 `transferSize`：**0 表示这次没有发生网络传输**；
@@ -165,7 +166,8 @@ JSON 里对应 `summary.depFail`，每项还有 `use` 字段。
   有 `max-age>=1` 且没有 `no-store`/`no-cache` 才算强缓存）；③ 条件请求回 304（拿 `Last-Modified`
   作 `If-Modified-Since` 再请求一次，期望 304 且无响应体）；④ `fetch(cache:'force-cache')`；
   ⑤ `HTMLImageElement.decode()`；⑥ `loading`/`decoding` 属性（聊天图片列表靠它懒加载省内存）；
-  ⑦ `caches.match()`；⑧ sessionStorage 能否写下 256KB 快照（video 页后退恢复列表用）。
+  ⑦ `caches.match()`；⑧ sessionStorage 能否写下 256KB 快照（video 页用它存标签页 ID，把
+  IndexedDB 快照按标签页隔开）。
   这一组在 DevTools 勾了 Disable cache 时，①④ 会如实报 ✗ —— 那不是页面坏了，是浏览器在按
   `no-store` 处理一切请求。`/resources` 下的图片与 JS/CSS 一样走 `max-age=604800, must-revalidate`，
   所以 ①②③ 三项在正常情况下都应是 ✓。
@@ -190,3 +192,59 @@ JSON 里对应 `summary.depFail`，每项还有 `use` 字段。
 它要告诉用户"当前浏览器缺什么"，自己用的新语法越多，越可能压根跑不起来。
 异步项有 2.5 秒超时兜底，标为「· 信息」并注明"超时未响应（可能被浏览器限制）"。
 复制优先 `navigator.clipboard`，非安全上下文（局域网 http）退回去 `execCommand('copy')`。
+
+**结果会留档**：每轮检测结束把报告写进 IndexedDB（`kv` 表，键 `env_report`），页面顶部随即显示
+「上次检测：<时间>（<地址>）」，并逐项对比上一次的结论 —— 只在"明确可用 ↔ 明确不可用"之间比，
+「· 信息」这类未知项不参与，避免噪声。新坏的项会用红色列出条数与名称（新的不可用比旧的不可用更值得注意），
+修好的项另起一行。想重置基准就点"重新检测"跑两次，或清掉该键。
+
+## 浏览器端缓存（IndexedDB）
+
+前端有一层纯本地的缓存，封装在 `lib/idb-store.js`（挂 `window.IdbStore`），库名 `localserver`、
+版本 2，五张表：`kv`（通用键值，带可选过期时间）、`chatHistory`（按会话+日期存聊天记录）、
+`aiConvs`（按会话 id 存 AI 对话）、`progress`（按 `bvid|cid` 存播放进度）、
+`imgBlobs`（按内容哈希文件名存图片字节）。
+
+**它不是数据权威**：页面一律"先画本地副本、再拉服务端覆盖"，服务端永远赢；接口失败时保留本地副本
+而不是白屏，用户至少还能看到上次的内容。所有调用都做了兜底 —— 隐私模式下 `indexedDB.open`
+可能既不 success 也不 error（卡在 onblocked），故有 1.5 秒超时；超时或报错就整体退化为内存 Map，
+页面照常工作，只是刷新后不保留。**任何业务逻辑都不能依赖"缓存里一定有"**。
+
+| 页面 | 缓存内容 | 键 | 过期 / 上限 |
+|---|---|---|---|
+| `chat.html` | 每个会话（群聊某天 / 某个私聊对象）的消息列表，**含图片消息**（存的是 `ImageRef:/img/<sha256>.<ext>` 这行引用本身，图片字节在 `imgBlobs`） | `chatHistory`，`<targetuser 或空>|<yyyy-MM-dd>` | 按 `savedAt` 最多留 60 个会话 |
+| `chat.html` | 「缓存图片」面板的列表 + 所有聊天图/缩略图的字节 | `kv:pictures`、`imgBlobs`，键就是 `<sha256>.<ext>` | 列表无 TTL（每次打开都用服务端那份覆盖）；字节永不过期（名字即内容），最多留 240 张，单张 >6MB 不存 |
+| `ai.html` | 会话列表、每个会话的消息 | `kv:ai_conv_list`、`aiConvs:<convId>` | 列表 24 小时；消息最多留 40 个会话；**匿名会话不缓存** |
+| `video/watch.html` | 播放进度（`t`/总时长/标题/封面/分P） | `progress`，`<bvid>|<cid>` | 看完（距结尾 <30 秒）或不足 5 秒不记；进页面若有记录且在 5 秒~结尾 30 秒之间，播放器左下浮出「上次看到 xx:xx / 继续播放 / 从头开始」 |
+| `video/index.html`、`search.html` | 推荐流 / 搜索结果快照 | `kv:video_feed@<tabId>`、`kv:video_search@<tabId>` | 30 分钟；按标签页隔离，后退回来直接照原样重画、不重新请求 |
+| `music.html` | 歌词 | `kv:lyrics:<songId>` | 30 天（歌词基本不变）；**歌曲直链不缓存**，签名会过期 |
+| `environment.html` | 上一次的检测报告 | `kv:env_report` | 无（只留一份，用来对比） |
+
+几个容易踩的点：
+
+- **video 快照的 `@<tabId>`**：早期用 sessionStorage，天然按标签页隔离。换成 IndexedDB 后是
+  全源共享的，两个标签页先后进视频页会互相覆盖对方的后退快照，故把标签页 ID 拼进键里
+  （标签页 ID 本身仍存 sessionStorage —— 它天生就是"这个标签页"的语义）。列表快照只用于后退恢复，
+  所以设了 30 分钟 TTL，过期就重新请求。
+- **`kv` 的过期是惰性的**：`kvGet` 读到 `expiresAt` 已过就顺手删掉并返回 null，没有定时清理线程；
+  页面加载时 `IdbStore.kvPrune()` 会扫一遍清掉过期项。
+- **配额**：Chrome 的清理是整库而不是按表，所以每张表都有条数上限，写入后按 `savedAt` 倒序裁掉尾巴
+  （聊天 60 个会话、AI 40 个、图片 240 张）。`IdbStore.estimate()` 能读 `navigator.storage.estimate()`。
+- **消息里存引用、`imgBlobs` 里存字节**：存档里的图片消息早已只是 `ImageRef:/img/<sha256>.<ext>`
+  这一行短字符串（服务端把 base64 落盘并改写），所以 `chatHistory` 不会因为图片变胖。
+  图片本身另存一份到 `imgBlobs`——**键就是那个哈希文件名**，同名必然同字节，于是永远不用判断过期，
+  只按张数淘汰。命中时直接给 `URL.createObjectURL()`，连 HTTP 请求都不发；没命中才走 `/img/`，
+  并在 `load` 事件里补存一份（此时字节已在浏览器 HTTP 缓存里，补存基本不花流量）。
+  上限 240 张 / 单张 6MB：再大就不值得占配额，宁可每次都走 `/img/` 的 immutable 缓存。
+- **`imgBlobs` 与 HTTP 缓存是两层，互补而非重复**：`/img` 的 `immutable` 只管"这次浏览别重下"，
+  清站点数据、浏览器配额回收、或换个浏览器就没了；`imgBlobs` 是应用自己的持久层，能一起带走的是
+  同一套降级语义——不可用时全部退回 HTTP 缓存，页面表现完全一致，只是首屏多几个请求。
+- **删图要三处一起动**：`POST /deletePicture` 成功后，前端同时删 `imgBlobs` 的字节、内存里的
+  blob URL、以及 `kv:pictures` 列表里的那一条。少删任何一处都会导致"下次打开面板先闪出已删的图"。
+- **老存档的 `ImageB64:` 不写缓存**：没跑过 `/migrateImages` 的会话里，图片是内联的 data URL、
+  一条就能有几 MB，这种会话由 `hasLegacyImage()` 判定后整个跳过 —— IDB 配额整库共用，
+  为一份静态旧存档冒被清库的风险不值得。
+- **多标签页**：库是全源共享的，`aiConvs` / `progress` 这类按 id 存的表天然不冲突；`chatHistory`
+  同键写入是后写覆盖，各标签页看到的是最后一次保存的版本，功能上可接受（拉到的服务端数据才是准的）。
+- 主题（`ls_theme`）与 `page-store.js` 的页面配置**没有**走 IndexedDB：前者必须首屏同步读，
+  后者是几百字节的小对象，用 Cookie 反而更简单可靠。

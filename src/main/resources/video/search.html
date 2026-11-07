@@ -9,6 +9,7 @@
     <script src="/resources/config.js"></script>
     <link rel="stylesheet" href="/resources/video/video.css">
     <link rel="stylesheet" href="/resources/lib/lightbox.css">
+    <script src="/resources/lib/idb-store.js"></script>
     <script src="/resources/lib/lightbox.js"></script>
 </head>
 <body>
@@ -116,7 +117,7 @@
                 numResults: data.numResults || 0
             };
             renderList();
-            pageCache.set(CACHE_KEY, {
+            snapSet(snapKey(CACHE_KEY), {
                 keyword: keyword, type: type, order: o, result: lastResult
             });
         } catch (e) {
@@ -171,8 +172,8 @@
      * 后退进入且快照对得上（同一关键词/类型/排序）时，照上次的结果重画，不重新请求。
      * 对不上就照常搜 —— 用户可能是从别的关键词的搜索结果页退回来的。
      */
-    function restore() {
-        const snap = pageCache.get(CACHE_KEY);
+    async function restore() {
+        const snap = await snapGet(snapKey(CACHE_KEY));
         if (!snap || !snap.result) return false;
         if (snap.keyword !== q) return false;
         if (snap.type !== type) return false;
@@ -185,7 +186,12 @@
     }
 
     if (q) {
-        if (!(cameBack() && restore())) { kw.value = q; runSearch(); }
+        if (cameBack()) {
+            restore().then(ok => { if (!ok) { kw.value = q; runSearch(); } });
+        } else {
+            kw.value = q;
+            runSearch();
+        }
     } else {
         showHint(results, '输入关键词后回车搜索');
     }

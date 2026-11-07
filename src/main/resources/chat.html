@@ -8,6 +8,7 @@
     <script src="/resources/config.js"></script>
     <script src="/resources/lib/page-store.js"></script>
     <link rel="stylesheet" href="/resources/lib/lightbox.css">
+    <script src="/resources/lib/idb-store.js"></script>
     <script src="/resources/lib/lightbox.js"></script>
     <script>
         // 本页配置存 Cookie（路径 /resources/chat.html，与其他页面互不混杂）
@@ -130,6 +131,16 @@
             // 不再像旧版那样单击直接发送 —— 发错了撤回也麻烦，多一步确认更稳。
             var pickSel = null;
 
+            // 列表指纹：只取名字序列 + 总数。mtime/size 会随同内容重存而变，
+            // 但对"要不要重画这一格"没影响，忽略掉能少抖几次。
+            function pickFingerprint(data) {
+                if (!data) return '';
+                var items = data.items || [];
+                var h = (data.total || 0) + ':';
+                for (var i = 0; i < items.length; i++) h += (items[i].name || '') + ',';
+                return h;
+            }
+
             function selectPick(item) {
                 pickSel = item;
                 const actions = document.getElementById('pickActions');
@@ -166,9 +177,12 @@
             }
 
             // 查看当前选中的图：交给共用查看器（缩放/保存都在那边，裁剪仍关闭）
+            // 本地有这份字节就用 blob URL，没有才给 /img/ 地址。
+            // 这里现查 imgUrlMemo 而不是用选中时记下的：选中之后可能发生过淘汰，
+            // 拿着一个已 revoke 的地址打开会是一张裂图。
             function viewPicked() {
                 if (!pickSel || !window.Lightbox) return;
-                Lightbox.open(pickSel.ref);
+                Lightbox.open(imgUrlMemo.get(pickSel.name) || pickSel.ref);
             }
 
             // 删除当前选中的图：只删自己目录里的那一份，成功后从网格里摘掉
@@ -186,6 +200,10 @@
                     });
                     const data = await res.json().catch(function () { return {}; });
                     if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+                    // 本地两份缓存同步删掉：字节（imgBlobs）与列表（kv:pictures），
+                    // 否则下次打开面板会先闪出这张已经删掉的图
+                    forgetImg(item.name);
+                    dropFromPickList(item.name);
                     // 摘掉对应缩略图
                     const imgs = document.getElementById('pickGrid').querySelectorAll('img');
                     for (let i = 0; i < imgs.length; i++) {
@@ -214,46 +232,77 @@
             }
 
             // 拉自己的图片列表渲染成缩略图网格（服务端只返回本 IP 用户名目录下的图；
-            // 缩略图走 /img/<name>，由浏览器缓存）
+            // 缩略图字节优先走 IndexedDB 的 imgBlobs，没有才回源）
+            //
+            // 列表本身也缓存一份到 kv:pictures：面板每次都重拉是为了"刚存的图立刻出现"，
+            // 但网络慢的时候没必要先给一片空白 —— 先用上次的列表画出来，再用服务端的覆盖。
             async function loadPickCache() {
-                const grid = document.getElementById('pickGrid');
                 const hint = document.getElementById('pickHint');
                 const count = document.getElementById('pickCount');
-                grid.textContent = '';
                 // 重拉时清掉选中态（旧选中项的节点已经不在了）
                 selectPick(null);
                 hint.style.display = 'block';
                 hint.textContent = '加载中…';
                 count.textContent = '';
+                pickShownFp = '';
+
+                // 1) 先上本地列表：命中就立刻有图可点，hint 直接隐藏
+                if (window.IdbStore) {
+                    const cached = await IdbStore.soon(IdbStore.kvGet(PICK_LIST_KEY), 200);
+                    if (cached && cached.items && cached.items.length) paintPickGrid(cached);
+                }
+
+                // 2) 再对齐服务端
                 try {
                     const res = await fetch('/pictures?limit=120');
                     if (!res.ok) throw new Error('HTTP ' + res.status);
                     const data = await res.json();
                     const items = data.items || [];
-                    count.textContent = items.length ? ('最近 ' + items.length + ' / 共 ' + data.total + ' 张') : '';
-                    if (!items.length) {
-                        hint.textContent = '你还没有保存过图片（全屏查看时点 💾 即可存到这里）';
-                        return;
-                    }
-                    hint.style.display = 'none';
-                    items.forEach(function (it) {
-                        const img = document.createElement('img');
-                        img.src = it.ref;               // "/img/<sha256>.<ext>"
-                        img.alt = it.name;
-                        img.title = it.name;
-                        img.loading = 'lazy';
-                        img.decoding = 'async';
-                        img.setAttribute('data-name', it.name);
-                        img.addEventListener('click', function () {
-                            // 单击只选中，浮出「查看 / 删除 / 发送」；发不发由用户点按钮决定
-                            selectPick({ name: it.name, ref: it.ref });
-                        });
-                        grid.appendChild(img);
-                    });
+                    // 列表没变就不重画：省掉整块 DOM 重建，缩略图也不会重新解码
+                    if (pickFingerprint(data) !== pickShownFp) paintPickGrid(data);
+                    if (window.IdbStore) IdbStore.kvSet(PICK_LIST_KEY, data, 0);
                 } catch (err) {
-                    hint.style.display = 'block';
-                    hint.textContent = '加载缓存图片失败：' + err.message;
+                    // 拉不到就留着本地那份（上面可能已经画出来了），别把已经能用的面板清空
+                    if (!pickShownFp) {
+                        hint.style.display = 'block';
+                        hint.textContent = '加载缓存图片失败：' + err.message;
+                    }
                 }
+            }
+
+            // 把一份 /pictures 结果画成缩略图网格（本地副本与服务端那份共用同一个函数，
+            // 差别只在调用时机：本地先画、服务端回来后再决定要不要重画）
+            function paintPickGrid(data) {
+                const grid = document.getElementById('pickGrid');
+                const hint = document.getElementById('pickHint');
+                const count = document.getElementById('pickCount');
+                const items = data.items || [];
+                grid.textContent = '';
+                pickShownFp = pickFingerprint(data);
+                if (!items.length) {
+                    count.textContent = '';
+                    hint.style.display = 'block';
+                    hint.textContent = '你还没有保存过图片（全屏查看时点 💾 即可存到这里）';
+                    return;
+                }
+                hint.style.display = 'none';
+                count.textContent = '最近 ' + items.length + ' / 共 ' + data.total + ' 张';
+                items.forEach(function (it) {
+                    const img = document.createElement('img');
+                    img.alt = it.name;
+                    img.title = it.name;
+                    img.loading = 'lazy';
+                    img.decoding = 'async';
+                    img.setAttribute('data-name', it.name);
+                    // 字节优先本地缓存，没有才走 /img/<name>（见 paintImg）
+                    paintImg(img, it.name, it.ref);
+                    img.addEventListener('click', function () {
+                        // 单击只选中，浮出「查看 / 删除 / 发送」；发不发由用户点按钮决定。
+                        // 发送永远只发 ref（服务端按引用转发），本地字节只用于「查看」
+                        selectPick({ name: it.name, ref: it.ref });
+                    });
+                    grid.appendChild(img);
+                });
             }
             // Enter 换行（textarea 默认行为），Ctrl/Cmd+Enter 快捷发送
             document.getElementById('content').addEventListener('keydown', function (e) {
@@ -670,6 +719,11 @@
             // 自己正往上翻旧消息时不强行拽到底；否则跟随新消息
             if (stickBottom) scrollToBottom(true);
             stickToImages();
+            // 本地副本同步追一条：否则切走的这一会儿再来回切，会看到"新消息又没了"
+            patchHistoryCache(function (items) {
+                items.push({ name: msg.name, time: msg.time, text: msg.text });
+                return items;
+            });
         }
 
         function crtMsg(sender, time, content) {
@@ -699,10 +753,12 @@
             } else if (typeof content === 'string' && content.startsWith('ImageRef:')) {
                 const img = document.createElement('img');
                 img.className = 'img-message';
-                img.src = content.slice('ImageRef:'.length); // "/img/<sha256>.<ext>"
+                const ref = content.slice('ImageRef:'.length); // "/img/<sha256>.<ext>"
                 img.alt = '图片';
                 img.loading = 'lazy';
                 img.decoding = 'async';
+                // 优先本地已存的字节（imgBlobs），没有才回源，见 paintImg
+                paintImg(img, ref.replace(/^\/img\//, ''), ref);
                 contentEl.appendChild(img);
             } else {
                 contentEl.textContent = content; // 用 textContent，防 XSS
@@ -732,6 +788,11 @@
                     messages[i].remove();
                 }
             }
+            // 本地副本同步删掉，避免下次刷新又冒出已撤回的消息
+            patchHistoryCache(function (items) {
+                const kept = items.filter(function (m) { return !(m.name === user && m.time === time); });
+                return kept.length === items.length ? null : kept;
+            });
         }
 
         // 服务端返回的 err 类型消息（如私聊对象不存在），显示 4 秒后自动消失
@@ -749,23 +810,188 @@
             toast._hideTimer = setTimeout(function () { toast.classList.remove('show'); }, 4000);
         }
 
-        async function renderHistory() {
-            const target = document.getElementById('user').value;
-            // 日期不是用户名：浏览某日群聊记录时 targetuser 留空，只带 date 参数，避免服务端 400
-            const userParam = isDateStr(target) ? '' : target;
-            // 群聊模式下 currentDay 非空时查看该日期的历史文件，否则由服务端默认今天
-            const dateParam = currentDay ? '&date=' + encodeURIComponent(currentDay) : '';
-            const resp = await fetch('/history?targetuser=' + encodeURIComponent(userParam) + dateParam);
-            let history = [];
-            if (resp.ok) {
-                history = await resp.json();
-            } else {
-                // 服务端返回 400（如私聊对象不存在于用户列表）时给出提示，不渲染旧消息
-                showError(await resp.text());
+        // ===== 聊天历史本地缓存（IndexedDB）=====
+        // 为什么值得缓存：每次切会话/切日期都要 fetch('/history') 再把整块 DOM 重建一遍，
+        // 局域网也要几十毫秒，切过去先是白屏。存一份本地副本后可以"先画缓存、后对齐服务端"，
+        // 视觉上几乎瞬时；服务端数据没变时连 DOM 都不重建（图片不会重新解码、滚动不会抖）。
+        //
+        // 只当加速层：读不到/写失败一律忽略，回源行为与没有缓存时完全一致。
+        const HIST_STORE = 'chatHistory';
+        const HIST_MAX_ROWS = 60;   // 最多留 60 个会话/日期的副本
+        // 会话名可能随天变化（群聊按日期、私聊按对方），但缓存键必须稳定：
+        // 用「私聊对象 | 日期」拼，日期为空表示"今天"（服务端默认），
+        // 这样今天这份缓存会被后续每次刷新覆盖，不会攒出一堆历史文件。
+        function histKey(userParam, day) {
+            return (userParam || '') + '|' + (day || '');
+        }
+
+        // 只保留最近 HIST_MAX_ROWS 条：按 savedAt 倒序取，多出来的删掉。
+        // 聊天记录体量不大，但一天一个会话、再乘上私聊对象，几个月就会积起来。
+        async function pruneHistoryCache() {
+            if (!window.IdbStore) return;
+            const rows = await IdbStore.getAll(HIST_STORE, { index: 'savedAt', direction: 'prev', limit: HIST_MAX_ROWS + 40 });
+            if (!rows || rows.length <= HIST_MAX_ROWS) return;
+            for (let i = HIST_MAX_ROWS; i < rows.length; i++) {
+                IdbStore.del(HIST_STORE, rows[i].k);
             }
+        }
+
+        // 消息数组的指纹：用于判断服务端数据与本地副本是否一致。
+        // 逐字段拼串而不是 JSON.stringify —— 后者对 ImageB64:（data URL）会复制一遍大字符串。
+        function histFingerprint(items) {
+            if (!items || !items.length) return '0';
+            let h = items.length + ':';
+            for (let i = 0; i < items.length; i++) {
+                const m = items[i] || {};
+                h += (m.name || '') + '\u0001' + (m.time || '') + '\u0001' + ((m.text || '').length) + ';';
+            }
+            return h;
+        }
+
+        // ===== 图片字节本地缓存（IndexedDB 的 imgBlobs 表）=====
+        // 图片文件名是内容哈希（<sha256>.<ext>），同名必然同字节，所以按名字存、永不过期，
+        // 只按张数淘汰。聊天记录里的图和「缓存图片」面板的缩略图共用这一份。
+        //
+        // 为什么还值得存：/img/ 本来就给了 immutable 长缓存，但那是浏览器说清就清的
+        // （清站点数据、配额回收、隐私模式），换个浏览器更是完全没有。本地存一份之后，
+        // 命中时直接给 blob URL，连 HTTP 请求都不用发；没命中才回源，并顺手补存进去。
+        const IMG_BLOB_MAX = 240;               // 最多留 240 张，超出按 savedAt 淘汰
+        const IMG_BLOB_LIMIT = 6 * 1024 * 1024; // 单张上限 6MB：再大的图存它不划算
+        const imgUrlMemo = new Map();           // name -> objectURL（避免同一张图反复 createObjectURL）
+        const imgPending = Object.create(null); // name -> true，正在补存的图，防重复 fetch
+        // 「缓存图片」面板的列表副本：键与当前已画出的那份指纹（判断服务端那份有没有变）
+        const PICK_LIST_KEY = 'pictures';
+        let pickShownFp = '';
+
+        /** 这张 blob URL 还有没有 <img> 在用（用来判断回收它会不会把图弄裂） */
+        function imgUrlInUse(url) {
+            const imgs = document.images;
+            for (let i = 0; i < imgs.length; i++) {
+                if (imgs[i].src === url) return true;
+            }
+            return false;
+        }
+
+        /**
+         * 取（或新建）某张图的 blob URL。
+         *
+         * 映射超过 200 条就回收最老的，但**跳过还挂在页面上**的那些：
+         * revoke 掉一个正在显示的 blob URL，图会立刻变成裂图。所以淘汰时从最老的开始试，
+         * 撞上在用的就把它挪到队尾再试下一个；实在全都在用就先留着（数量受屏幕能容纳的张数约束）。
+         */
+        function imgUrlOf(name, blob) {
+            const hit = imgUrlMemo.get(name);
+            if (hit) return hit;
+            const url = URL.createObjectURL(blob);
+            imgUrlMemo.set(name, url);
+            if (imgUrlMemo.size > 200) evictImgUrls();
+            return url;
+        }
+
+        function evictImgUrls() {
+            let guard = imgUrlMemo.size;
+            while (imgUrlMemo.size > 200 && guard-- > 0) {
+                const first = imgUrlMemo.keys().next();
+                if (first.done) return;
+                const key = first.value;
+                const url = imgUrlMemo.get(key);
+                if (imgUrlInUse(url)) {
+                    // 挪到队尾：它只是"现在还在用"，不是"最近用过"
+                    imgUrlMemo.delete(key);
+                    imgUrlMemo.set(key, url);
+                    continue;
+                }
+                imgUrlMemo.delete(key);
+                try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+            }
+        }
+
+        /** 忘掉一张图：IDB 里的字节、内存里的 blob URL、以及"已画出"的那份列表 */
+        function forgetImg(name) {
+            if (!name) return;
+            const url = imgUrlMemo.get(name);
+            if (url) {
+                try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+                imgUrlMemo.delete(name);
+            }
+            if (window.IdbStore) IdbStore.blobDel(name);
+        }
+
+        /** 从 kv:pictures 那份列表里摘掉一张（删图后调用，避免下次打开先闪出它） */
+        function dropFromPickList(name) {
+            if (!window.IdbStore || !name) return;
+            IdbStore.kvGet(PICK_LIST_KEY).then(function (data) {
+                if (!data || !data.items) return;
+                const rest = data.items.filter(function (it) { return it.name !== name; });
+                if (rest.length === data.items.length) return;
+                data.items = rest;
+                data.total = Math.max(0, (data.total || 1) - 1);
+                IdbStore.kvSet(PICK_LIST_KEY, data, 0);
+            }, function () {});
+        }
+
+        /** 把一张已经上屏的图补存进 IDB（字节从 HTTP 缓存取，通常不花流量） */
+        function rememberImg(name) {
+            if (!window.IdbStore || !name || imgPending[name]) return;
+            imgPending[name] = true;
+            fetch('/img/' + name, { credentials: 'same-origin' })
+                .then(function (r) { return r.ok ? r.blob() : null; })
+                .then(function (blob) {
+                    if (!blob) return null;
+                    return IdbStore.blobSet(name, blob, IMG_BLOB_LIMIT).then(function (ok) {
+                        if (ok) IdbStore.blobPrune(IMG_BLOB_MAX);
+                    });
+                })
+                .catch(function () { /* 补存失败无所谓，下次看图还是走 HTTP 缓存 */ })
+                .then(function () { delete imgPending[name]; });
+        }
+
+        /**
+         * 给 <img> 上图：优先本地缓存，没有才走网络；走网络的那张加载成功后补存。
+         * 故意不返回 Promise —— 调用方只管把节点摆上去，别为一张图阻塞整块渲染。
+         */
+        function paintImg(img, name, ref) {
+            const net = ref || ('/img/' + name);
+            const memo = imgUrlMemo.get(name);
+            if (memo) { img.src = memo; return; }
+
+            function fromNet() {
+                img.addEventListener('load', function () { rememberImg(name); }, { once: true });
+                img.src = net;
+            }
+
+            if (window.IdbStore) {
+                // 不会等 open：soon() 150ms 内没结果就当没命中，直接走网络。
+                // （隐私模式下 indexedDB.open 会卡满 1.5 秒，这里绝不能跟着等）
+                IdbStore.soon(IdbStore.blobGet(name), 150).then(function (row) {
+                    if (!row || !row.blob) { fromNet(); return; }
+                    // 本地这份万一是坏的（写的时候断电之类），退回网络，别留一张裂图
+                    img.addEventListener('error', function () {
+                        forgetImg(name);
+                        fromNet();
+                    }, { once: true });
+                    img.src = imgUrlOf(name, row.blob);
+                }, fromNet);
+                return;
+            }
+            fromNet();
+        }
+
+        // 老存档（没跑过 /migrateImages）里的图片是 ImageB64: 内联 data URL，一条就能有几 MB。
+        // 那种会话不写缓存：IndexedDB 配额是整库共用的，Chrome 清理时所有表一起丢，
+        // 为一份静态旧存档冒这个险不划算（新消息一律是 ImageRef: 短引用，只有几十字节）。
+        function hasLegacyImage(items) {
+            for (let i = 0; i < items.length; i++) {
+                const t = (items[i] && items[i].text) || '';
+                if (typeof t === 'string' && t.startsWith('ImageB64:')) return true;
+            }
+            return false;
+        }
+
+        function paintHistory(items) {
             const container = document.getElementById('MsgBox');
             container.innerHTML = '';
-            for (const msg of history) {
+            for (const msg of items) {
                 container.appendChild(crtMsg(msg.name, msg.time, msg.text));
             }
             // 切会话/切日期/刷新后一律回到最新一条：先瞬时到底（不走动画），
@@ -773,6 +999,74 @@
             stickBottom = true;
             scrollToBottom(false);
             stickToImages();
+        }
+
+        // 撤回/新消息会改动当前会话内容，缓存里那份要跟着改，否则下次刷新会闪回旧内容
+        async function patchHistoryCache(fn) {
+            if (!window.IdbStore || !histCurrentKey) return;
+            const row = await IdbStore.get(HIST_STORE, histCurrentKey);
+            if (!row || !row.items) return;
+            const next = fn(row.items.slice());
+            if (!next) return;
+            row.items = next;
+            row.savedAt = Date.now();
+            IdbStore.set(HIST_STORE, row);
+        }
+
+        let histCurrentKey = '';  // 当前 MsgBox 里画的是哪个会话
+        let histGen = 0;          // 代际令牌：切会话期间回来的旧请求一律丢弃
+
+        async function renderHistory() {
+            const gen = ++histGen;
+            const target = document.getElementById('user').value;
+            // 日期不是用户名：浏览某日群聊记录时 targetuser 留空，只带 date 参数，避免服务端 400
+            const userParam = isDateStr(target) ? '' : target;
+            // 群聊模式下 currentDay 非空时查看该日期的历史文件，否则由服务端默认今天
+            const dateParam = currentDay ? '&date=' + encodeURIComponent(currentDay) : '';
+            const key = histKey(userParam, currentDay);
+            histCurrentKey = key;
+
+            // 1) 先上本地副本：有就立刻画出来（首屏不用等服务端）
+            let shownItems = null;
+            if (window.IdbStore) {
+                // soon()：本地副本只是加速，最多等 250ms；等不到就直接回源，
+                // 别让隐私模式下的 1.5 秒 open 超时把首屏拖慢
+                const row = await IdbStore.soon(IdbStore.get(HIST_STORE, key), 250);
+                if (gen !== histGen) return;   // 这期间用户又切了会话，别再画了
+                if (row && row.items) {
+                    paintHistory(row.items);
+                    shownItems = row.items;
+                }
+            }
+
+            // 2) 再对齐服务端
+            const resp = await fetch('/history?targetuser=' + encodeURIComponent(userParam) + dateParam);
+            if (gen !== histGen) return;
+            let history = [];
+            if (resp.ok) {
+                history = await resp.json();
+            } else {
+                // 服务端返回 400（如私聊对象不存在于用户列表）时给出提示，不渲染旧消息
+                showError(await resp.text());
+                return; // 失败时保留上面的本地副本，别清空成白屏
+            }
+            if (gen !== histGen) return;
+
+            // 数据没变就不重画：省掉一次整块 DOM 重建，图片也不会重新解码
+            if (!shownItems || histFingerprint(shownItems) !== histFingerprint(history)) {
+                paintHistory(history);
+            }
+
+            // 3) 回写缓存（内联 base64 的老存档跳过，见 hasLegacyImage）
+            if (window.IdbStore && !hasLegacyImage(history)) {
+                IdbStore.set(HIST_STORE, {
+                    k: key,
+                    user: userParam,
+                    day: currentDay || '',
+                    items: history,
+                    savedAt: Date.now()
+                }).then(pruneHistoryCache, function () {});
+            }
         }
 
         async function sendMsg() {
