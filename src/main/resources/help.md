@@ -85,6 +85,7 @@
 | `/`、`/client-lzysso/h5-sso` | auth | 跳转 `browser.html`（SSO 落点） |
 | `/download?url=&inline=` | — | 下载代理；`inline=1` 时将 CSS/HTML 相对 URL 改写为绝对 URL |
 | `/resources/...` | — | 静态资源（各页面 HTML/CSS/JS） |
+| `/environment` | auth | 跳转 `environment.html`：浏览器能力检测页 |
 
 ## Timetable（课表）
 | 端点 | 鉴权 | 用法 |
@@ -138,3 +139,54 @@
 `GET /closeVideo` 立刻收回。放行**只到这节课结束** —— 课表阶段一变（上下课切换）
 `VideoGate.followTimetable()` 就自动清掉，避免一次放行忘关、之后一直开着。
 `/openVideo`、`/closeVideo` 都走 `control` 鉴权，返回纯文本（如 `Video opened for this period`）。
+
+## Environment（浏览器能力检测）
+
+`/environment`（auth）跳转 `environment.html`。这一页用**当前浏览器**真跑一批能力探测，
+分组展示「✓ 可用 / ✗ 不可用 / · 信息」，并给出可一键复制的 JSON 结果（`{generatedAt, url, userAgent, summary, groups}`）。
+
+**每行都有一个「是否影响本项目」标签**，这是读结果的关键：`本项目在用` / `约定避开` / `无关`。
+红叉多不代表有问题 —— Chrome 80 缺失的 `:has()`、`dvh`、`replaceAll` 之类本项目根本没用到，
+恰好是 CLAUDE.md 里写明"不准用"的（如 flex gap），报 ✗ 完全是预期的。真正要处理的只有
+顶栏那句「影响本项目且不可用：n 项」，它统计的正是 `本项目在用` 且 ✗ 的项；这些行会额外标红加粗。
+JSON 里对应 `summary.depFail`，每项还有 `use` 字段。
+
+检测项分八组，都是本项目实际依赖、或升级浏览器时容易踩到的能力：
+
+- **存储**：Cookie 读写、localStorage、sessionStorage、IndexedDB、BroadcastChannel 收发、
+  Cache Storage、存储配额估算。隐私模式下 localStorage / IndexedDB 常常直接抛错，
+  这也是 `page-store.js` 不用 localStorage 的原因。
+- **缓存与图片**：这一组回答同一个问题 —— 同一张图第二次还要不要重新下载。
+  探测图是随包发布的 `/resources/lib/img/probe.png`（96×96、约 25KB，故意做成压不动的噪声，
+  体积够大才量得准）。判据是 Resource Timing 的 `transferSize`：**0 表示这次没有发生网络传输**；
+  别用 Network 面板的 `fromDiskCache`，CDP 对子资源经常报 false 但服务端计数不涨。
+  八项分别是：① 图片二次加载走缓存（先 `fetch(cache:'reload')` 强制回源一次，再用 `<img>` 普通加载
+  同一地址，第二次传输 0 字节才算命中）；② 服务端下发的缓存头（读 `Cache-Control`/`Last-Modified`/`ETag`，
+  有 `max-age>=1` 且没有 `no-store`/`no-cache` 才算强缓存）；③ 条件请求回 304（拿 `Last-Modified`
+  作 `If-Modified-Since` 再请求一次，期望 304 且无响应体）；④ `fetch(cache:'force-cache')`；
+  ⑤ `HTMLImageElement.decode()`；⑥ `loading`/`decoding` 属性（聊天图片列表靠它懒加载省内存）；
+  ⑦ `caches.match()`；⑧ sessionStorage 能否写下 256KB 快照（video 页后退恢复列表用）。
+  这一组在 DevTools 勾了 Disable cache 时，①④ 会如实报 ✗ —— 那不是页面坏了，是浏览器在按
+  `no-store` 处理一切请求。`/resources` 下的图片与 JS/CSS 一样走 `max-age=604800, must-revalidate`，
+  所以 ①②③ 三项在正常情况下都应是 ✓。
+- **网络**：fetch、XMLHttpRequest、WebSocket、EventSource、ReadableStream、AbortController、
+  sendBeacon、`performance` 的 `navigation.type`（video 页据此判断是不是后退回来的，决定要不要复用快照）、
+  `history.replaceState`、`scrollTo({behavior})`。
+- **媒体与图形**：Canvas 2D、`canvas.toDataURL`（真画一个 2×2 红块再导出 PNG）、`playbackRate` 可写、
+  MediaSource、H.264 / HEVC / AV1 的 `canPlayType`、Web Audio、FileReader、`URL.createObjectURL`、全屏 API。
+- **输入与交互**：PointerEvent、`setPointerCapture`、TouchEvent、`pointer: coarse`、WheelEvent。
+- **CSS**：自定义属性、**flex 容器的 gap**（真建一个 `display:flex;gap:10px` 的盒子量两子盒间距 ——
+  只查 `CSS.supports('gap','1px')` 不可靠，仅支持 grid gap 的浏览器也返回 true）、inset、aspect-ratio、
+  accent-color、backdrop-filter、color-scheme、dvh、clamp/min/max、sticky、overscroll-behavior、
+  `:is()/:where()`、`:has()`、`:focus-visible`、Grid、scroll-behavior、`env(safe-area-inset-*)`。
+- **JavaScript 运行时**：Promise、class、可选链 `?.` 与 `??`（Chrome 80 是第一版支持的稳定版）、
+  replaceAll、`Array.prototype.at`、Object.hasOwn、structuredClone、WeakRef、Intl.Segmenter、globalThis、
+  queueMicrotask、Intersection/ResizeObserver、TextDecoder/TextEncoder。语法类用 `new Function(src)` 探。
+- **运行环境**：协议与主机、`isSecureContext`、`navigator.clipboard`、`document.execCommand('copy')`、
+  Service Worker、visibilityState、`prefers-color-scheme`、`prefers-reduced-motion`、`navigator.onLine`、
+  `navigator.userAgentData`、`devicePixelRatio`。
+
+页面本身刻意用最保守的写法（ES5、不用 flex gap / inset / `:has()`，CSS 用 `> * + * { margin-left }`）：
+它要告诉用户"当前浏览器缺什么"，自己用的新语法越多，越可能压根跑不起来。
+异步项有 2.5 秒超时兜底，标为「· 信息」并注明"超时未响应（可能被浏览器限制）"。
+复制优先 `navigator.clipboard`，非安全上下文（局域网 http）退回去 `execCommand('copy')`。

@@ -38,6 +38,7 @@ object Network {
         download()
         browser()
         timetable()
+        environment()
         fileDir()
         update()
     }
@@ -334,6 +335,15 @@ object Network {
             }
             get("/timetable/now") {
                 call.respondText(timetableNowJson(), ContentType.Application.Json)
+            }
+        }
+    }
+
+    // 环境检测页：页面是纯前端的，服务端只负责给一条干净路径
+    private fun Route.environment() {
+        authenticate("auth") {
+            get("/environment") {
+                call.respondRedirect("/resources/environment.html")
             }
         }
     }

@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>环境检测</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
+    <style>
+        /*
+         * 这一页本身要用最保守的写法：它的职责就是告诉用户"当前浏览器缺什么"，
+         * 如果它自己用了新语法/新属性，老浏览器会直接白屏，检测结果就无从谈起。
+         * 所以：ES5 语法、不用 flex gap（用 margin 兜底）、不用 inset、不用 :has()。
+         */
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 14px;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            min-height: 56px;
+            padding: 10px 18px;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+        }
+        .topbar h1 { margin: 0; font-size: 18px; }
+        .topbar > * + * { margin-left: 12px; }
+        .topbar .nav-setting {
+            margin-left: auto;
+            color: var(--muted);
+            font-size: 13px;
+            text-decoration: none;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+            white-space: nowrap;
+        }
+        .topbar .nav-setting:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+        .summary { font-size: 12px; color: var(--muted); white-space: nowrap; }
+        .summary b { font-weight: 600; }
+        .summary .s-pass { color: #2f9e44; }
+        .summary .s-fail { color: var(--danger); }
+        .summary .s-dep { color: var(--danger); font-weight: 600; }
+        .summary .s-dep.zero { color: var(--muted); font-weight: 400; }
+        html[data-theme="dark"] .summary .s-pass { color: #51cf66; }
+
+        .wrap { max-width: 900px; margin: 0 auto; padding: 18px; }
+
+        .toolbar { display: flex; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+        .toolbar > * { margin-right: 10px; margin-bottom: 6px; }
+
+        .btn {
+            padding: 7px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+            color: var(--text);
+            font-size: 13px;
+            font-family: inherit;
+            cursor: pointer;
+        }
+        .btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+        .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+        .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
+        .btn[disabled] { opacity: .55; cursor: default; }
+
+        .onlybad { font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+        .onlybad input { vertical-align: -2px; margin-right: 4px; }
+
+        .ua { font-size: 12px; color: var(--muted); flex: 1 1 240px; min-width: 0; word-break: break-all; }
+
+        .group {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            margin-bottom: 14px;
+            overflow: hidden;
+        }
+        .group > h2 {
+            margin: 0;
+            padding: 10px 14px;
+            font-size: 14px;
+            background: var(--fill);
+            border-bottom: 1px solid var(--border);
+        }
+        .group > .note {
+            padding: 8px 14px;
+            color: var(--muted);
+            font-size: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .row {
+            display: flex;
+            align-items: baseline;
+            padding: 7px 14px;
+            border-top: 1px solid var(--border);
+            font-size: 13px;
+        }
+        .row:first-of-type { border-top: none; }
+        .row.hide { display: none; }
+        .row .badge { flex: 0 0 54px; font-weight: 600; font-size: 12px; }
+        .row .name { flex: 0 0 40%; min-width: 0; }
+        .row .name code { font-size: 11px; color: var(--muted); }
+        /* use：这项能力到底影不影响本项目 —— 红叉多不多不是重点，dep 里有红叉才是 */
+        .row .use {
+            flex: 0 0 auto;
+            margin-right: 6px;
+            padding: 0 5px;
+            border-radius: 4px;
+            font-size: 11px;
+            line-height: 17px;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            white-space: nowrap;
+        }
+        .row .use.dep { color: var(--accent); border-color: var(--accent); }
+        .row .use.dep.broken { color: var(--danger); border-color: var(--danger); font-weight: 600; }
+
+        .legend {
+            padding: 8px 14px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.7;
+            border-top: 1px solid var(--border);
+        }
+        .legend .use { margin-right: 4px; }
+        .row .detail { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 12px; word-break: break-all; }
+
+        .badge.ok { color: #2f9e44; }
+        .badge.bad { color: var(--danger); }
+        .badge.info { color: var(--muted); font-weight: 400; }
+        .badge.wait { color: var(--muted); font-weight: 400; }
+        html[data-theme="dark"] .badge.ok { color: #51cf66; }
+
+        .section { margin: 22px 0 8px; font-size: 15px; }
+
+        .json {
+            margin: 0;
+            padding: 12px 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 420px;
+            overflow: auto;
+            color: var(--text-2);
+        }
+    </style>
+</head>
+<body>
+
+<header class="topbar">
+    <h1>环境检测</h1>
+    <span class="summary" id="summary">检测中…</span>
+    <a class="nav-setting" href="/setting">⚙ 设置</a>
+</header>
+
+<main class="wrap">
+    <div class="toolbar">
+        <button type="button" class="btn" id="rerun">重新检测</button>
+        <button type="button" class="btn primary" id="copyJson">复制 JSON</button>
+        <label class="onlybad"><input type="checkbox" id="onlyBad">只看不可用</label>
+        <span class="ua" id="ua"></span>
+    </div>
+
+    <div class="legend">
+        每行第三列标的是「这项能力影不影响本项目」：
+        <span class="use dep">本项目在用</span>代码里真的会调用，不可用就会坏；
+        <span class="use avoid">约定避开</span>CLAUDE.md 写明不准用（如 flex gap），不可用属正常；
+        <span class="use none">无关</span>本项目没用到，仅供参考。
+        所以看红叉数量没意义，顶栏那只「影响本项目且不可用」才是要处理的。
+    </div>
+
+    <div id="groups"></div>
+
+    <h2 class="section">JSON</h2>
+    <pre class="json" id="json"></pre>
+</main>
+
+<script>
+/*
+ * 环境检测：逐项探测本项目（以及"能升级到什么程度"）依赖的浏览器能力。
+ *
+ * 设计取舍：
+ * 1. 全部用 ES5 写 —— 这页就是为了给老浏览器看的，用新语法会因为语法错误整个不执行。
+ * 2. "能力"分两类：查构造函数（`typeof x === 'function'`）和真跑一遍（写一次 Cookie 再读回、
+ *    量一次 flex gap 的实际间距）。后者才是真结论 —— 例如 `CSS.supports('gap', '1px')`
+ *    在只支持 grid gap 的浏览器上也返回 true，量出来的间距不会骗人。
+ * 3. 结果三态：true 可用 / false 不可用 / null 未知或纯信息。异步项一律 2.5 秒超时兜底，
+ *    避免 IndexedDB 被隐私模式卡住时页面一直转。
+ */
+(function () {
+    'use strict';
+
+    // ---------- 小工具 ----------
+    function supports(props) {
+        if (!window.CSS || !CSS.supports) return false;
+        try { return CSS.supports(props[0], props[1]); } catch (e) { return false; }
+    }
+
+    function supportsSelector(sel) {
+        if (!window.CSS || !CSS.supports) return false;
+        try { return CSS.supports('selector(' + sel + ')'); } catch (e) { return false; }
+    }
+
+    // 用 new Function 探语法：不支持的语法在构造阶段就抛，不会污染全局
+    function syntaxOk(src) {
+        try { new Function(src); return true; } catch (e) { return false; }
+    }
+
+    function hasType(name, ctor) {
+        return typeof ctor === 'function';
+    }
+
+    // ---------- 真实测量：flex 容器的 gap ----------
+    // 只查 CSS.supports('gap', '1px') 不可靠（只支持 grid gap 的浏览器也返回 true），
+    // 所以真的建一个 flex 容器量两个子盒之间的距离。
+    function measureFlexGap() {
+        var box = document.createElement('div');
+        box.style.cssText = 'position:absolute;left:-9999px;top:0;display:flex;' +
+            'flex-direction:row;gap:10px;width:100px;height:10px;';
+        var a = document.createElement('div');
+        a.style.cssText = 'width:10px;height:10px;flex:0 0 auto;';
+        var b = document.createElement('div');
+        b.style.cssText = 'width:10px;height:10px;flex:0 0 auto;';
+        box.appendChild(a);
+        box.appendChild(b);
+        document.body.appendChild(box);
+        var gap = b.offsetLeft - (a.offsetLeft + a.offsetWidth);
+        document.body.removeChild(box);
+        return gap;
+    }
+
+    // ---------- 真实测量：图片与 HTTP 缓存 ----------
+    // 判定"有没有走缓存"只认 Resource Timing 的 transferSize：0 表示这次没有发生网络传输。
+    // 注意别用 Network 面板的 fromDiskCache —— CDP 对子资源经常报 false，但服务端计数不涨。
+    var CACHE_PROBE_PATH = '/resources/lib/img/probe.png';
+
+    function absUrl(path) {
+        try { return new URL(path, location.href).href; } catch (e) { return path; }
+    }
+
+    function httpOnly() {
+        return location.protocol === 'http:' || location.protocol === 'https:';
+    }
+
+    // 取该 URL 最近一条资源计时（同一 URL 会累积多条，取最后一条才是本次加载）
+    function lastTransfer(href) {
+        if (!window.performance || typeof performance.getEntriesByName !== 'function') return null;
+        var list = performance.getEntriesByName(href);
+        if (!list || !list.length) return null;
+        var e = list[list.length - 1];
+        return {
+            transferSize: typeof e.transferSize === 'number' ? e.transferSize : -1,
+            encodedBodySize: e.encodedBodySize
+        };
+    }
+
+    // 用 <img> 加载一张探测图，回来时告诉我们它这次传了多少字节
+    function probeImage(href, cb) {
+        var img = new Image();
+        var started = Date.now();
+        var fired = false;
+        function finish(ok) {
+            if (fired) return;
+            fired = true;
+            img.onload = null;
+            img.onerror = null;
+            cb({ ok: ok, timing: lastTransfer(href), ms: Date.now() - started });
+        }
+        img.onload = function () { finish(true); };
+        img.onerror = function () { finish(false); };
+        img.src = href;
+    }
+
+    // ---------- 检测项定义 ----------
+    // 每项 { id, label, hint, run(done) }；done 可传 true/false/{ok, detail}/字符串
+    var GROUPS = [
+        {
+            id: 'storage',
+            title: '一、存储',
+            note: 'PageStore 与主题偏好都走 Cookie；视频列表快照存 sessionStorage；主题跨标签同步用 BroadcastChannel。' +
+                '隐私模式下 localStorage / IndexedDB 常常直接抛错，这也是 PageStore 不用 localStorage 的原因。',
+            items: [
+                {
+                    id: 'cookie',
+                    use: 'dep',
+                    label: 'Cookie 读写',
+                    hint: 'PageStore 的 ls_<页面>_<键>、主题 ls_theme 全靠它',
+                    run: function (done) {
+                        if (navigator.cookieEnabled === false) {
+                            done({ ok: false, detail: 'navigator.cookieEnabled = false' });
+                            return;
+                        }
+                        var name = 'ls_envtest_' + Math.floor(Math.random() * 1000000000);
+                        document.cookie = name + '=1; path=/; max-age=60';
+                        var read = document.cookie.indexOf(name + '=1') >= 0;
+                        document.cookie = name + '=; path=/; max-age=0';
+                        done({ ok: read, detail: read ? '写入并读回成功' : '写入后读不回来（隐私设置或第三方 Cookie 拦截）' });
+                    }
+                },
+                {
+                    id: 'localStorage',
+                    use: 'avoid',
+                    label: 'localStorage',
+                    hint: '本项目刻意不用；但很多第三方脚本依赖它',
+                    run: function (done) {
+                        try {
+                            localStorage.setItem('ls_envtest', '1');
+                            var v = localStorage.getItem('ls_envtest');
+                            localStorage.removeItem('ls_envtest');
+                            done({ ok: v === '1', detail: v === '1' ? '读写正常' : '写入后读到 ' + v });
+                        } catch (e) {
+                            done({ ok: false, detail: '抛错 ' + (e && e.name ? e.name : e) + '（隐私模式常见）' });
+                        }
+                    }
+                },
+                {
+                    id: 'sessionStorage',
+                    use: 'dep',
+                    label: 'sessionStorage',
+                    hint: 'video 页的后退恢复快照（pageCache）用它',
+                    run: function (done) {
+                        try {
+                            sessionStorage.setItem('ls_envtest', '1');
+                            var v = sessionStorage.getItem('ls_envtest');
+                            sessionStorage.removeItem('ls_envtest');
+                            done({ ok: v === '1', detail: v === '1' ? '读写正常' : '写入后读到 ' + v });
+                        } catch (e) {
+                            done({ ok: false, detail: '抛错 ' + (e && e.name ? e.name : e) });
+                        }
+                    }
+                },
+                {
+                    id: 'indexedDB',
+                    use: 'none',
+                    label: 'IndexedDB',
+                    hint: '本项目没用；依赖它的脚本在隐私模式下会失败',
+                    run: function (done) {
+                        if (!window.indexedDB) { done(false); return; }
+                        try {
+                            var req = indexedDB.open('ls_envtest');
+                            req.onupgradeneeded = function () {};
+                            req.onsuccess = function () {
+                                try { req.result.close(); } catch (e) {}
+                                try { indexedDB.deleteDatabase('ls_envtest'); } catch (e) {}
+                                done({ ok: true, detail: '可打开数据库' });
+                            };
+                            req.onerror = function () {
+                                done({ ok: false, detail: '打开被拒绝：' + (req.error && req.error.name || 'unknown') });
+                            };
+                            req.onblocked = function () {
+                                done({ ok: false, detail: '被阻塞（隐私模式常见）' });
+                            };
+                        } catch (e) {
+                            done({ ok: false, detail: '抛错 ' + e });
+                        }
+                    }
+                },
+                {
+                    id: 'broadcastChannel',
+                    use: 'dep',
+                    label: 'BroadcastChannel 收发',
+                    hint: 'theme.js 用它同步多个标签页的主题',
+                    run: function (done) {
+                        if (typeof BroadcastChannel !== 'function') { done(false); return; }
+                        var a = null, b = null;
+                        try {
+                            // 必须建两个同名对象：BroadcastChannel 不会把消息回环给发送者自己
+                            a = new BroadcastChannel('ls_envtest');
+                            b = new BroadcastChannel('ls_envtest');
+                            b.onmessage = function (ev) {
+                                if (ev.data === 'ping') done({ ok: true, detail: '同源标签页之间可收发' });
+                            };
+                            a.postMessage('ping');
+                        } catch (e) {
+                            done({ ok: false, detail: '抛错 ' + e });
+                        }
+                    }
+                },
+                {
+                    id: 'cacheStorage',
+                    use: 'none',
+                    label: 'Cache Storage',
+                    hint: 'Service Worker 的离线缓存前置；本项目没用',
+                    run: function (done) {
+                        if (!window.caches || !caches.open) { done(false); return; }
+                        try {
+                            caches.open('ls_envtest').then(function () {
+                                if (caches.delete) caches.delete('ls_envtest');
+                                done({ ok: true, detail: '可打开命名缓存' });
+                            }, function (err) {
+                                done({ ok: false, detail: '打开失败：' + (err && err.name || 'unknown') });
+                            });
+                        } catch (e) {
+                            done({ ok: false, detail: '抛错 ' + e });
+                        }
+                    }
+                },
+                {
+                    id: 'storageEstimate',
+                    use: 'none',
+                    label: '存储配额估算',
+                    hint: 'navigator.storage.estimate()',
+                    run: function (done) {
+                        if (!navigator.storage || !navigator.storage.estimate) { done(false); return; }
+                        try {
+                            navigator.storage.estimate().then(function (e) {
+                                var used = (e.usage / 1048576).toFixed(1);
+                                var quota = (e.quota / 1048576).toFixed(0);
+                                done({ ok: true, detail: '已用 ' + used + ' MB / 配额 ' + quota + ' MB' });
+                            }, function () {
+                                done({ ok: false, detail: '接口存在但调用失败' });
+                            });
+                        } catch (e) {
+                            done({ ok: false, detail: '抛错 ' + e });
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            id: 'cache',
+            title: '二、缓存与图片',
+            note: '这一组回答同一个问题：同一张图第二次还要不要重新下载。聊天图片走 /img/{*}（文件名是内容哈希、' +
+                '响应带 immutable），B 站封面走 /biliImg（首次落盘 cache/bilibili/），静态 JS/CSS 走长缓存 + 条件请求。' +
+                '判据是 Resource Timing 的 transferSize：0 表示这次没有发生网络传输。' +
+                '如果这里显示不可用，先确认 DevTools 的 Disable cache 没勾上（勾了会一路 no-store）。',
+            items: [
+                {
+                    id: 'httpCacheImg',
+                    use: 'dep',
+                    label: '图片二次加载走缓存',
+                    hint: '先用 fetch(cache:"reload") 强制回源一次，再用 <img> 普通加载同一地址，看它传了多少字节',
+                    run: function (done) {
+                        if (!httpOnly()) { done({ ok: null, detail: 'file:// 打开，没有 HTTP 缓存可言' }); return; }
+                        if (!window.fetch) { done({ ok: null, detail: '没有 fetch，无法强制回源' }); return; }
+                        var href = absUrl(CACHE_PROBE_PATH);
+                        fetch(href, { cache: 'reload' }).then(function () {
+                            probeImage(href, function (r) {
+                                if (!r.ok) {
+                                    done({ ok: false, detail: '探测图加载失败（resources/lib/img/probe.png 是否随包发布？）' });
+                                    return;
+                                }
+                                if (!r.timing || r.timing.transferSize < 0) {
+                                    done({ ok: null, detail: '浏览器不给资源计时，无法量化' });
+                                    return;
+                                }
+                                var cached = r.timing.transferSize === 0;
+                                done({
+                                    ok: cached,
+                                    detail: cached
+                                        ? '第二次传输 0 字节，命中缓存（' + r.ms + 'ms）'
+                                        : '第二次仍传输 ' + r.timing.transferSize + ' 字节，强缓存没生效'
+                                });
+                            });
+                        }, function () {
+                            done({ ok: false, detail: '强制回源失败，' + CACHE_PROBE_PATH + ' 取不到' });
+                        });
+                    }
+                },
+                {
+                    id: 'cacheHeaders',
+                    use: 'dep',
+                    label: '服务端下发的缓存头',
+                    hint: '直接读探测图的 Cache-Control / Last-Modified / ETag',
+                    run: function (done) {
+                        if (!httpOnly() || !window.fetch) { done({ ok: null, detail: '需要 http(s) + fetch' }); return; }
+                        var href = absUrl(CACHE_PROBE_PATH);
+                        fetch(href, { cache: 'no-store' }).then(function (res) {
+                            var cc = res.headers.get('cache-control') || '（无）';
+                            var lm = res.headers.get('last-modified') || '（无）';
+                            var etag = res.headers.get('etag') || '（无）';
+                            // no-store / no-cache 都不算强缓存；max-age=0 也不算
+                            var strong = /max-age=[1-9]/i.test(cc) && !/no-store|no-cache/i.test(cc);
+                            done({
+                                ok: strong,
+                                detail: 'Cache-Control: ' + cc + '；Last-Modified: ' + lm + '；ETag: ' + etag
+                            });
+                        }, function () {
+                            done({ ok: false, detail: '取不到探测图' });
+                        });
+                    }
+                },
+                {
+                    id: 'revalidate',
+                    use: 'dep',
+                    label: '条件请求回 304',
+                    hint: '拿服务端的 Last-Modified 作 If-Modified-Since 再请求一次，期望 304 且无响应体',
+                    run: function (done) {
+                        if (!httpOnly() || !window.fetch) { done({ ok: null, detail: '需要 http(s) + fetch' }); return; }
+                        var href = absUrl(CACHE_PROBE_PATH);
+                        fetch(href, { cache: 'reload' }).then(function (first) {
+                            var lm = first.headers.get('last-modified');
+                            if (!lm) {
+                                done({ ok: false, detail: '服务端没下发 Last-Modified，条件请求无从谈起' });
+                                return;
+                            }
+                            return fetch(href, {
+                                cache: 'no-store',
+                                headers: { 'If-Modified-Since': lm }
+                            }).then(function (second) {
+                                var ok = second.status === 304;
+                                done({
+                                    ok: ok,
+                                    detail: ok ? '回 304 Not Modified（' + lm + '），省下了整个响应体'
+                                        : '回 ' + second.status + '，没有走 304'
+                                });
+                            });
+                        }).then(null, function (e) {
+                            done({ ok: false, detail: '请求失败：' + (e && e.message ? e.message : e) });
+                        });
+                    }
+                },
+                {
+                    id: 'fetchForceCache',
+                    use: 'none',
+                    label: 'fetch(cache:"force-cache")',
+                    hint: '强制只用缓存；请求库想省流量时用它',
+                    run: function (done) {
+                        if (!httpOnly() || !window.fetch) { done({ ok: null, detail: '需要 http(s) + fetch' }); return; }
+                        var href = absUrl(CACHE_PROBE_PATH);
+                        fetch(href, { cache: 'force-cache' }).then(function () {
+                            var t = lastTransfer(href);
+                            // 拿不到资源计时条目时不能判死：有些浏览器不给 fetch 留 Timing，
+                            // 原来会报 "仍传输 ? 字节" 而被当成"缓存没生效"，是误报。
+                            if (!t || t.transferSize < 0) {
+                                done({ ok: null, detail: '浏览器没给这次请求留资源计时，无法量化' });
+                                return;
+                            }
+                            var hit = t.transferSize === 0;
+                            done({
+                                ok: hit,
+                                detail: hit ? 'force-cache 命中，0 字节'
+                                    : 'force-cache 仍传输 ' + t.transferSize + ' 字节'
+                            });
+                        }, function (e) {
+                            done({ ok: false, detail: 'cache:"force-cache" 不可用：' + (e && e.message ? e.message : e) });
+                        });
+                    }
+                },
+                {
+                    id: 'imgDecode',
+                    use: 'none',
+                    label: 'HTMLImageElement.decode()',
+                    hint: '异步解码；lightbox 大图预览不想卡主线程时用',
+                    run: function (done) {
+                        if (typeof HTMLImageElement === 'undefined' ||
+                            typeof HTMLImageElement.prototype.decode !== 'function') {
+                            done(false);
+                            return;
+                        }
+                        var img = new Image();
+                        img.onload = function () {
+                            if (typeof img.decode !== 'function') { done(false); return; }
+                            var p = img.decode();
+                            if (!p || typeof p.then !== 'function') { done({ ok: false, detail: 'decode() 没返回 Promise' }); return; }
+                            p.then(function () { done({ ok: true, detail: '加载后 decode() 成功' }); },
+                                function (e) { done({ ok: false, detail: 'decode() 失败：' + (e && e.name || e) }); });
+                        };
+                        img.onerror = function () { done({ ok: false, detail: '探测图加载失败' }); };
+                        img.src = absUrl(CACHE_PROBE_PATH);
+                    }
+                },
+                {
+                    id: 'imgHints',
+                    use: 'dep',
+                    label: 'loading / decoding 提示属性',
+                    hint: '聊天图片列表用 loading=lazy + decoding=async 省内存',
+                    run: function (done) {
+                        if (typeof HTMLImageElement === 'undefined') { done(false); return; }
+                        var lazy = 'loading' in HTMLImageElement.prototype;
+                        var async = 'decoding' in HTMLImageElement.prototype;
+                        done({ ok: lazy && async, detail: 'loading=' + lazy + '，decoding=' + async });
+                    }
+                },
+                {
+                    id: 'cacheStorageMatch',
+                    use: 'none',
+                    label: 'Cache Storage 查询（caches.match）',
+                    hint: 'Service Worker 之外也能用；做离线图库的前置',
+                    run: function (done) {
+                        if (!('caches' in window) || typeof caches.match !== 'function') { done(false); return; }
+                        var href = absUrl(CACHE_PROBE_PATH);
+                        var p = caches.match(href);
+                        if (!p || typeof p.then !== 'function') { done({ ok: false, detail: 'caches.match 没返回 Promise' }); return; }
+                        p.then(function (hit) {
+                            done({ ok: true, detail: hit ? 'API 可用，且已缓存该图' : 'API 可用，当前没有缓存条目' });
+                        }, function (e) {
+                            done({ ok: false, detail: '调用失败：' + (e && e.name || e) });
+                        });
+                    }
+                },
+                {
+                    id: 'sessionSnapshot',
+                    use: 'dep',
+                    label: 'sessionStorage 快照容量',
+                    hint: 'video 页后退恢复列表时把 JSON 存这里，太小会存不下',
+                    run: function (done) {
+                        if (!window.sessionStorage) { done({ ok: false, detail: '没有 sessionStorage' }); return; }
+                        var bytes = 256 * 1024;
+                        var chunk = new Array(bytes / 2 + 1).join('x');   // 256KB 左右
+                        try {
+                            sessionStorage.setItem('ls_envtest_snap', chunk);
+                            var back = sessionStorage.getItem('ls_envtest_snap');
+                            sessionStorage.removeItem('ls_envtest_snap');
+                            var ok = !!back && back.length === chunk.length;
+                            done({ ok: ok, detail: ok ? '可以写入 256KB 快照' : '写入后被截断（实际 ' + (back ? back.length : 0) + ' 字符）' });
+                        } catch (e) {
+                            done({ ok: false, detail: '写 256KB 抛错：' + (e && e.name || e) + '（配额不足或隐私模式）' });
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            id: 'network',
+            title: '三、网络',
+            note: '聊天走 WebSocket，AI 页走 SSE，视频取流与图片都靠 fetch/XHR。' +
+                '"后退类型可读"决定 video 页能否在浏览器重建页面时保住已加载的列表。',
+            items: [
+                { id: 'fetch', use: 'dep', label: 'fetch', hint: '几乎所有页面都靠它', run: function (done) { done(hasType('fetch', window.fetch)); } },
+                { id: 'xhr', use: 'dep', label: 'XMLHttpRequest', hint: 'timetable / 轮询等仍用它', run: function (done) { done(hasType('xhr', window.XMLHttpRequest)); } },
+                { id: 'websocket', use: 'dep', label: 'WebSocket', hint: 'chat 页 /message 长连接', run: function (done) { done(hasType('ws', window.WebSocket)); } },
+                { id: 'eventsource', use: 'dep', label: 'EventSource（SSE）', hint: 'ai 页 /ai/chat 流式回复', run: function (done) { done(hasType('sse', window.EventSource)); } },
+                { id: 'readableStream', use: 'none', label: 'ReadableStream', hint: '流式读取响应体', run: function (done) { done(hasType('rs', window.ReadableStream)); } },
+                { id: 'abortController', use: 'none', label: 'AbortController', hint: '取消进行中的请求', run: function (done) { done(hasType('ac', window.AbortController)); } },
+                { id: 'sendBeacon', use: 'dep', label: 'navigator.sendBeacon', hint: '页面关闭前上报', run: function (done) { done(typeof navigator.sendBeacon === 'function'); } },
+                {
+                    id: 'navTiming',
+                    use: 'dep',
+                    label: '导航类型可读（navigation.type）',
+                    hint: 'video 页据此判断"是不是后退回来的"，决定要不要复用快照',
+                    run: function (done) {
+                        if (!window.performance || !performance.getEntriesByType) { done(false); return; }
+                        try {
+                            var list = performance.getEntriesByType('navigation');
+                            var type = list && list.length ? list[0].type : null;
+                            done({ ok: !!type, detail: type ? '本次 navigation.type = ' + type : '取不到 navigation 条目' });
+                        } catch (e) {
+                            done({ ok: false, detail: '抛错 ' + e });
+                        }
+                    }
+                },
+                {
+                    id: 'replaceState',
+                    use: 'dep',
+                    label: 'history.replaceState',
+                    hint: 'video 搜索页用它把条件同步进 URL 且不重载',
+                    run: function (done) {
+                        if (!window.history || typeof history.replaceState !== 'function') { done(false); return; }
+                        try {
+                            history.replaceState(history.state, '', location.href);
+                            done({ ok: true, detail: '调用成功' });
+                        } catch (e) {
+                            done({ ok: false, detail: '抛错 ' + e });
+                        }
+                    }
+                },
+                {
+                    id: 'smoothScroll',
+                    use: 'dep',
+                    label: 'scrollTo({behavior}) 平滑滚动',
+                    hint: 'chat 页跟随新消息用；不支持时退化为瞬时跳转',
+                    run: function (done) {
+                        var hasScrollTo = !!document.documentElement && typeof document.documentElement.scrollTo === 'function';
+                        var hasCss = supports(['scroll-behavior', 'smooth']);
+                        done({
+                            ok: hasScrollTo || hasCss,
+                            detail: 'Element.scrollTo=' + (hasScrollTo ? '有' : '无') + '，scroll-behavior=' + (hasCss ? '支持' : '不支持')
+                        });
+                    }
+                }
+            ]
+        },
+        {
+            id: 'media',
+            title: '四、媒体与图形',
+            note: '播放页的倍速、截帧，以及 B 站 DASH 的三种编码能不能播。' +
+                'HEVC / AV1 靠的是系统解码器，同一浏览器在不同机器上结论可能不同。',
+            items: [
+                {
+                    id: 'canvas2d',
+                    use: 'dep',
+                    label: 'Canvas 2D',
+                    hint: '截帧的画面来源',
+                    run: function (done) {
+                        var c = document.createElement('canvas');
+                        c.width = 2; c.height = 2;
+                        var ctx = null;
+                        try { ctx = c.getContext('2d'); } catch (e) { ctx = null; }
+                        done({ ok: !!ctx, detail: ctx ? '可取得 2d 上下文' : '取不到上下文（可能被限制）' });
+                    }
+                },
+                {
+                    id: 'toDataURL',
+                    use: 'dep',
+                    label: 'canvas.toDataURL 导出 PNG',
+                    hint: '截帧后交给 lightbox 预览与保存',
+                    run: function (done) {
+                        var c = document.createElement('canvas');
+                        c.width = 2; c.height = 2;
+                        try {
+                            var ctx = c.getContext('2d');
+                            ctx.fillStyle = '#f00';
+                            ctx.fillRect(0, 0, 2, 2);
+                            var url = c.toDataURL('image/png');
+                            var ok = url.indexOf('data:image/png') === 0 && url.length > 80;
+                            done({ ok: ok, detail: ok ? '导出的 dataURL 长度 ' + url.length : '导出结果异常' });
+                        } catch (e) {
+                            done({ ok: false, detail: '抛错 ' + e });
+                        }
+                    }
+                },
+                {
+                    id: 'playbackRate',
+                    use: 'dep',
+                    label: 'playbackRate 可写（倍速）',
+                    hint: '播放页 0.1x~3x 全靠它；DASH 还要同步给音轨',
+                    run: function (done) {
+                        var v = document.createElement('video');
+                        if (typeof v.playbackRate !== 'number') { done(false); return; }
+                        var ok = false;
+                        try {
+                            v.playbackRate = 2;
+                            ok = v.playbackRate === 2;
+                        } catch (e) {
+                            ok = false;
+                        }
+                        done({ ok: ok, detail: ok ? '可设为 2x 并读回' : '设置被忽略或抛错' });
+                    }
+                },
+                {
+                    id: 'mediaSource',
+                    use: 'none',
+                    label: 'MediaSource（MSE）',
+                    hint: '本项目用普通 video.src 直连，不依赖 MSE；留作参考',
+                    run: function (done) { done(typeof window.MediaSource !== 'undefined' || typeof window.ManagedMediaSource !== 'undefined'); }
+                },
+                {
+                    id: 'codecH264',
+                    use: 'dep',
+                    label: 'H.264 / AVC 解码',
+                    hint: 'DASH 的 codecid 7，兼容性最好的一档',
+                    run: function (done) {
+                        var v = document.createElement('video');
+                        var r = v.canPlayType ? v.canPlayType('video/mp4; codecs="avc1.42E01E"') : '';
+                        done({ ok: r === 'probably' || r === 'maybe', detail: r ? 'canPlayType 返回 "' + r + '"' : '空字符串（不支持）' });
+                    }
+                },
+                {
+                    id: 'codecHevc',
+                    use: 'none',
+                    label: 'H.265 / HEVC 解码',
+                    hint: 'DASH 的 codecid 12，同画质码率更低但常缺硬件支持',
+                    run: function (done) {
+                        var v = document.createElement('video');
+                        var r = v.canPlayType ? v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"') : '';
+                        done({ ok: r === 'probably' || r === 'maybe', detail: r ? 'canPlayType 返回 "' + r + '"' : '空字符串（不支持）' });
+                    }
+                },
+                {
+                    id: 'codecAv1',
+                    use: 'none',
+                    label: 'AV1 解码',
+                    hint: 'DASH 的 codecid 13，码率最低，旧机器多不支持',
+                    run: function (done) {
+                        var v = document.createElement('video');
+                        var r = v.canPlayType ? v.canPlayType('video/mp4; codecs="av01.0.05M.08"') : '';
+                        done({ ok: r === 'probably' || r === 'maybe', detail: r ? 'canPlayType 返回 "' + r + '"' : '空字符串（不支持）' });
+                    }
+                },
+                {
+                    id: 'webAudio',
+                    use: 'none',
+                    label: 'Web Audio',
+                    hint: '本项目没直接用；DASH 音轨是普通 audio 元素',
+                    run: function (done) { done(typeof window.AudioContext === 'function' || typeof window.webkitAudioContext === 'function'); }
+                },
+                {
+                    id: 'fileReader',
+                    use: 'dep',
+                    label: 'FileReader.readAsDataURL',
+                    hint: '本地选图后转 base64 发送',
+                    run: function (done) { done(typeof window.FileReader === 'function' && typeof FileReader.prototype.readAsDataURL === 'function'); }
+                },
+                {
+                    id: 'objectUrl',
+                    use: 'dep',
+                    label: 'URL.createObjectURL',
+                    hint: '本地预览图片/文件',
+                    run: function (done) { done(!!(window.URL && typeof URL.createObjectURL === 'function')); }
+                },
+                {
+                    id: 'fullscreen',
+                    use: 'none',
+                    label: '全屏 API',
+                    hint: '视频播放页可全屏',
+                    run: function (done) {
+                        var e = document.documentElement;
+                        var ok = typeof e.requestFullscreen === 'function' ||
+                            typeof e.webkitRequestFullscreen === 'function' ||
+                            typeof e.mozRequestFullScreen === 'function';
+                        done(ok);
+                    }
+                }
+            ]
+        },
+        {
+            id: 'input',
+            title: '五、输入与交互',
+            note: 'lightbox 的捏合缩放、拖拽平移依赖 Pointer Events 与 setPointerCapture。',
+            items: [
+                { id: 'pointerEvent', use: 'dep', label: 'PointerEvent', hint: 'lightbox 统一用 pointerdown/move/up', run: function (done) { done(typeof window.PointerEvent === 'function'); } },
+                { id: 'pointerCapture', use: 'dep', label: 'setPointerCapture', hint: '拖出图片边界后仍能跟手', run: function (done) { done(!!(window.Element && typeof Element.prototype.setPointerCapture === 'function')); } },
+                {
+                    id: 'touchEvent',
+                    use: 'none',
+                    label: 'TouchEvent',
+                    hint: '触点数量，捏合靠它',
+                    run: function (done) {
+                        var hasTouch = 'ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0;
+                        done({
+                            ok: hasTouch || typeof window.TouchEvent === 'function',
+                            detail: 'maxTouchPoints = ' + (navigator.maxTouchPoints || 0) + '，ontouchstart = ' + ('ontouchstart' in window)
+                        });
+                    }
+                },
+                {
+                    id: 'coarsePointer',
+                    use: 'none',
+                    label: '当前指针是触摸（pointer: coarse）',
+                    hint: '信息项：决定悬停提示之类要不要退化',
+                    run: function (done) {
+                        if (!window.matchMedia) { done({ ok: null, detail: '没有 matchMedia' }); return; }
+                        var m = window.matchMedia('(pointer: coarse)');
+                        done({ ok: null, detail: m.matches ? '是（触摸 / 手写笔为主）' : '否（鼠标为主）' });
+                    }
+                },
+                {
+                    id: 'wheel',
+                    use: 'dep',
+                    label: 'WheelEvent',
+                    hint: 'lightbox 滚轮缩放',
+                    run: function (done) { done(typeof window.WheelEvent === 'function' || 'onwheel' in document.createElement('div')); }
+                }
+            ]
+        },
+        {
+            id: 'css',
+            title: '六、CSS 能力',
+            note: '本项目要兼容 Chrome 80。下面几项是 Chrome 80 之后才补齐的，' +
+                '如果显示不可用，说明页面里绝不能依赖它们（约定见 CLAUDE.md）。' +
+                'flex gap 是真量出来的间距，不是查 CSS.supports —— 后者对只支持 grid gap 的浏览器也会说支持。',
+            items: [
+                { id: 'customProps', use: 'dep', label: 'CSS 自定义属性（变量）', hint: 'theme.css 的全部颜色都靠它', run: function (done) { done(supports(['--ls-test', '1'])); } },
+                {
+                    id: 'flexGap',
+                    use: 'avoid',
+                    label: 'flex 容器的 gap',
+                    hint: 'Chrome 84 才有；本项目一律用 margin 兜底',
+                    run: function (done) {
+                        var gap = measureFlexGap();
+                        done({ ok: gap >= 8, detail: '实测两子盒间距 ' + gap + 'px（期望 10px，不支持时为 0）' });
+                    }
+                },
+                { id: 'inset', use: 'avoid', label: 'inset 简写', hint: 'Chrome 87 才有；本项目用 top/right/bottom/left', run: function (done) { done(supports(['inset', '0'])); } },
+                { id: 'aspectRatio', use: 'avoid', label: 'aspect-ratio', hint: 'Chrome 88 才有', run: function (done) { done(supports(['aspect-ratio', '1 / 1'])); } },
+                { id: 'accentColor', use: 'avoid', label: 'accent-color', hint: 'Chrome 93 才有；音量/倍速滑块的强调色', run: function (done) { done(supports(['accent-color', 'red'])); } },
+                { id: 'backdropFilter', use: 'none', label: 'backdrop-filter', hint: '毛玻璃；Chrome 76 起无前缀', run: function (done) { done(supports(['backdrop-filter', 'blur(1px)'])); } },
+                { id: 'colorScheme', use: 'none', label: 'color-scheme', hint: '原生滚动条/控件跟随深浅色', run: function (done) { done(supports(['color-scheme', 'dark'])); } },
+                { id: 'dvh', use: 'avoid', label: 'dvh 视口单位', hint: 'Chrome 108 才有；本项目用 100vh', run: function (done) { done(supports(['height', '100dvh'])); } },
+                { id: 'clamp', use: 'dep', label: 'clamp() / min() / max()', hint: 'Chrome 79 起', run: function (done) { done(supports(['width', 'clamp(1px, 2vw, 3px)']) && supports(['width', 'min(1px, 2px)'])); } },
+                { id: 'sticky', use: 'dep', label: 'position: sticky', hint: '课表表头吸顶', run: function (done) { done(supports(['position', 'sticky']) || supports(['position', '-webkit-sticky'])); } },
+                { id: 'overscroll', use: 'none', label: 'overscroll-behavior', hint: 'Chrome 63 起', run: function (done) { done(supports(['overscroll-behavior', 'contain'])); } },
+                { id: 'isWhere', use: 'avoid', label: ':is() / :where()', hint: 'Chrome 88 才有', run: function (done) { done(supportsSelector(':is(a)') && supportsSelector(':where(a)')); } },
+                { id: 'has', use: 'avoid', label: ':has()', hint: 'Chrome 105 才有；本项目一律用 JS 加 class', run: function (done) { done(supportsSelector(':has(a)')); } },
+                { id: 'focusVisible', use: 'avoid', label: ':focus-visible', hint: 'Chrome 86 才有', run: function (done) { done(supportsSelector(':focus-visible')); } },
+                { id: 'gridLayout', use: 'dep', label: 'CSS Grid', hint: '图片面板缩略图网格', run: function (done) { done(supports(['display', 'grid']) || supports(['display', '-ms-grid'])); } },
+                { id: 'scrollBehavior', use: 'none', label: 'scroll-behavior: smooth', hint: '平滑滚动；chat 页有 JS 兜底', run: function (done) { done(supports(['scroll-behavior', 'smooth'])); } },
+                { id: 'envSafeArea', use: 'none', label: 'env(safe-area-inset-*)', hint: '刘海屏安全区', run: function (done) { done(supports(['padding-top', 'env(safe-area-inset-top)'])); } }
+            ]
+        },
+        {
+            id: 'js',
+            title: '七、JavaScript 运行时',
+            note: '本项目源码对旧浏览器的下限不高，但升级时容易不小心用上更新的 API。' +
+                '这里列的是"一旦用了就会直接报错"的那些。',
+            items: [
+                { id: 'promise', use: 'dep', label: 'Promise', hint: 'fetch / 异步流程的基础', run: function (done) { done(typeof window.Promise === 'function'); } },
+                { id: 'es6class', use: 'none', label: 'class 语法', hint: 'ES2015', run: function (done) { done(syntaxOk('class A {}; return typeof A === "function";')); } },
+                {
+                    id: 'optionalChaining',
+                    use: 'dep',
+                    label: '可选链 ?. 与空值合并 ??',
+                    hint: 'Chrome 80 恰好是第一版支持它的稳定版',
+                    run: function (done) { done(syntaxOk('var o = { a: 1 }; return o?.a === 1 && (null ?? 2) === 2;')); }
+                },
+                { id: 'replaceAll', use: 'avoid', label: 'String.prototype.replaceAll', hint: 'Chrome 85 才有', run: function (done) { done(typeof String.prototype.replaceAll === 'function'); } },
+                { id: 'arrayAt', use: 'avoid', label: 'Array.prototype.at', hint: 'Chrome 92 才有', run: function (done) { done(typeof Array.prototype.at === 'function'); } },
+                { id: 'objectHasOwn', use: 'avoid', label: 'Object.hasOwn', hint: 'Chrome 93 才有', run: function (done) { done(typeof Object.hasOwn === 'function'); } },
+                { id: 'structuredClone', use: 'avoid', label: 'structuredClone', hint: 'Chrome 98 才有', run: function (done) { done(typeof window.structuredClone === 'function'); } },
+                { id: 'weakRef', use: 'avoid', label: 'WeakRef', hint: 'Chrome 84 才有', run: function (done) { done(typeof window.WeakRef === 'function'); } },
+                { id: 'intlSegmenter', use: 'none', label: 'Intl.Segmenter', hint: 'Chrome 87 才有；中文分词', run: function (done) { done(!!(window.Intl && typeof Intl.Segmenter === 'function')); } },
+                { id: 'globalThis', use: 'none', label: 'globalThis', hint: 'Chrome 71 起', run: function (done) { done(typeof globalThis !== 'undefined'); } },
+                { id: 'queueMicrotask', use: 'none', label: 'queueMicrotask', hint: 'Chrome 71 起', run: function (done) { done(typeof window.queueMicrotask === 'function'); } },
+                {
+                    id: 'observers',
+                    use: 'none',
+                    label: 'Intersection / ResizeObserver',
+                    hint: '懒加载与尺寸监听',
+                    run: function (done) {
+                        var i = typeof window.IntersectionObserver === 'function';
+                        var r = typeof window.ResizeObserver === 'function';
+                        done({ ok: i && r, detail: 'IntersectionObserver=' + i + '，ResizeObserver=' + r });
+                    }
+                },
+                {
+                    id: 'fetchStream',
+                    use: 'none',
+                    label: 'TextDecoder / TextEncoder',
+                    hint: '按字节解析文本（SSE 分包常见）',
+                    run: function (done) {
+                        var d = typeof window.TextDecoder === 'function';
+                        var e = typeof window.TextEncoder === 'function';
+                        done({ ok: d && e, detail: 'TextDecoder=' + d + '，TextEncoder=' + e });
+                    }
+                }
+            ]
+        },
+        {
+            id: 'env',
+            title: '八、运行环境',
+            note: '这几项决定哪些功能"存在但会被限制"——例如非安全上下文下剪贴板与 Service Worker 不可用。',
+            items: [
+                {
+                    id: 'protocol',
+                    use: 'none',
+                    label: '当前协议与主机',
+                    hint: '信息项',
+                    run: function (done) { done({ ok: null, detail: location.protocol + '//' + location.host }); }
+                },
+                {
+                    id: 'secureContext',
+                    use: 'none',
+                    label: '安全上下文（isSecureContext）',
+                    hint: 'https 或 localhost 才是；否则剪贴板、SW、Cache Storage 受限',
+                    run: function (done) {
+                        var ok = window.isSecureContext === true;
+                        done({ ok: ok, detail: ok ? '是安全上下文' : '不是安全上下文（局域网 http 访问即如此）' });
+                    }
+                },
+                { id: 'clipboard', use: 'avoid', label: 'navigator.clipboard', hint: '本页"复制 JSON"优先走它', run: function (done) { done(!!(navigator.clipboard && typeof navigator.clipboard.writeText === 'function')); } },
+                {
+                    id: 'execCommand',
+                    use: 'dep',
+                    label: 'document.execCommand("copy")',
+                    hint: '剪贴板不可用时的降级方案（本页已内置）',
+                    run: function (done) { done(typeof document.execCommand === 'function'); }
+                },
+                { id: 'serviceWorker', use: 'none', label: 'Service Worker', hint: '本项目没用；离线能力的前置', run: function (done) { done('serviceWorker' in navigator); } },
+                {
+                    id: 'visibility',
+                    use: 'dep',
+                    label: 'visibilityState / 切回前台检测',
+                    hint: 'video 页切回标签页时重新查一次开关、课表重新校时',
+                    run: function (done) {
+                        var has = typeof document.visibilityState === 'string' && 'hidden' in document;
+                        done({ ok: has, detail: has ? '当前 visibilityState = ' + document.visibilityState : '不支持 Page Visibility' });
+                    }
+                },
+                {
+                    id: 'colorSchemeMedia',
+                    use: 'dep',
+                    label: 'prefers-color-scheme',
+                    hint: '主题"跟随系统"靠它',
+                    run: function (done) {
+                        if (!window.matchMedia) { done(false); return; }
+                        var dark = window.matchMedia('(prefers-color-scheme: dark)');
+                        var ok = !!dark && dark.media !== 'not all';
+                        done({ ok: ok, detail: ok ? '系统当前' + (dark.matches ? '为深色' : '为浅色') : '不支持该媒体查询' });
+                    }
+                },
+                {
+                    id: 'reducedMotion',
+                    use: 'none',
+                    label: 'prefers-reduced-motion',
+                    hint: '信息项：为"减少动效"的用户关掉过渡',
+                    run: function (done) {
+                        if (!window.matchMedia) { done({ ok: null, detail: '没有 matchMedia' }); return; }
+                        var m = window.matchMedia('(prefers-reduced-motion: reduce)');
+                        done({ ok: null, detail: m.matches ? '用户要求减少动效' : '未要求减少动效' });
+                    }
+                },
+                {
+                    id: 'online',
+                    use: 'none',
+                    label: 'navigator.onLine / 联网事件',
+                    hint: '断网提示',
+                    run: function (done) {
+                        var has = typeof navigator.onLine === 'boolean' && 'ononline' in window;
+                        done({ ok: has, detail: has ? '当前 onLine = ' + navigator.onLine : '不支持' });
+                    }
+                },
+                {
+                    id: 'userAgentData',
+                    use: 'none',
+                    label: 'navigator.userAgentData',
+                    hint: 'Chrome 90 起；信息项',
+                    run: function (done) { done({ ok: null, detail: navigator.userAgentData ? '存在' : '不存在（用 userAgent 字符串）' }); }
+                },
+                {
+                    id: 'devicePixelRatio',
+                    use: 'none',
+                    label: 'devicePixelRatio',
+                    hint: '信息项：截帧清晰度参考',
+                    run: function (done) { done({ ok: null, detail: 'devicePixelRatio = ' + (window.devicePixelRatio || 1) + '，屏幕 ' + screen.width + '×' + screen.height }); }
+                }
+            ]
+        }
+    ];
+
+    // ---------- 执行与渲染 ----------
+    var groupsEl = document.getElementById('groups');
+    var summaryEl = document.getElementById('summary');
+    var jsonEl = document.getElementById('json');
+    var uaEl = document.getElementById('ua');
+    var onlyBadEl = document.getElementById('onlyBad');
+    var rerunEl = document.getElementById('rerun');
+    var copyEl = document.getElementById('copyJson');
+
+    var state = [];      // [{ title, note, rows: [{ id, label, ok, detail, rowEl }] }]
+    var jsonText = '';
+
+    uaEl.textContent = navigator.userAgent;
+
+    function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+    function isoNow() {
+        var d = new Date();
+        var off = -d.getTimezoneOffset();
+        var sign = off >= 0 ? '+' : '-';
+        var abs = Math.abs(off);
+        return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' +
+            pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) +
+            sign + pad2(Math.floor(abs / 60)) + ':' + pad2(abs % 60);
+    }
+
+    // 统一把 run 的返回值归一成 { ok, detail }；异步项 2.5 秒超时兜底
+    function runOne(item, done) {
+        var settled = false;
+        function finish(v) {
+            if (settled) return;
+            settled = true;
+            if (v === true) v = { ok: true };
+            else if (v === false) v = { ok: false, detail: '不支持' };
+            else if (typeof v === 'string') v = { ok: true, detail: v };
+            else if (!v) v = { ok: null };
+            done(v);
+        }
+        var timer = setTimeout(function () { finish({ ok: null, detail: '超时未响应（可能被浏览器限制）' }); }, 2500);
+        try {
+            item.run(function (v) { clearTimeout(timer); finish(v); });
+        } catch (e) {
+            clearTimeout(timer);
+            finish({ ok: false, detail: '抛错 ' + (e && e.message ? e.message : e) });
+        }
+    }
+
+    function badgeOf(ok) {
+        if (ok === true) return { text: '✓ 可用', cls: 'ok' };
+        if (ok === false) return { text: '✗ 不可用', cls: 'bad' };
+        return { text: '· 信息', cls: 'info' };
+    }
+
+    var USE_TEXT = { dep: '本项目在用', avoid: '约定避开', none: '无关' };
+    var USE_TITLE = {
+        dep: '本项目的代码真的会调用它，不可用就会直接坏掉',
+        avoid: 'CLAUDE.md 里写明不准用（例如 flex gap），不可用属正常',
+        none: '本项目没用到，仅供参考'
+    };
+
+    // 只有"本项目在用"且不可用才是真问题
+    function isBroken(entry) { return entry.use === 'dep' && entry.ok === false; }
+
+    function paintRow(entry) {
+        var b = badgeOf(entry.ok);
+        var hide = onlyBadEl.checked && !(entry.ok === false || isBroken(entry));
+        entry.rowEl.className = 'row' + (hide ? ' hide' : '');
+        entry.rowEl.innerHTML = '';
+
+        var badge = document.createElement('span');
+        badge.className = 'badge ' + b.cls;
+        badge.textContent = b.text;
+        entry.rowEl.appendChild(badge);
+
+        var useEl = document.createElement('span');
+        useEl.className = 'use ' + (entry.use || 'none') + (isBroken(entry) ? ' broken' : '');
+        useEl.textContent = USE_TEXT[entry.use] || '无关';
+        useEl.title = USE_TITLE[entry.use] || '';
+        entry.rowEl.appendChild(useEl);
+
+        var name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = entry.label;
+        if (entry.hint) {
+            var h = document.createElement('code');
+            h.textContent = ' — ' + entry.hint;
+            name.appendChild(h);
+        }
+        entry.rowEl.appendChild(name);
+
+        var detail = document.createElement('span');
+        detail.className = 'detail';
+        detail.textContent = entry.detail || '';
+        entry.rowEl.appendChild(detail);
+    }
+
+    function buildJson() {
+        var pass = 0, fail = 0, unknown = 0, depFail = 0;
+        var groups = [];
+        for (var i = 0; i < state.length; i++) {
+            var g = state[i];
+            var items = [];
+            for (var j = 0; j < g.rows.length; j++) {
+                var r = g.rows[j];
+                if (r.ok === true) pass++;
+                else if (r.ok === false) fail++;
+                else unknown++;
+                if (isBroken(r)) depFail++;
+                var o = { id: r.id, label: r.label, use: r.use || 'none', ok: r.ok };
+                if (r.detail) o.detail = r.detail;
+                items.push(o);
+            }
+            groups.push({ group: g.title, items: items });
+        }
+        return {
+            generatedAt: isoNow(),
+            url: location.href,
+            userAgent: navigator.userAgent,
+            summary: {
+                pass: pass, fail: fail, unknown: unknown,
+                total: pass + fail + unknown,
+                // 真正要紧的数字：本项目在用的能力里有几项不可用
+                depFail: depFail
+            },
+            groups: groups
+        };
+    }
+
+    function refreshSummary() {
+        var pass = 0, fail = 0, unknown = 0, depFail = 0;
+        for (var i = 0; i < state.length; i++) {
+            for (var j = 0; j < state[i].rows.length; j++) {
+                var r = state[i].rows[j];
+                if (r.ok === true) pass++;
+                else if (r.ok === false) fail++;
+                else unknown++;
+                if (isBroken(r)) depFail++;
+            }
+        }
+        summaryEl.innerHTML = '<b class="s-pass">✓ ' + pass + '</b>　<b class="s-fail">✗ ' + fail +
+            '</b>　· ' + unknown + '　共 ' + (pass + fail + unknown) + ' 项　|　' +
+            '<b class="s-dep' + (depFail ? '' : ' zero') + '">影响本项目且不可用：' + depFail + ' 项</b>';
+    }
+
+    function render() {
+        groupsEl.innerHTML = '';
+        state = [];
+
+        for (var i = 0; i < GROUPS.length; i++) {
+            var def = GROUPS[i];
+            var box = document.createElement('section');
+            box.className = 'group';
+
+            var h = document.createElement('h2');
+            h.textContent = def.title;
+            box.appendChild(h);
+
+            if (def.note) {
+                var note = document.createElement('div');
+                note.className = 'note';
+                note.textContent = def.note;
+                box.appendChild(note);
+            }
+
+            var group = { title: def.title, rows: [] };
+
+            for (var j = 0; j < def.items.length; j++) {
+                var item = def.items[j];
+                var rowEl = document.createElement('div');
+                rowEl.className = 'row';
+                box.appendChild(rowEl);
+
+                var entry = {
+                    id: item.id,
+                    label: item.label,
+                    hint: item.hint,
+                    use: item.use || 'none',
+                    ok: null,
+                    detail: '',
+                    rowEl: rowEl
+                };
+                group.rows.push(entry);
+
+                // 先画一个等待态，异步项回来再改
+                var badge = document.createElement('span');
+                badge.className = 'badge wait';
+                badge.textContent = '… 检测';
+                rowEl.appendChild(badge);
+                var name = document.createElement('span');
+                name.className = 'name';
+                name.textContent = item.label;
+                rowEl.appendChild(name);
+                var d = document.createElement('span');
+                d.className = 'detail';
+                d.textContent = '';
+                rowEl.appendChild(d);
+
+                (function (entry, item) {
+                    // 让浏览器先把"检测中"画出来，再跑实际探测
+                    setTimeout(function () {
+                        runOne(item, function (result) {
+                            entry.ok = result.ok;
+                            entry.detail = result.detail || '';
+                            paintRow(entry);
+                            refreshSummary();
+                        });
+                    }, 0);
+                })(entry, item);
+            }
+
+            groupsEl.appendChild(box);
+            state.push(group);
+        }
+
+        refreshSummary();
+        // JSON 是异步项回来后才完整的，这里先给个占位
+        jsonEl.textContent = '（等待全部检测完成…）';
+        jsonText = '';
+    }
+
+    // 全部项都落地后生成一次 JSON（避免每项回来都重排一个大字符串）
+    function settleJson() {
+        var pending = 0;
+        for (var i = 0; i < state.length; i++) {
+            for (var j = 0; j < state[i].rows.length; j++) {
+                // ok === null 也可能是"信息项"的最终结果，所以用 detail 是否已写入来判
+                if (state[i].rows[j].detail === '' && state[i].rows[j].ok === null) pending++;
+            }
+        }
+        if (pending > 0) {
+            setTimeout(settleJson, 120);
+            return;
+        }
+        jsonText = JSON.stringify(buildJson(), null, 2);
+        jsonEl.textContent = jsonText;
+    }
+
+    function copyText(text, cb) {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            navigator.clipboard.writeText(text).then(function () { cb(true); }, function () { cb(fallbackCopy(text)); });
+            return;
+        }
+        cb(fallbackCopy(text));
+    }
+
+    // 剪贴板 API 需要安全上下文；局域网 http 访问时一律走这条老路
+    function fallbackCopy(text) {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', 'readonly');
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        document.body.removeChild(ta);
+        return ok;
+    }
+
+    function start() {
+        rerunEl.disabled = true;
+        render();
+        setTimeout(function () {
+            settleJson();
+            rerunEl.disabled = false;
+        }, 300);
+    }
+
+    rerunEl.addEventListener('click', start);
+
+    onlyBadEl.addEventListener('change', function () {
+        for (var i = 0; i < state.length; i++) {
+            for (var j = 0; j < state[i].rows.length; j++) {
+                paintRow(state[i].rows[j]);
+            }
+        }
+    });
+
+    copyEl.addEventListener('click', function () {
+        var text = jsonText || JSON.stringify(buildJson(), null, 2);
+        var old = copyEl.textContent;
+        copyText(text, function (ok) {
+            copyEl.textContent = ok ? '✓ 已复制' : '✗ 复制失败';
+            copyEl.disabled = true;
+            setTimeout(function () {
+                copyEl.textContent = old;
+                copyEl.disabled = false;
+            }, 1400);
+        });
+    });
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start);
+    } else {
+        start();
+    }
+})();
+</script>
+
+</body>
+</html>
