@@ -41,9 +41,19 @@
             // 记住用户有没有自己往上翻：只有仍贴着底部时才自动跟随新消息/图片撑高。
             // 自己刚触发的滚动（含 smooth 动画进行中）跳过，否则动画每帧都"没到底"，
             // 会把 stickBottom 误置 false，之后新消息就再也不跟随了。
+            // scroll 事件一帧可能来好几次，每次 nearBottom() 都要读 scrollHeight/scrollTop/
+            // clientHeight（会逼浏览器同步布局）。合并到下一帧只算一次。
+            let scrollTickPending = false;
             document.getElementById('MsgBox').addEventListener('scroll', function () {
-                if (Date.now() < autoScrollUntil) return;
-                stickBottom = nearBottom();
+                if (scrollTickPending) return;
+                scrollTickPending = true;
+                const tick = function () {
+                    scrollTickPending = false;
+                    if (Date.now() < autoScrollUntil) return;
+                    stickBottom = nearBottom();
+                };
+                if (window.requestAnimationFrame) requestAnimationFrame(tick);
+                else setTimeout(tick, 16);
             });
             // 图片缩略图双击全屏查看：统一交给 /resources/lib/lightbox.js
             // （与 B 站各页共用同一实现；缩放/平移/手势/关闭、以及设置页的控件显隐都在那边）
@@ -429,12 +439,23 @@
                 if (document.activeElement !== contentEl) hideMentionPop();
             });
             document.getElementById('replyBarClose').addEventListener('click', clearReply);
-            // 触屏上展开的消息操作条，点消息别处就收起（同一时刻只留一个展开的）
+            // 点一下消息就地展开「回复 / 撤回」，再点一下（或点别处）收起。
+            // 触屏没有 hover，这是唯一入口；桌面端悬停本来就会浮现，点击只当补充。
             document.addEventListener('click', function (e) {
-                const box = e.target && e.target.closest
-                    ? e.target.closest('#MsgBox .message-box')
-                    : null;
-                if (!box || !box.classList.contains('actions-open')) closeAllMsgActions();
+                const t = e.target;
+                if (!t || !t.closest) { closeAllMsgActions(); return; }
+                // 点这几个地方不算"点这条消息"：操作条按钮自己会 stopPropagation，
+                // 引用块要点着跳转、图片要点开查看器、链接要能打开 —— 别顺手收起操作条
+                if (t.closest('.msg-actions, .reply-quote, a, img')) {
+                    closeAllMsgActions();
+                    return;
+                }
+                const box = t.closest('#MsgBox .message-box');
+                if (!box) { closeAllMsgActions(); return; }
+                // 桌面端选一段文字来复制时，松手也会走到这里 —— 那种情况不该弹操作条
+                const sel = window.getSelection && window.getSelection();
+                if (sel && String(sel).length) { closeAllMsgActions(); return; }
+                toggleMsgActions(box);
             });
             // 设置页改了「显示消息时间」时本页立刻跟着重画（同一标签页走 notify、
             // 另一个标签页走 BroadcastChannel，chat-prefs.js 两种都转成 onChange）
@@ -1617,20 +1638,6 @@
             if (reply && reply.name) bubble.appendChild(replyQuoteNode(reply));
             bubble.appendChild(contentEl);
 
-            // 触屏入口：点「⋯」展开「回复 / 撤回」。
-            // 桌面端能 hover，操作条本来就悬停浮现，这个按钮不显示；
-            // 触屏（hover: none）没有 hover，所以它必须常驻。
-            const moreBtn = document.createElement('button');
-            moreBtn.type = 'button';
-            moreBtn.className = 'msg-more';
-            moreBtn.textContent = '\u22ef';
-            moreBtn.title = '更多操作';
-            moreBtn.setAttribute('aria-label', '更多操作');
-            moreBtn.addEventListener('click', function (e) {
-                e.stopPropagation();   // 别让文档级"点别处收起"顺手把刚展开的又关了
-                toggleMsgActions(box);
-            });
-
             // 悬停浮出的操作条：谁都能"回复"，只有自己的、且还在 2 分钟窗口内的才能"撤回"
             //（服务端按当前用户匹配，过了窗口点了也只会拿到 err，留个必然失败的按钮更糟）
             const actions = document.createElement('div');
@@ -1656,7 +1663,6 @@
                 });
                 actions.appendChild(revokeBtn);
             }
-            bubble.appendChild(moreBtn);
             bubble.appendChild(actions);
 
             col.appendChild(bubble);
@@ -1674,10 +1680,10 @@
             return box;
         }
 
-        // ===== 触屏上的操作条 =====
+        // ===== 消息操作条（回复 / 撤回）=====
         //
-        // 桌面端靠 :hover 把「回复/撤回」浮出来；触屏没有 hover，那条操作条就永远看不见。
-        // 触屏改成常驻一个「⋯」按钮，点它展开操作条；点别处收起（同时只留一个展开的）。
+        // 桌面端悬停就浮出来，触屏没有 hover，所以点一下这条消息也能展开；
+        // 同时只留一条展开的，点别处收起。
         function toggleMsgActions(box) {
             const open = box.classList.contains('actions-open');
             closeAllMsgActions();
@@ -1931,9 +1937,14 @@
         function paintHistory(items) {
             const container = document.getElementById('MsgBox');
             container.innerHTML = '';
+            // 先在一个游离的片段里把整段历史拼完，最后一次性挂到 DOM 上。
+            // 逐条 appendChild 到已上屏的容器，每条都会触发一次布局/绘制，
+            // 几百条的长会话切过来能明显卡一下；片段内构建只付一次代价。
+            const frag = document.createDocumentFragment();
             for (const msg of items) {
-                container.appendChild(crtMsg(msg.name, msg.time, msg.text, msg.reply));
+                frag.appendChild(crtMsg(msg.name, msg.time, msg.text, msg.reply));
             }
+            container.appendChild(frag);
             // 切会话/切日期/刷新后一律回到最新一条：先瞬时到底（不走动画），
             // 再给懒加载的图片挂回调，等它们把高度撑开后继续贴底
             stickBottom = true;
@@ -2142,13 +2153,16 @@
             const imgs = document.getElementById('MsgBox').querySelectorAll('img.img-message');
             for (let i = 0; i < imgs.length; i++) {
                 const img = imgs[i];
-                if (img.complete) continue; // 已加载好的不用管
+                if (img.complete) continue;        // 已加载好的不用管
+                if (img.__stickBound) continue;    // 已经挂过回调，别重复挂
+                img.__stickBound = true;
                 img.addEventListener('load', onImageSettle);
                 img.addEventListener('error', onImageSettle);
             }
         }
 
         function onImageSettle() {
+            this.__stickBound = false;
             this.removeEventListener('load', onImageSettle);
             this.removeEventListener('error', onImageSettle);
             if (stickBottom) scrollToBottom(false);
@@ -2381,6 +2395,9 @@
         .chat-area {
             flex: 1;
             overflow-y: auto;
+            /* 滚到头之后别再带动整个页面/父容器一起滚（触屏上尤其明显：
+               手指还在往上推，页面却开始"橡皮筋"，回弹时把消息区位置带歪） */
+            overscroll-behavior: contain;
             padding: 16px 16px 20px;
             display: flex;
             flex-direction: column;
@@ -2535,9 +2552,9 @@
             box-shadow: var(--shadow), inset 3px 0 0 var(--accent);
         }
 
-        /* 回复/撤回按钮条：悬停时浮在气泡上方。
-           触屏没有 hover，所以另有一个常驻的「⋯」按钮（.msg-more）：
-           点它给这条消息加 .actions-open，操作条就展开；点别处收起。 */
+        /* 回复/撤回按钮条：桌面端悬停浮在气泡上方；触屏没有 hover，
+           靠「点一下这条消息」展开 —— 给 .message-box 加 .actions-open，
+           操作条就常显；点别处收起（见 toggleMsgActions / closeAllMsgActions）。 */
         .msg-actions {
             position: absolute;
             top: -9px;
@@ -2553,28 +2570,6 @@
         .message-box:hover .msg-actions { opacity: 1; pointer-events: auto; }
         /* 展开态：即使指针没悬停也保持可见 */
         .message-box.actions-open .msg-actions { opacity: 1; pointer-events: auto; }
-        /* 「⋯」按钮：触屏唯一的入口。桌面端（能 hover）不显示，
-           触屏（hover: none）常驻。位置与操作条一致，展开后就地变成「回复/撤回」。 */
-        .msg-more {
-            position: absolute;
-            top: -10px;
-            right: 8px;
-            display: none;
-            padding: 2px 8px;
-            border: none;
-            border-radius: 999px;
-            font-size: 13px;
-            line-height: 16px;
-            cursor: pointer;
-            background: var(--fill-strong);
-            color: var(--text);
-            z-index: 3;
-        }
-        @media (hover: none), (pointer: coarse) {
-            .msg-more { display: block; }
-        }
-        /* 已经展开时「⋯」藏掉，免得和展开出来的按钮挤在一起 */
-        .message-box.actions-open .msg-more { display: none; }
         .msg-actions button {
             padding: 2px 10px;
             border: none;
