@@ -36,6 +36,13 @@
     --danger-soft: #fff1f1;
     --danger-border: #ffd6d6;
 
+    /*
+     * 「在线 / 成功」绿：侧边栏的在线绿点、终端页的 PS> 提示都用这个变量，
+     * 不要在页面里再硬写色值。日间白卡上用这个中间值才看得见
+     * （夜间段自己有一条更亮的覆盖，见下面 dark 部分）。
+     */
+    --green: #35c46a;
+
     --pink: #fb7299;            /* B 站品牌粉 */
     --pink-soft: #ffeaf1;
     --pink-border: #ffd3e0;

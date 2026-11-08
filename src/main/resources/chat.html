@@ -26,6 +26,7 @@
         let convLast = {}; // 各会话最后一条消息 {time, by}（按 history 文件名），来自 /conversations，未读判断用
         let privLastMap = {}; // "对方" -> {time, by}：同一对方可能对应新旧多份归档，取最新一条
         let privPartners = new Set(); // 侧边栏已渲染的私聊对象，用于判断是否需要重新拉取会话列表
+        let onlineSet = new Set(); // 当前在线用户名，来自服务端的 presence 帧（连接/断开时各推一次）
         let lastConvNames = null; // 上次拉取到的会话名单（拼接串）；重连后重拉时名单没变就只重算红点、不重建列表
         let lastRead = {}; // 各会话已读到的时间戳 {键: 时间}，存 Cookie；私聊键 'p:对方'，群聊键 'g:'
         let memberNames = []; // 全部用户名（来自 /members），@ 补全与高亮都按这份名单认人
@@ -638,7 +639,7 @@
                 item.className = 'conv-item';
                 if (other !== null) {
                     item.dataset.other = other; // 供 syncSidebarActive 判断高亮
-                    item.appendChild(avatarNode(other));
+                    item.appendChild(privAvatarNode(other));
                     const nameEl = document.createElement('span');
                     nameEl.className = 'conv-name';
                     nameEl.textContent = other;
@@ -666,6 +667,7 @@
             if (privShown === 0) privList.innerHTML = '<p class="conv-empty">暂无私聊记录</p>';
             sortPrivList(); // 按最后一条消息由新到旧（DOM 是乱序建出来的，见 privSortKey）
             updateUnreadState(); // 重建列表后按实时缓存（convLast/lastRead）同步红点
+            updatePresenceDots(); // 重建后绿点也没了，按手上的在线名单补回来
             syncSidebarActive();
         }
 
@@ -676,7 +678,7 @@
             item.appendChild(dot);
         }
 
-        // ===== 私聊列表：按最后一条消息排序 =====
+        // ===== 私聊列表：排序 + 在线绿点 =====
 
         /**
          * 私聊项的排序键：该对象"最后一条消息"的时间，没有记录的空串。
@@ -709,6 +711,50 @@
                 return a.dataset.other < b.dataset.other ? -1 : 1;
             });
             for (const el of items) list.appendChild(el);
+        }
+
+        /** 私聊项头像外面包一层，用来挂在线绿点（.avatar 自己没有定位上下文） */
+        function privAvatarNode(name) {
+            const wrap = document.createElement('span');
+            wrap.className = 'avatar-wrap';
+            wrap.appendChild(avatarNode(name));
+            return wrap;
+        }
+
+        /**
+         * 按 `onlineSet` 重画私聊项上的绿点。
+         *
+         * 只增删那一颗点，不重建会话项 —— 在线名单每来一个人就整表重建的话，
+         * 用户正在点的项会闪一下，滚动位置也会跳。
+         */
+        function updatePresenceDots() {
+            document.querySelectorAll('#privList .conv-item[data-other]').forEach(function (el) {
+                const other = el.dataset.other;
+                const wrap = el.querySelector('.avatar-wrap');
+                if (!wrap) return;
+                const online = onlineSet.has(other);
+                const dot = wrap.querySelector('.presence-dot');
+                if (online && !dot) {
+                    const d = document.createElement('span');
+                    d.className = 'presence-dot';
+                    wrap.appendChild(d);
+                } else if (!online && dot) {
+                    dot.remove();
+                }
+                // 顺手把状态写进 title：绿点很小，鼠标停上去要能说出"在线/离线"
+                el.title = online ? other + ' · 在线' : other + ' · 离线';
+            });
+        }
+
+        /**
+         * 服务端推送的在线名单（连接/断开时各一次）。
+         *
+         * 整份替换：`names` 是当前全部在线用户名，不作增量处理 ——
+         * 增量要自己处理乱序与丢帧，而这份全量也就几十个字节。
+         */
+        function onPresence(msg) {
+            onlineSet = new Set(msg.names || []);
+            updatePresenceDots();
         }
 
         // 实时维护未读状态：WS 消息到达时更新各会话"最后消息"缓存，
@@ -800,13 +846,14 @@
             const item = document.createElement('button');
             item.className = 'conv-item';
             item.dataset.other = other;
-            item.appendChild(avatarNode(other));
+            item.appendChild(privAvatarNode(other));
             const nameEl = document.createElement('span');
             nameEl.className = 'conv-name';
             nameEl.textContent = other;
             item.appendChild(nameEl);
             item.addEventListener('click', function () { switchPrivate(other); });
             list.appendChild(item);
+            updatePresenceDots(); // 新补的项也要立刻带上绿点（如果对方在线）
         }
 
         // 某天的群聊项不在侧边栏时（例如页面加载后当天第一份归档文件才刚创建）补一个；
@@ -1059,6 +1106,8 @@
                     onWsUnread(resp);
                 } else if (resp.type === 'del') {
                     handleDelFrame(resp);
+                } else if (resp.type === 'presence') {
+                    onPresence(resp);
                 } else if (resp.type === 'err') {
                     showError(resp.text);
                 }
@@ -2312,7 +2361,7 @@
             display: inline-block;
             flex: 0 0 auto;
         }
-        .conn-dot.ok { background: #35c46a; }
+        .conn-dot.ok { background: var(--green); }
         .conn-dot.wait { background: #e8b33a; }
         .conn-dot.down { background: var(--danger); }
         .topbar a { color: var(--accent); font-size: 13px; text-decoration: none; }
@@ -2428,6 +2477,28 @@
             font-weight: 600;
         }
         .conv-item:disabled { opacity: .5; cursor: not-allowed; }
+        /* 私聊项的在线指示：头像右下角一颗小绿点，套一圈卡片色描边，
+           免得和头像本身的颜色糊在一起（头像可以是任意图的任意颜色）。
+           .avatar 没有 position: relative，故这里包一层 .avatar-wrap 做定位参考。 */
+        .avatar-wrap {
+            position: relative;
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+        }
+        .presence-dot {
+            position: absolute;
+            right: -1px;
+            bottom: -1px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--green);
+            border: 1.5px solid var(--card);
+            box-sizing: content-box;
+        }
+        /* 侧边栏项选中时底色是 accent-soft，描边跟着换，否则会留一圈白边 */
+        .conv-item.active .presence-dot { border-color: var(--accent-soft); }
         .conv-empty {
             margin: 0;
             padding: 4px 8px;

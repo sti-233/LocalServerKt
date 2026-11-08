@@ -60,6 +60,47 @@ object Chat {
     /** 某个 IP 当前的所有连接（含自己发给自己时的那条） */
     private fun clientsOf(ip: String): List<Client> = clients.values.filter { it.ip == ip }
 
+    /**
+     * 当前在线的用户名。
+     *
+     * 按名字去重：同一个人开两个标签页只算一次（侧边栏那个绿点是「人」在不在线，
+     * 不是「连接」有几条）。解析不出名字的 IP 直接跳过 —— 未登记客户端本来也发不了消息。
+     */
+    private fun onlineNames(): List<String> = clients.values
+        .mapNotNull { runCatching { Util.getUserName(it.ip) }.getOrNull() }
+        .distinct()
+        .sorted()
+
+    /**
+     * 正在广播 presence 的标记。
+     *
+     * `deliver` 在队列满时会摘连接并补广播一次，而 `broadcastPresence` 自己就是走 `deliver`
+     * 发的 —— 一个满队列的客户端会让两者互相调用。这个标记让内层那次广播直接跳过，
+     * 外层那次本来就是最新名单，不会漏人。
+     */
+    private val presenceBroadcasting = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * 广播在线名单。
+     *
+     * 只在连接/断开时各发一次（低频），整份替换而不是增量 —— 前端 `onlineSet` 就是一个
+     * 集合，增量协议要处理乱序与丢帧，全量几十个字节反而更省心。
+     * 帧形如 `{"type":"presence","names":["alice"]}`；老页面不认这个 type，
+     * 它的 onmessage 走不到任何分支，等于忽略，所以不用给协议加版本。
+     */
+    private fun broadcastPresence() {
+        presenceBroadcasting.set(true)
+        try {
+            val frame = buildJsonObject {
+                put("type", JsonPrimitive("presence"))
+                put("names", Json.encodeToJsonElement(onlineNames()))
+            }.toString()
+            deliver(clients.values.toList(), frame)
+        } finally {
+            presenceBroadcasting.set(false)
+        }
+    }
+
     fun Route.chatRoute() {
         chatPage()
         whoami()
@@ -516,6 +557,9 @@ object Chat {
             val clientId = ip + "#" + java.util.UUID.randomUUID().toString().take(8)
             val me = Client(clientId, ip, this)
             clients[clientId] = me
+            // 新连接落地就广播一次：连上的这个客户端自己也收得到，
+            // 于是「刚打开页面时没有绿点、要等别人上下线才亮」这个空窗就不存在了
+            broadcastPresence()
             Logger.debug("Client $clientId connected. Total clients: ${clients.size}")
 
             // 本连接的发送协程：按入队顺序逐条写出（保证同一连接上的消息不乱序）。
@@ -526,7 +570,9 @@ object Chat {
                 } catch (e: Exception) {
                     Logger.debug("Writer for $clientId stopped: ${e.message}")
                 } finally {
-                    clients.remove(clientId)
+                    // 队列被 deliver 关掉（对端不读了）时这条连接也要算下线；
+                    // 已经在读循环那边摘过表就返回 null，别重复广播（presence 帧不贵，但没必要发两遍）
+                    if (clients.remove(clientId) != null) broadcastPresence()
                     me.outbox.close()
                 }
             }
@@ -568,6 +614,8 @@ object Chat {
                 // 读循环结束 = 这条连接不会再有人读：关掉队列并停掉发送协程，避免协程泄漏
                 me.outbox.close()
                 writer.cancel()
+                // 摘表之后再广播：这个人如果还开着别的标签页，他仍然留在名单里
+                broadcastPresence()
                 Logger.debug("Client $clientId removed. Total clients: ${clients.size}")
             }
         }
@@ -582,13 +630,17 @@ object Chat {
      * 队列满了说明对端已经不读了，摘掉它 —— 留着只会一直堆积。
      */
     private fun deliver(targets: Collection<Client>, frame: String) {
+        var dropped = false
         for (c in targets) {
             if (c.outbox.trySend(frame).isFailure) {
                 Logger.debug("Outbox full for ${c.id}, dropping connection")
-                clients.remove(c.id, c)
+                if (clients.remove(c.id, c)) dropped = true
                 c.outbox.close()
             }
         }
+        // 被摘掉的连接算下线，得让别人的绿点跟着灭。
+        // 内层（broadcastPresence 自己触发的那次）不再递归，见 presenceBroadcasting
+        if (dropped && !presenceBroadcasting.get()) broadcastPresence()
     }
 
     /** 只回给发送者一个人的错误提示（同样走出站队列，保证与消息的顺序一致） */

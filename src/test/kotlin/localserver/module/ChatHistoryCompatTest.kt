@@ -17,7 +17,6 @@ import io.ktor.server.testing.testApplication
 import io.ktor.server.websocket.WebSockets
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 import java.io.File
 import kotlin.test.AfterTest
@@ -154,12 +153,13 @@ class ChatHistoryCompatTest {
         val wsClient = client.config { install(ClientWebSockets) }
         wsClient.webSocket("/message") {
             send(frameOf("this should come back as an error"))
-            val first = withTimeout(5000) { (incoming.receive() as Frame.Text).readText() }
+            // 跳过连接建立时的 presence 帧，只等业务帧（见 WsTestSupport）
+            val first = nextBusinessFrame()
             assertTrue(first.contains("\"err\""), "expected an err reply, got: $first")
 
             // 连接必须还活着：再发一帧仍然能收到回复（同样的 err），而不是 Channel 已关闭
             send(frameOf("still connected"))
-            val second = withTimeout(5000) { (incoming.receive() as Frame.Text).readText() }
+            val second = nextBusinessFrame()
             assertTrue(second.contains("\"err\""), "the connection must survive, got: $second")
         }
         wsClient.close()

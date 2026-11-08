@@ -87,11 +87,12 @@ class ChatConcurrencyTest {
         coroutineScope {
             val first = async {
                 wsClient.webSocket("/message") {
-                    // 先把收到的第一条消费掉：这条是第二条连接自己发的那条群消息
-                    // 旧实现里第一条连接早被覆盖，这里会一直等到超时
-                    val got = withTimeout(5000) { incoming.receive() }
+                    // 先把收到的第一条业务帧消费掉：这条是第二条连接自己发的那条群消息
+                    // 旧实现里第一条连接早被覆盖，这里会一直等到超时。
+                    // 连接建立时的 presence 帧由 nextBusinessFrame 滤掉（见 WsTestSupport）
+                    val got = nextBusinessFrame()
                     assertTrue(
-                        (got as Frame.Text).readText().contains("broadcast to both"),
+                        got.contains("broadcast to both"),
                         "the first tab must receive group messages sent from the second tab"
                     )
                 }
@@ -100,8 +101,8 @@ class ChatConcurrencyTest {
                 wsClient.webSocket("/message") {
                     delay(300)
                     send(frameOf("broadcast to both"))
-                    // 自己也会收到回显，说明投递链路正常
-                    withTimeout(5000) { incoming.receive() }
+                    // 自己也会收到回显，说明投递链路正常（presence 帧不算）
+                    nextBusinessFrame()
                 }
             }
             // 第一条连接必须也能收到第二条连接发的群消息
@@ -151,9 +152,9 @@ class ChatConcurrencyTest {
             delay(200)
             // 连接还活着才能发出这一条并收回显
             send(frameOf("after bad frame"))
-            val got = withTimeout(5000) { incoming.receive() }
+            val got = nextBusinessFrame()
             assertTrue(
-                (got as Frame.Text).readText().contains("after bad frame"),
+                got.contains("after bad frame"),
                 "connection must survive a malformed frame"
             )
         }
@@ -204,9 +205,7 @@ class ChatConcurrencyTest {
                 }
             ))
             send(stale)
-            val got = withTimeout(5000) {
-                (incoming.receive() as Frame.Text).readText()
-            }
+            val got = nextBusinessFrame()
             assertTrue(got.contains("\"err\""), "expected an err frame, got: $got")
             assertTrue(got.contains("2 分钟"), "the error should explain the window, got: $got")
         }

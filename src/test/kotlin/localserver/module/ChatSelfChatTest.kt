@@ -15,7 +15,6 @@ import io.ktor.server.testing.testApplication
 import io.ktor.server.websocket.WebSockets
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 import java.io.File
 import kotlin.test.AfterTest
@@ -78,14 +77,15 @@ class ChatSelfChatTest {
                 }
             )))
 
-            val first = withTimeout(5000) { incoming.receive() }
-            val text = (first as Frame.Text).readText()
+            // 连接建立时的 presence 帧不算，只数业务帧（见 WsTestSupport）
+            val text = nextBusinessFrame()
             val obj = json.parseToJsonElement(text).jsonObject
             assertEquals("send", obj["type"]?.jsonPrimitive?.content)
             assertEquals("hello self", obj["text"]?.jsonPrimitive?.content)
 
-            // 关键断言：不该有第二条。用一个短超时等，收到任何东西都算失败
-            val dup = runCatching { withTimeout(1200) { incoming.receive() } }.getOrNull()
+            // 关键断言：不该有第二条业务帧。用一个短超时等，收到 send 就算失败
+            // （presence 可能还会来，那是协议正常流量，不属于重复投递）
+            val dup = runCatching { nextBusinessFrame(1200) }.getOrNull()
             assertTrue(dup == null, "self chat must be delivered once, got a duplicate: $dup")
         }
         wsClient.close()
@@ -104,7 +104,7 @@ class ChatSelfChatTest {
                     put("sendTo", "tester")
                 }
             )))
-            withTimeout(5000) { incoming.receive() }
+            nextBusinessFrame()
         }
         wsClient.close()
 

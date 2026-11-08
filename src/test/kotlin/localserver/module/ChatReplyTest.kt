@@ -20,7 +20,6 @@ import io.ktor.server.testing.testApplication
 import io.ktor.server.websocket.WebSockets
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 import java.io.File
 import kotlin.test.AfterTest
@@ -148,7 +147,7 @@ class ChatReplyTest {
         val wsClient = client.config { install(ClientWebSockets) }
         wsClient.webSocket("/message") {
             send(sendFrame("收到", replyOf("alice", "2026-11-08 10:00:00", "在吗")))
-            val raw = withTimeout(5000) { (incoming.receive() as Frame.Text).readText() }
+            val raw = nextBusinessFrame()
             val obj = json.parseToJsonElement(raw).jsonObject
             assertEquals("send", obj["type"]?.jsonPrimitive?.content)
             val reply = obj["reply"]?.jsonObject
@@ -182,7 +181,7 @@ class ChatReplyTest {
         val wsClient = client.config { install(ClientWebSockets) }
         wsClient.webSocket("/message") {
             send(sendFrame("这么长", replyOf("alice", "2026-11-08 10:00:00", long)))
-            withTimeout(5000) { incoming.receive() }
+            nextBusinessFrame()
         }
         wsClient.close()
 
@@ -208,7 +207,7 @@ class ChatReplyTest {
         val wsClient = client.config { install(ClientWebSockets) }
         wsClient.webSocket("/message") {
             send(sendFrame("空引用", replyOf("", "", "无主")))
-            withTimeout(5000) { incoming.receive() }
+            nextBusinessFrame()
         }
         wsClient.close()
 

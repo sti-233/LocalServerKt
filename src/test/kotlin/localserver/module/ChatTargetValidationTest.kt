@@ -15,7 +15,6 @@ import io.ktor.server.testing.testApplication
 import io.ktor.server.websocket.WebSockets
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 import java.io.File
 import kotlin.test.AfterTest
@@ -94,8 +93,9 @@ class ChatTargetValidationTest {
         wsClient.webSocket("/message") {
             send(frame(sendTo = "192.168.3.29", text = "hi"))
 
-            // 第一帧必须是 err（不是 send：这条消息根本不该被当成正常消息处理）
-            val first = withTimeout(5000) { (incoming.receive() as Frame.Text).readText() }
+            // 第一帧业务帧必须是 err（不是 send：这条消息根本不该被当成正常消息处理）
+            // 连接建立时的 presence 帧由 nextBusinessFrame 滤掉（见 WsTestSupport）
+            val first = nextBusinessFrame()
             val firstObj = json.parseToJsonElement(first).jsonObject
             assertEquals("err", firstObj["type"]?.jsonPrimitive?.content, "填 IP 应当回 err，实际: $first")
             assertTrue(
@@ -105,7 +105,7 @@ class ChatTargetValidationTest {
 
             // 连接必须还活着：再发一条群消息，应当收到正常的 send 回执
             send(frame(sendTo = "", text = "还在吗"))
-            val second = withTimeout(5000) { (incoming.receive() as Frame.Text).readText() }
+            val second = nextBusinessFrame()
             val secondObj = json.parseToJsonElement(second).jsonObject
             assertEquals(
                 "send", secondObj["type"]?.jsonPrimitive?.content,

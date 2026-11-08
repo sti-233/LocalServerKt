@@ -15,7 +15,6 @@ import io.ktor.server.testing.testApplication
 import io.ktor.server.websocket.WebSockets
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 
 import java.io.File
@@ -90,8 +89,8 @@ class ChatPictureScopeTest {
                 put("sendTo", "")
             }
         )))
-        val frame = withTimeout(5000) { incoming.receive() }
-        return json.parseToJsonElement((frame as Frame.Text).readText()).jsonObject
+        // 连接建立时服务端会先推一帧 presence（在线名单），这里只认业务帧
+        return json.parseToJsonElement(nextBusinessFrame()).jsonObject
     }
 
     @Test
