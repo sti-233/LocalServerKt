@@ -381,15 +381,32 @@
 
             } else if (kind === 'witch') {
                 card.appendChild(Play.el('div', 'act-title', '女巫行动：今晚要用什么药？'));
+
+                // 女巫必须知道今晚谁被刀了，否则「要不要用解药」根本无从判断。
+                // 服务端只在夜间、且只对女巫下发 wolfVictim。
+                var victim = state.wolfVictim;
+                if (victim) {
+                    var who = nameOf(victim);
+                    var mine = victim === mySeat;
+                    card.appendChild(Play.el('div', 'act-hint',
+                        mine ? '今晚被袭击的是你自己（' + who + '），不能自救。'
+                             : '今晚被袭击的是 ' + who + '。'));
+                } else {
+                    card.appendChild(Play.el('div', 'act-hint', '今晚没有人被袭击。'));
+                }
+
                 row = Play.el('div', 'btn-row');
                 if (witchMode !== 'poison') {
-                    var save = Play.el('button', 'btn primary', '用解药');
-                    save.type = 'button';
-                    save.onclick = function () {
-                        Play.action('witchAct', { use: 'save' });
-                        Play.toast('已使用解药');
-                    };
-                    row.appendChild(save);
+                    // 没人被刀时解药没有意义，直接不给按钮（服务端也会拒）
+                    if (victim && victim !== mySeat) {
+                        var save = Play.el('button', 'btn primary', '用解药救 ' + nameOf(victim));
+                        save.type = 'button';
+                        save.onclick = function () {
+                            Play.action('witchAct', { use: 'save' });
+                            Play.toast('已使用解药');
+                        };
+                        row.appendChild(save);
+                    }
 
                     var poison = Play.el('button', 'btn', '用毒药');
                     poison.type = 'button';
@@ -466,10 +483,14 @@
                     }));
             }
 
-            // 夜间已就绪的提示（我自己没有行动时也知道在等谁）
-            if (state.phase === 'night' && state.nightReady && !pending.length) {
-                var note = Play.el('div', 'note', '夜间行动已齐，等待房主结算。');
-                actsEl.appendChild(note);
+            // 夜间不是并发提交的：守卫→狼人→女巫→预言家挨个来。
+            // 没轮到自己（或已经交过）时明确告诉他们现在等谁，别让人对着空面板干等。
+            if (state.phase === 'night' && !pending.length) {
+                var step = state.nightStep || '';
+                var text = step
+                    ? '现在轮到' + Play.roleName(step) + '行动，请等待。'
+                    : '夜间行动已全部提交，正在结算。';
+                actsEl.appendChild(Play.el('div', 'note', text));
             }
         }
 

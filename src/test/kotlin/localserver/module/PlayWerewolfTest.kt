@@ -52,41 +52,64 @@ class PlayWerewolfTest {
     private fun aGood(room: Play.Room): String =
         room.engine.alive.first { roleOf(room, it) != "wolf" }
 
+    /** 夜间当前轮到谁（空串 = 不在夜间）。顺序由服务端强制：守卫→狼人→女巫→预言家。 */
+    private fun stepOf(room: Play.Room): String =
+        engineOf(room).gameState(room, room.seats.keys.first())["nightStep"]!!.jsonPrimitive.content
+
+    private fun obj(vararg pairs: Pair<String, String>): JsonObject =
+        buildJsonObject { pairs.forEach { (k, v) -> put(k, v) } }
+
     /**
-     * 走完一个夜晚：狼刀 + 其余角色各自按需提交。
+     * 守卫先守一手。
      *
-     * `guardTarget` 默认为 null，表示让守卫守一个**与被刀目标不同**的人 ——
-     * 否则测试会被自己安排的守护挡掉，看起来像「狼刀没生效」。
+     * `avoid`（通常是狼刀目标）只是**优先避开**：守到它会把这一刀挡掉，多数测试
+     * 不希望这样。但不能只试它 —— 残局里剩下的合法目标可能恰好是上一夜守过的人，
+     * 这时守卫会一直提交失败、整夜卡在守卫这步。所以最后兜底再试 `avoid`。
+     */
+    private fun doGuard(room: Play.Room, target: String? = null, avoid: String? = null) {
+        if (stepOf(room) != "guard") return
+        val guard = seatsWithRole(room, "guard").firstOrNull { it in room.engine.alive } ?: return
+        val candidates = if (target != null) listOf(target)
+        else {
+            val legal = room.engine.alive.filter { it != guard }
+            legal.filter { it != avoid } + legal.filter { it == avoid }
+        }
+        candidates.firstOrNull { t ->
+            runCatching { act(room, guard, "guardProtect", obj("target" to t)) }.isSuccess
+        }
+    }
+
+    private fun doWolves(room: Play.Room, target: String) {
+        if (stepOf(room) != "wolf") return
+        seatsWithRole(room, "wolf").filter { it in room.engine.alive }
+            .forEach { act(room, it, "wolfVote", obj("target" to target)) }
+    }
+
+    private fun doWitch(room: Play.Room, use: String = "none", target: String? = null) {
+        if (stepOf(room) != "witch") return
+        val witch = seatsWithRole(room, "witch").firstOrNull { it in room.engine.alive } ?: return
+        val data = if (target != null) obj("use" to use, "target" to target) else obj("use" to use)
+        act(room, witch, "witchAct", data)
+    }
+
+    private fun doSeer(room: Play.Room, target: String? = null) {
+        if (stepOf(room) != "seer") return
+        val seer = seatsWithRole(room, "seer").firstOrNull { it in room.engine.alive } ?: return
+        val t = target ?: room.engine.alive.firstOrNull { it != seer } ?: return
+        act(room, seer, "seerCheck", obj("target" to t))
+    }
+
+    /**
+     * 走完一个夜晚：守卫 → 狼人 → 女巫 → 预言家。
+     *
+     * 顺序由服务端强制，所以测试也必须按这个顺序驱动；最后一步交完**自动结算**，
+     * 不需要再点「结算夜晚」（那是房主的兜底按钮）。
      */
     private fun runNight(room: Play.Room, wolfTarget: String, guardTarget: String? = null) {
-        val wolves = seatsWithRole(room, "wolf").filter { it in room.engine.alive }
-        wolves.forEach { act(room, it, "wolfVote", buildJsonObject { put("target", wolfTarget) }) }
-
-        val seer = seatsWithRole(room, "seer").firstOrNull { it in room.engine.alive }
-        if (seer != null) {
-            val t = room.engine.alive.first { it != seer }
-            act(room, seer, "seerCheck", buildJsonObject { put("target", t) })
-        }
-
-        val witch = seatsWithRole(room, "witch").firstOrNull { it in room.engine.alive }
-        if (witch != null) act(room, witch, "witchAct", buildJsonObject { put("use", "none") })
-
-        val guard = seatsWithRole(room, "guard").firstOrNull { it in room.engine.alive }
-        if (guard != null) {
-            // 守卫不能连守同一个人：从候选中挑一个引擎接受的（顺序尝试，失败就换下一个）
-            val candidates = if (guardTarget != null) {
-                listOf(guardTarget)
-            } else {
-                room.engine.alive.filter { it != guard && it != wolfTarget }
-            }
-            candidates.firstOrNull { t ->
-                runCatching {
-                    act(room, guard, "guardProtect", buildJsonObject { put("target", t) })
-                }.isSuccess
-            }
-        }
-
-        act(room, hostOf(room), "resolveNight")
+        doGuard(room, target = guardTarget, avoid = wolfTarget)
+        doWolves(room, wolfTarget)
+        doWitch(room, "none")
+        doSeer(room)
     }
 
     // ===== 角色配置 =====
@@ -169,6 +192,7 @@ class PlayWerewolfTest {
         val seer = seatsWithRole(room, "seer").first()
         val target = room.seats.keys.first { it != seer }
 
+        skipTo(room, "seer")
         act(room, seer, "seerCheck", buildJsonObject { put("target", target) })
 
         val engine = engineOf(room)
@@ -194,6 +218,7 @@ class PlayWerewolfTest {
         val villager = seatsWithRole(room, "villager").first()
         val target = room.seats.keys.first { roleOf(room, it) != "wolf" }
 
+        skipTo(room, "wolf")
         wolves.forEach { act(room, it, "wolfVote", buildJsonObject { put("target", target) }) }
 
         val engine = engineOf(room)
@@ -263,16 +288,13 @@ class PlayWerewolfTest {
         val guard = seatsWithRole(room, "guard").first()
         val victim = room.seats.keys.first { roleOf(room, it) == "villager" }
 
-        val wolves = seatsWithRole(room, "wolf")
-        wolves.forEach { act(room, it, "wolfVote", buildJsonObject { put("target", victim) }) }
-        val seer = seatsWithRole(room, "seer").first()
-        act(room, seer, "seerCheck", buildJsonObject { put("target", guard) })
-        val witch = seatsWithRole(room, "witch").first()
-        act(room, witch, "witchAct", buildJsonObject { put("use", "none") })
-        act(room, guard, "guardProtect", buildJsonObject { put("target", victim) })
+        doGuard(room, target = victim)
+        doWolves(room, victim)
+        doWitch(room, "none")
+        doSeer(room, guard)
 
-        act(room, "s0", "resolveNight")
         assertTrue(victim in room.engine.alive, "被守护的人不该死")
+        assertEquals("day", room.engine.phase)
         assertTrue(room.engine.alive.size == 5)
     }
 
@@ -283,18 +305,20 @@ class PlayWerewolfTest {
         val witch = seatsWithRole(room, "witch").first()
         val victim = room.seats.keys.first { roleOf(room, it) == "villager" }
 
-        seatsWithRole(room, "wolf").forEach {
-            act(room, it, "wolfVote", buildJsonObject { put("target", victim) })
-        }
-        val seer = seatsWithRole(room, "seer").first()
-        act(room, seer, "seerCheck", buildJsonObject { put("target", victim) })
         val guard = seatsWithRole(room, "guard").first()
         // 守卫守别人，别把这一刀挡掉，否则测不到解药
         val other = room.seats.keys.first { it != guard && it != victim }
-        act(room, guard, "guardProtect", buildJsonObject { put("target", other) })
-        act(room, witch, "witchAct", buildJsonObject { put("use", "save") })
+        doGuard(room, target = other)
+        doWolves(room, victim)
+        // 女巫此刻必须已经能看到刀口，否则「要不要救」无从判断
+        assertEquals(
+            victim,
+            engineOf(room).gameState(room, witch)["wolfVictim"]!!.jsonPrimitive.content,
+            "女巫应该看得到今晚的刀口"
+        )
+        doWitch(room, "save")
+        doSeer(room, witch)
 
-        act(room, "s0", "resolveNight")
         assertTrue(victim in room.engine.alive, "解药应把人救回来")
     }
 
@@ -304,10 +328,13 @@ class PlayWerewolfTest {
         engineOf(room).start(room)
         val witch = seatsWithRole(room, "witch").first()
 
-        seatsWithRole(room, "wolf").forEach {
-            act(room, it, "wolfVote", buildJsonObject { put("target", witch) })
-        }
+        doGuard(room, avoid = witch)
+        doWolves(room, witch)
         // 女巫看到自己是被刀的人，但不能自救
+        assertEquals(
+            witch,
+            engineOf(room).gameState(room, witch)["wolfVictim"]!!.jsonPrimitive.content
+        )
         assertFailsWith<PlayError> {
             act(room, witch, "witchAct", buildJsonObject { put("use", "save") })
         }
@@ -322,18 +349,14 @@ class PlayWerewolfTest {
         val victim = room.seats.keys.first { roleOf(room, it) == "villager" }
 
         // 狼刀守卫守的那个人（被挡住），女巫毒另一个人
-        seatsWithRole(room, "wolf").forEach {
-            act(room, it, "wolfVote", buildJsonObject { put("target", victim) })
-        }
-        act(room, guard, "guardProtect", buildJsonObject { put("target", victim) })
+        doGuard(room, target = victim)
+        doWolves(room, victim)
         // 5 人局只有 1 个平民，所以毒预言家 —— 只要不是被守护的 victim 就行
         val poisonTarget = seatsWithRole(room, "seer").first()
-        act(room, witch, "witchAct", buildJsonObject {
-            put("use", "poison")
-            put("target", poisonTarget)
-        })
+        doWitch(room, "poison", poisonTarget)
+        // 被毒的人已经死了，预言家查验一个别人（不能查自己）
+        doSeer(room)
 
-        act(room, "s0", "resolveNight")
         assertTrue(victim in room.engine.alive, "守护挡住了狼刀")
         assertTrue(poisonTarget !in room.engine.alive, "毒药无视守护")
     }
@@ -344,22 +367,78 @@ class PlayWerewolfTest {
         engineOf(room).start(room)
         val guard = seatsWithRole(room, "guard").first()
 
+        assertEquals("guard", stepOf(room), "夜间第一步是守卫")
         assertFailsWith<PlayError> {
             act(room, guard, "guardProtect", buildJsonObject { put("target", guard) })
         }
 
+        // 守一个好人；狼刀另一个人，否则守护会把这一刀挡掉、夜里没死人
         val first = room.seats.keys.first { it != guard && roleOf(room, it) != "wolf" }
-        act(room, guard, "guardProtect", buildJsonObject { put("target", first) })
-        val witch = seatsWithRole(room, "witch").first()
-        act(room, witch, "witchAct", buildJsonObject { put("use", "none") })
-        seatsWithRole(room, "wolf").forEach {
-            act(room, it, "wolfVote", buildJsonObject { put("target", first) })
+        val killed = room.seats.keys.first {
+            it != guard && it != first && roleOf(room, it) != "wolf"
         }
-        act(room, hostOf(room), "resolveNight")
+        doGuard(room, target = first)
+        doWolves(room, killed)
+        doWitch(room, "none")
+        doSeer(room)
+        assertEquals("day", room.engine.phase)
+        assertTrue(first in room.engine.alive, "被守护的人活下来了")
 
-        // 进入第二夜，不能连守同一个人
+        // 白天放逐一个好人，好让对局继续到第二夜。
+        // **不能放逐守卫** —— 守卫一死，第二夜的第一步就变成狼人，测不到「不能连守」。
+        val host = hostOf(room)
+        act(room, host, "startVote")
+        val out = room.engine.alive.first {
+            it != first && it != guard && roleOf(room, it) != "wolf"
+        }
+        room.seats.keys.filter { it in room.engine.alive && it != out }.forEach {
+            act(room, it, "vote", buildJsonObject { put("target", out) })
+        }
+        act(room, hostOf(room), "resolveVote")
+
+        // 第二夜：不能连守同一个人
+        assertEquals("night", room.engine.phase)
+        assertEquals("guard", stepOf(room))
         assertFailsWith<PlayError> {
             act(room, guard, "guardProtect", buildJsonObject { put("target", first) })
+        }
+    }
+
+    @Test
+    fun `night completes in a small endgame`() {
+        // 残局回归：守卫的合法目标被上一夜的守护耗尽时，夜间也必须能走完。
+        // 这一段曾在 `night skips the guard` 的调试里把 `doGuard` 卡住 → 夜夜不动。
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        val guard = seatsWithRole(room, "guard").first()
+        val wolf = seatsWithRole(room, "wolf").first()
+
+        // 第一夜：守卫守 A，狼刀 B → 剩 guard、A、wolf
+        val guarded = room.seats.keys.first {
+            it != guard && it != wolf && roleOf(room, it) != "wolf"
+        }
+        val killed = room.seats.keys.first { it != guard && it != guarded && it != wolf }
+        doGuard(room, target = guarded)
+        doWolves(room, killed)
+        doWitch(room, "none")
+        doSeer(room)
+        assertEquals("day", room.engine.phase)
+
+        // 白天放逐 A —— 场上只剩守卫与狼
+        act(room, hostOf(room), "startVote")
+        room.seats.keys.filter { it in room.engine.alive && it != guarded }.forEach {
+            act(room, it, "vote", buildJsonObject { put("target", guarded) })
+        }
+        act(room, hostOf(room), "resolveVote")
+
+        // 守卫还在时，第二夜必须能推进（不能卡在 guard 步）
+        if (guard in room.engine.alive && room.engine.phase == "night") {
+            val before = stepOf(room)
+            runNight(room, aGood(room))
+            assertTrue(
+                room.engine.phase != "night" || stepOf(room) != before,
+                "夜间应能推进，实际仍停在 $before"
+            )
         }
     }
 
@@ -399,6 +478,7 @@ class PlayWerewolfTest {
         val villager = seatsWithRole(room, "villager").first()
         val target = room.seats.keys.first { roleOf(room, it) != "wolf" }
 
+        skipTo(room, "wolf")
         // 平民没有 wolf 权限
         val result = runCatching {
             act(room, villager, "wolfVote", buildJsonObject { put("target", target) })
@@ -406,11 +486,90 @@ class PlayWerewolfTest {
         assertTrue(result.isFailure)
     }
 
+    /**
+     * 把夜间推进到 `role` 那一步，前面的步骤用无争议的动作草草交掉。
+     * 用于测试「只有 X 能做什么」这类断言 —— 不先推进到对应步骤，会先撞上顺序守卫。
+     */
+    private fun skipTo(room: Play.Room, role: String) {
+        val order = listOf("guard", "wolf", "witch", "seer")
+        for (step in order) {
+            if (stepOf(room) != step) continue
+            if (step == role) return
+            when (step) {
+                "guard" -> doGuard(room)
+                "wolf" -> doWolves(room, aGood(room))
+                "witch" -> doWitch(room, "none")
+                "seer" -> doSeer(room)
+            }
+        }
+    }
+
+    @Test
+    fun `night steps run in a fixed order`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+
+        // 顺序：守卫 → 狼人 → 女巫 → 预言家
+        assertEquals("guard", stepOf(room))
+        doGuard(room)
+        assertEquals("wolf", stepOf(room))
+        doWolves(room, aGood(room))
+        assertEquals("witch", stepOf(room))
+        doWitch(room, "none")
+        assertEquals("seer", stepOf(room))
+        doSeer(room)
+        // 最后一步交完自动结算，不需要房主再点
+        assertEquals("day", room.engine.phase)
+    }
+
+    @Test
+    fun `acting out of turn is rejected`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        assertEquals("guard", stepOf(room))
+
+        val wolf = seatsWithRole(room, "wolf").first()
+        assertFailsWith<PlayError> {
+            act(room, wolf, "wolfVote", buildJsonObject { put("target", aGood(room)) })
+        }
+
+        val seer = seatsWithRole(room, "seer").first()
+        assertFailsWith<PlayError> {
+            act(room, seer, "seerCheck", buildJsonObject { put("target", aGood(room)) })
+        }
+    }
+
+    @Test
+    fun `witch sees the wolf victim and nobody else does`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        val witch = seatsWithRole(room, "witch").first()
+        val victim = aGood(room).let { if (it == witch) room.seats.keys.first { s -> roleOf(room, s) != "wolf" && s != witch } else it }
+
+        doGuard(room, avoid = victim)
+        doWolves(room, victim)
+
+        val engine = engineOf(room)
+        assertEquals(
+            victim,
+            engine.gameState(room, witch)["wolfVictim"]!!.jsonPrimitive.content,
+            "女巫要看得到刀口"
+        )
+        // 非女巫一律拿不到
+        room.seats.keys.filter { it != witch }.forEach { other ->
+            assertTrue(
+                engine.gameState(room, other)["wolfVictim"] is JsonNull,
+                "刀口只能给女巫"
+            )
+        }
+    }
+
     @Test
     fun `wolf cannot kill a fellow wolf`() {
         val room = newRoom(8)
         engineOf(room).start(room)
         val wolves = seatsWithRole(room, "wolf")
+        skipTo(room, "wolf")
         assertFailsWith<PlayError> {
             act(room, wolves[0], "wolfVote", buildJsonObject { put("target", wolves[1]) })
         }
@@ -435,15 +594,19 @@ class PlayWerewolfTest {
         // 白天直接放逐狼人（5 人局：1 狼 4 好人，狼全灭即好人胜）
         runNight(room, seatsWithRole(room, "villager").first())
         if (room.engine.phase == "day") {
-            act(room, "s0", "startVote")
+            // 房主会转移，且 s0 可能正是夜里被杀的那个人 —— 一律用 hostOf(room)
+            act(room, hostOf(room), "startVote")
             room.seats.keys.filter { it in room.engine.alive && it != wolf }.forEach {
                 act(room, it, "vote", buildJsonObject { put("target", wolf) })
             }
-            act(room, "s0", "resolveVote")
+            act(room, hostOf(room), "resolveVote")
         }
 
         assertEquals("finished", room.engine.phase)
-        assertEquals("good", room.engine.gameState(room, "s0")["result"]!!.jsonPrimitive.content)
+        assertEquals(
+            "good",
+            room.engine.gameState(room, room.seats.keys.first())["result"]!!.jsonPrimitive.content
+        )
     }
 
     @Test
@@ -506,6 +669,7 @@ class PlayWerewolfTest {
         val room = newRoom(6)
         engineOf(room).start(room)
         val seer = seatsWithRole(room, "seer").first()
+        skipTo(room, "seer")
         act(room, seer, "seerCheck", buildJsonObject { put("target", "s1") })
 
         engineOf(room).endGame(room)

@@ -39,6 +39,24 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     /** 本夜已提交行动的角色集合（wolf 单独看 [wolfVotes]，其余看各自的字段）。 */
     private val submitted = HashSet<String>()
 
+    /**
+     * 本夜进行到哪一步：`guard` / `wolf` / `witch` / `seer`，空串表示本夜已结算。
+     *
+     * 夜间是**按顺序**推进的，不是所有人同时提交：
+     * 守卫先守 → 狼人再刀 → 女巫看着刀口决定救/毒 → 预言家最后查验 → 自动结算。
+     * 女巫必须排在狼人之后，否则她根本不知道今晚谁被刀（原本所有人并发提交，
+     * 女巫点「用解药」时 [wolfVotes] 还是空的，救的是空气）。
+     */
+    private var nightStep: String = ""
+
+    /**
+     * 狼人这一步敲定下来的刀口，**在本夜剩余时间里固定不变**。
+     *
+     * 不能每次要用的时候现算 [wolfVictim]：平票时它带随机，女巫页面看到的人
+     * 会和真正被刀的、以及解药判定的人不一致。
+     */
+    private var nightVictim: String? = null
+
     /** 昨夜死亡名单，天亮时公布。 */
     private var lastDeaths: List<String> = emptyList()
 
@@ -77,7 +95,64 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         round = 1
         resetVote()
         result = null
+        beginNight(room)
         return null
+    }
+
+    // ===== 夜间顺序推进 =====
+
+    /**
+     * 进入夜晚（清掉上一夜的残留行动，并把 [nightStep] 拨到第一个还在场的角色）。
+     * 一个能动的角色都没有时直接结算，免得夜里空转。
+     */
+    private fun beginNight(room: Play.Room): List<String> {
+        wolfVotes.clear()
+        guardTarget = null
+        witchAction = null
+        witchTarget = null
+        submitted.clear()
+        nightVictim = null
+        votes.clear()
+        nightStep = nextStepAfter("")
+        return if (nightStep.isEmpty()) resolveNight(room) else emptyList()
+    }
+
+    /** 严格按「守卫 → 狼人 → 女巫 → 预言家」往下找第一个**还有活人**的角色。 */
+    private fun nextStepAfter(step: String): String {
+        val from = if (step.isEmpty()) 0 else NIGHT_ORDER.indexOf(step) + 1
+        for (i in from until NIGHT_ORDER.size) {
+            val role = NIGHT_ORDER[i]
+            if (alive.any { roles[it] == role }) return role
+        }
+        return ""
+    }
+
+    private fun livingWithRole(role: String): List<String> = alive.filter { roles[it] == role }
+
+    /**
+     * 当前这一步是否已经收齐。
+     *
+     * 狼人是「每条狼都表态」（[wolfVotes] 里各占一个键），其余角色自己提交一次就够了。
+     */
+    private fun stepDone(role: String): Boolean = when (role) {
+        "guard" -> guardTarget != null
+        "wolf" -> livingWithRole("wolf").all { it in wolfVotes }
+        "witch" -> "witch" in submitted
+        "seer" -> "seer" in submitted
+        else -> true
+    }
+
+    /**
+     * 提交完一个动作后往下拨一步；拨到空处（本夜没人能再动）就自动结算。
+     *
+     * 返回结算产生的日志行 —— 必须一路返回上去写进房间日志，否则玩家看不到天亮公告。
+     */
+    private fun advanceNight(room: Play.Room): List<String> {
+        if (nightStep.isEmpty() || !stepDone(nightStep)) return emptyList()
+        // 狼刀一敲定就锁存：后面女巫看到的、解药判定的，都必须是同一个人
+        if (nightStep == "wolf") nightVictim = wolfVictim()
+        nightStep = nextStepAfter(nightStep)
+        return if (nightStep.isEmpty()) resolveNight(room) else emptyList()
     }
 
     // ===== 动作 =====
@@ -147,38 +222,43 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         if (phase != "night") throw PlayError("现在不是夜晚")
         if (roles[seatId] != "wolf") throw PlayError("只有狼人可以在夜里行动")
         if (seatId !in alive) throw PlayError("你已出局")
+        // 夜间按 守卫→狼→女巫→预言家 顺序推进，没轮到就不能抢跑
+        if (nightStep != "wolf") throw PlayError("现在不是狼人行动的时间")
         val target = data.string("target") ?: throw PlayError("缺少袭击目标")
         if (target !in alive) throw PlayError("目标不在场上")
         if (roles[target] == "wolf") throw PlayError("不能袭击狼人队友")
         wolfVotes[seatId] = target
-        checkNightReady(room)
         // 狼人频道里能看到彼此的刀口，公共日志不写
-        return listOf()
+        return advanceNight(room)
     }
 
     private fun seerCheckAction(room: Play.Room, seatId: String, data: JsonObject): List<String> {
         if (phase != "night") throw PlayError("现在不是夜晚")
         if (roles[seatId] != "seer") throw PlayError("只有预言家可以查验")
         if (seatId !in alive) throw PlayError("你已出局")
+        if (nightStep != "seer") throw PlayError("现在不是预言家行动的时间")
         val target = data.string("target") ?: throw PlayError("缺少查验目标")
         if (target !in alive) throw PlayError("目标不在场上")
         if (target == seatId) throw PlayError("不用查验自己")
         seerChecks[target] = roles[target] ?: "villager"
         submitted.add("seer")
-        checkNightReady(room)
-        return listOf("预言家完成查验")
+        return listOf("预言家完成查验") + advanceNight(room)
     }
 
     private fun witchActAction(room: Play.Room, seatId: String, data: JsonObject): List<String> {
         if (phase != "night") throw PlayError("现在不是夜晚")
         if (roles[seatId] != "witch") throw PlayError("只有女巫可以用药")
         if (seatId !in alive) throw PlayError("你已出局")
+        if (nightStep != "witch") throw PlayError("现在不是女巫行动的时间")
         val use = data.string("use") ?: throw PlayError("缺少用药方式")
+
+        // 女巫行动时狼刀已经锁存在 nightVictim 里了（顺序保证），她看得到刀口
+        val victim = nightVictim
 
         when (use) {
             "save" -> {
+                if (victim == null) throw PlayError("今晚没有人被袭击，不必使用解药")
                 // 女巫不能自救
-                val victim = wolfVictim()
                 if (victim == seatId) throw PlayError("不能对自己使用解药")
                 witchAction = "save"
                 witchTarget = null
@@ -189,7 +269,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
                 if (target !in alive) throw PlayError("目标不在场上")
                 if (target == seatId) throw PlayError("不能毒自己")
                 // 同一夜里既救又毒同一个人是矛盾的，直接拒掉
-                if (witchAction == "save" && witchTarget == target) {
+                if (witchAction == "save" && (witchTarget ?: victim) == target) {
                     throw PlayError("同一夜不能既救又毒同一个人")
                 }
                 witchAction = "poison"
@@ -204,22 +284,21 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
             else -> throw PlayError("未知的用药方式：$use")
         }
         submitted.add("witch")
-        checkNightReady(room)
-        return listOf("女巫完成用药")
+        return listOf("女巫完成用药") + advanceNight(room)
     }
 
     private fun guardProtectAction(room: Play.Room, seatId: String, data: JsonObject): List<String> {
         if (phase != "night") throw PlayError("现在不是夜晚")
         if (roles[seatId] != "guard") throw PlayError("只有守卫可以守护")
         if (seatId !in alive) throw PlayError("你已出局")
+        if (nightStep != "guard") throw PlayError("现在不是守卫行动的时间")
         val target = data.string("target") ?: throw PlayError("缺少守护目标")
         if (target !in alive) throw PlayError("目标不在场上")
         if (target == seatId) throw PlayError("守卫不能守护自己")
         if (target == lastGuardTarget) throw PlayError("不能连续两晚守护同一个人")
         guardTarget = target
         submitted.add("guard")
-        checkNightReady(room)
-        return listOf("守卫完成守护")
+        return listOf("守卫完成守护") + advanceNight(room)
     }
 
     /** 今晚狼人实际要刀的人：票最多的那个；平票随机取一个。 */
@@ -231,18 +310,15 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         return if (top.size == 1) top[0] else top[random.nextInt(top.size)]
     }
 
-    /** 所有需要行动的人都提交了就把 `nightReady` 打开（只影响前端提示，不自动结算）。 */
-    private fun checkNightReady(room: Play.Room) {
-        // 房主点「结算夜晚」才真正推进，这里什么都不做
-    }
-
     // ===== 夜间结算 =====
 
     private fun resolveNight(room: Play.Room): List<String> {
         val lines = ArrayList<String>()
 
         // 1. 狼人袭击；2. 守卫守护
-        val victim = wolfVictim()
+        // 用锁存的 nightVictim：狼人那一步已经定好刀口，女巫看的也是它，不能再抽一次。
+        // 房主「强制结算」可能发生在狼人还没交齐的时候，此时按已投的票现算一次。
+        val victim = nightVictim ?: wolfVictim()
         val guarded = guardTarget
         var killed: String? = null
         if (victim != null && victim != guarded) killed = victim
@@ -277,6 +353,8 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         witchAction = null
         witchTarget = null
         submitted.clear()
+        nightVictim = null
+        nightStep = ""
         votes.clear()
 
         val end = checkWinner(room)
@@ -333,6 +411,8 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
             round += 1
             ensureHost(room)
             lines.add("天黑请闭眼，进入第 $round 夜")
+            // 夜间靠 nightStep 逐步推进；不重置的话第二夜起谁也动不了
+            lines.addAll(beginNight(room))
         }
         return lines
     }
@@ -398,9 +478,10 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         val wv = if (started && myRole == "wolf") wolfVotes else emptyMap()
         put("wolfVotes", JsonObject(wv.mapValues { JsonPrimitive(it.value) }))
 
-        // 我还需要提交哪些夜间行动
+        // 夜间按 守卫→狼→女巫→预言家 顺序推进，只有轮到本角色时才有待办
+        val myTurn = phase == "night" && seatId in alive && nightStep.isNotEmpty() && nightStep == myRole
         val pending = buildJsonArray {
-            if (started && phase == "night" && seatId in alive) {
+            if (myTurn) {
                 when (myRole) {
                     "wolf" -> if (seatId !in wolfVotes) add(JsonPrimitive("wolf"))
                     "seer" -> if ("seer" !in submitted) add(JsonPrimitive("seer"))
@@ -411,14 +492,18 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         }
         put("pendingFor", pending)
 
-        // 该角色只要还有人活着就必须提交；全死了（或本局没这个角色）自然算就绪
-        val ready = phase == "night" &&
-            alive.filter { roles[it] == "wolf" }.all { it in wolfVotes } &&
-            (alive.none { roles[it] == "seer" } || "seer" in submitted) &&
-            (alive.none { roles[it] == "witch" } || "witch" in submitted) &&
-            (alive.none { roles[it] == "guard" } || "guard" in submitted)
-        put("nightReady", JsonPrimitive(ready))
-        put("canAct", JsonPrimitive(phase == "night" && seatId in alive && myRole in setOf("wolf", "seer", "witch", "guard")))
+        // 这一夜正轮到谁行动（空串 = 不在夜间）。前端据此提示「现在轮到谁」，
+        // 也让没轮到的人知道自己该等，而不是对着空气点按钮。
+        put("nightStep", JsonPrimitive(if (phase == "night") nightStep else ""))
+
+        // 女巫必须看得到今晚的刀口，否则她没法判断要不要用解药。
+        // 只给女巫、且只在夜里给 —— 别人拿到就等于知道了袭击目标。
+        val victimForWitch = if (started && phase == "night" && myRole == "witch") nightVictim else null
+        put("wolfVictim", if (victimForWitch == null) JsonNull else JsonPrimitive(victimForWitch))
+
+        // 顺序推进后夜间动作一收齐就自动结算，「等待结算」不再是常态
+        put("nightReady", JsonPrimitive(false))
+        put("canAct", JsonPrimitive(myTurn))
         // 前端投票面板统一读 canVote（与卧底局同名），别让玩家照着「我没死」的界面点空
         put("canVote", JsonPrimitive(phase == "vote" && seatId in alive))
         put("canStart", JsonPrimitive(room.hostSeat == seatId && phase == "waiting" && room.seats.size >= 4))
@@ -435,6 +520,8 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         lastGuardTarget = null
         witchAction = null
         witchTarget = null
+        nightStep = ""
+        nightVictim = null
         lastDeaths = emptyList()
     }
 
@@ -444,6 +531,13 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     internal data class Roster(val wolves: Int, val guard: Int)
 
     companion object {
+        /**
+         * 夜间行动顺序。**这个顺序不能随便调**：
+         * 女巫必须排在狼人之后，她才能看到今晚的刀口再决定救不救；
+         * 守卫排最前，他的守护要先于狼刀生效。
+         */
+        private val NIGHT_ORDER = listOf("guard", "wolf", "witch", "seer")
+
         /**
          * 角色配置表（4≤n≤12）：
          * - n=4：狼1 预1 女1 守0 民1
