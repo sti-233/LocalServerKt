@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>狼人杀 - Play</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/page-store.js"></script>
+    <script src="/resources/lib/theme.js"></script>
+    <link rel="stylesheet" href="/resources/play/play.css">
+</head>
+<body>
+
+<div class="topbar">
+    <div class="topbar-left">
+        <h1>🐺 狼人杀</h1>
+        <div class="room-chip hidden" id="roomChip">
+            <span class="room-chip-label">房号</span>
+            <strong class="room-id" id="roomId">----</strong>
+            <button class="btn tiny" id="copyBtn" type="button">复制</button>
+        </div>
+        <span class="conn-text" id="phaseHint"></span>
+    </div>
+    <div class="topbar-right">
+        <a class="top-link" href="/resources/play/index.html">← 游戏大厅</a>
+        <span id="connDot" class="conn-dot wait" title="正在连接…"></span>
+    </div>
+</div>
+
+<div class="wrap">
+
+    <!-- ================= A. 大厅态 ================= -->
+    <div id="lobby">
+        <div class="lobby">
+            <div class="card">
+                <h3 class="card-title">创建房间</h3>
+                <div class="join-row">
+                    <input id="nameInput" class="text-input" placeholder="昵称（可留空）" maxlength="20">
+                    <button id="createBtn" class="btn primary" type="button">创建房间</button>
+                </div>
+                <p class="card-hint">创建后把房号发给朋友，他们用「加入」进来。</p>
+            </div>
+            <div class="card">
+                <h3 class="card-title">加入房间</h3>
+                <div class="join-row">
+                    <input id="roomInput" class="text-input" placeholder="房号，如 ABCD" maxlength="8">
+                    <button id="joinBtn" class="btn" type="button">加入</button>
+                </div>
+                <p class="card-hint">房号不区分大小写。</p>
+            </div>
+        </div>
+
+        <h2 class="page-title">房间列表</h2>
+        <div class="panel">
+            <div id="rooms" class="room-list"></div>
+        </div>
+    </div>
+
+    <!-- ================= B. 房间态 ================= -->
+    <div id="room" class="hidden">
+        <div id="banner" class="banner hidden"></div>
+        <div id="errBar" class="err-bar hidden"></div>
+
+        <div class="room-cols">
+            <div class="col side">
+                <div class="panel" id="mePanel"></div>
+
+                <div class="panel">
+                    <div class="sec-head">
+                        <span class="sec-title">玩家</span>
+                        <span class="sec-count" id="playerCount"></span>
+                    </div>
+                    <div id="players" class="players"></div>
+                </div>
+
+                <div class="panel hidden" id="seerPanel">
+                    <div class="sec-head"><span class="sec-title">查验记录</span></div>
+                    <div id="seerList" class="kv-list"></div>
+                </div>
+
+                <div class="panel hidden" id="wolfPanel">
+                    <div class="sec-head"><span class="sec-title">狼人刀口</span></div>
+                    <div id="wolfList" class="kv-list"></div>
+                </div>
+
+                <div class="panel hidden" id="deathsPanel">
+                    <div class="sec-head"><span class="sec-title">昨夜死亡</span></div>
+                    <div id="deathsList" class="kv-list"></div>
+                </div>
+
+                <div class="panel hidden" id="hostPanel">
+                    <div class="sec-head">
+                        <span class="sec-title">房主管理</span>
+                        <span class="sec-count" id="hostPhase"></span>
+                    </div>
+                    <div id="hostBody" class="host-body"></div>
+                </div>
+            </div>
+
+            <div class="col main">
+                <div id="log" class="log"></div>
+                <div id="acts" class="acts"></div>
+                <div class="chatbar">
+                    <button id="wolfTab" class="btn tiny wolf-tab hidden" type="button">狼人频道</button>
+                    <input id="chatInput" class="text-input chat-input" placeholder="说点什么…" maxlength="200">
+                    <button id="sendBtn" class="btn primary" type="button">发送</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/resources/play/play.js"></script>
+<script>
+    (function () {
+        'use strict';
+
+        var GAME = 'werewolf';
+
+        var state = null;
+        var room = '';
+        var mySeat = '';
+        var gotState = false;
+        var resumeTimer = null;
+        var wolfScope = false;   // 聊天是否发到狼人频道
+        var witchMode = '';      // '' | 'poison'：女巫点了「用毒药」后进入选人态
+
+        var dot = Play.$('connDot');
+        var phaseHint = Play.$('phaseHint');
+        var roomChip = Play.$('roomChip');
+        var roomIdEl = Play.$('roomId');
+        var lobbyEl = Play.$('lobby');
+        var roomEl = Play.$('room');
+        var bannerEl = Play.$('banner');
+        var errBar = Play.$('errBar');
+        var mePanel = Play.$('mePanel');
+        var playersEl = Play.$('players');
+        var playerCount = Play.$('playerCount');
+        var seerPanel = Play.$('seerPanel');
+        var seerList = Play.$('seerList');
+        var wolfPanel = Play.$('wolfPanel');
+        var wolfList = Play.$('wolfList');
+        var deathsPanel = Play.$('deathsPanel');
+        var deathsList = Play.$('deathsList');
+        var hostPanel = Play.$('hostPanel');
+        var hostBody = Play.$('hostBody');
+        var hostPhase = Play.$('hostPhase');
+        var logEl = Play.$('log');
+        var actsEl = Play.$('acts');
+        var chatInput = Play.$('chatInput');
+        var wolfTab = Play.$('wolfTab');
+        var nameInput = Play.$('nameInput');
+        var roomInput = Play.$('roomInput');
+        var roomsEl = Play.$('rooms');
+
+        var STATUS_TEXT = { ok: '已连接', wait: '连接中…', down: '已断开，重连中…' };
+
+        /* ---------- 公共小工具 ---------- */
+
+        function show(node, on) {
+            if (!node) return;
+            if (on) node.classList.remove('hidden');
+            else node.classList.add('hidden');
+        }
+
+        function showErr(text) {
+            if (!text) { show(errBar, false); return; }
+            errBar.textContent = String(text);
+            show(errBar, true);
+        }
+
+        function pickRoom() {
+            var v = (roomInput.value || '').replace(/\s+/g, '').toUpperCase();
+            if (!v) { Play.toast('先输入房号'); roomInput.focus(); return; }
+            Play.send({ type: 'join', room: v, name: myName() });
+        }
+
+        function myName() {
+            return (nameInput.value || '').trim();
+        }
+
+        function playerMap() {
+            var map = {};
+            ((state && state.players) || []).forEach(function (p) { map[p.id] = p; });
+            return map;
+        }
+
+        function nameOf(id) {
+            var p = playerMap()[id];
+            return p && p.name ? p.name : String(id || '?');
+        }
+
+        function isAlive(p) {
+            return p && p.alive !== false;
+        }
+
+        /* ---------- A. 大厅 ---------- */
+
+        function enterLobby() {
+            room = '';
+            state = null;
+            gotState = false;
+            wolfScope = false;
+            witchMode = '';
+            show(lobbyEl, true);
+            show(roomEl, false);
+            show(roomChip, false);
+            phaseHint.textContent = '';
+            // 不清空房间列表：等服务端回新的 roomList 再覆盖，避免回大厅时闪空态
+            Play.send({ type: 'lobby' });
+        }
+
+        function goRoom(r) {
+            if (!r || !r.id) return;
+            if (r.game && r.game !== GAME) {
+                location.href = '/resources/play/' + r.game + '.html?room=' + encodeURIComponent(r.id);
+                return;
+            }
+            roomInput.value = String(r.id).toUpperCase();
+            pickRoom();
+        }
+
+        /* ---------- 渲染：我的信息 ---------- */
+
+        function addInfoRow(parent, key, val, extraCls) {
+            var row = Play.el('div', 'info-row');
+            row.appendChild(Play.el('span', 'info-key', key));
+            row.appendChild(Play.el('span', 'info-val' + (extraCls ? ' ' + extraCls : ''), val));
+            parent.appendChild(row);
+        }
+
+        function renderMe() {
+            Play.clear(mePanel);
+            if (!state) return;
+            if (state.myRole) {
+                addInfoRow(mePanel, '我的身份：', Play.roleName(state.myRole),
+                    state.myRole === 'wolf' ? 'role-wolf' : '');
+            } else {
+                addInfoRow(mePanel, '我的身份：', '未分配', 'dim');
+            }
+            if (state.round) addInfoRow(mePanel, '轮次：', '第 ' + state.round + ' 轮');
+        }
+
+        /* ---------- 渲染：查验 / 刀口 / 死亡 ---------- */
+
+        function renderSeer() {
+            var checks = (state && state.seerChecks) || {};
+            var ids = Object.keys(checks);
+            if (!ids.length) { show(seerPanel, false); return; }
+            show(seerPanel, true);
+            Play.clear(seerList);
+            ids.forEach(function (id) {
+                var row = Play.el('div', 'kv-row');
+                row.appendChild(Play.el('span', 'kv-k', nameOf(id)));
+                row.appendChild(Play.el('span', 'kv-arrow', '→'));
+                row.appendChild(Play.el('span', 'kv-v', Play.roleName(checks[id])));
+                seerList.appendChild(row);
+            });
+        }
+
+        function renderWolfVotes() {
+            var votes = (state && state.wolfVotes) || {};
+            var ids = Object.keys(votes);
+            if (!ids.length) { show(wolfPanel, false); return; }
+            show(wolfPanel, true);
+            Play.clear(wolfList);
+            ids.forEach(function (id) {
+                var row = Play.el('div', 'kv-row');
+                row.appendChild(Play.el('span', 'kv-k', nameOf(id)));
+                row.appendChild(Play.el('span', 'kv-arrow', '刀 →'));
+                row.appendChild(Play.el('span', 'kv-v', nameOf(votes[id])));
+                wolfList.appendChild(row);
+            });
+        }
+
+        function renderDeaths() {
+            var deaths = (state && state.deaths) || [];
+            if (!deaths.length) { show(deathsPanel, false); return; }
+            show(deathsPanel, true);
+            Play.clear(deathsList);
+            deaths.forEach(function (id) {
+                var row = Play.el('div', 'kv-row');
+                row.appendChild(Play.el('span', 'kv-k', nameOf(id)));
+                row.appendChild(Play.el('span', 'kv-v', '出局'));
+                deathsList.appendChild(row);
+            });
+        }
+
+        /* ---------- 渲染：结果横幅 ---------- */
+
+        function renderBanner() {
+            if (!state) { show(bannerEl, false); return; }
+            var text = '';
+            if (state.phase === 'finished') {
+                if (state.result === 'good') text = '🎉 好人胜利';
+                else if (state.result === 'wolves') text = '🎉 狼人胜利';
+                else text = '本局结束';
+            }
+            if (!text) { show(bannerEl, false); return; }
+            bannerEl.textContent = text;
+            bannerEl.className = 'banner' + (state.result === 'wolves' ? ' win' : '');
+            show(bannerEl, true);
+        }
+
+        /* ---------- 渲染：投票 ---------- */
+
+        function voteCard(title, list, myVote, tally, onPick, prefix) {
+            var card = Play.el('div', 'act-card');
+            card.appendChild(Play.el('div', 'act-title', title));
+            var row = Play.el('div', 'btn-row');
+            if (!list.length) row.appendChild(Play.el('div', 'act-hint', '没有可选的玩家'));
+            list.forEach(function (p) {
+                var label = (prefix || '') + (p.name || '玩家');
+                var b = Play.el('button', 'btn' + (myVote && myVote === p.id ? ' sel' : ''), label);
+                b.type = 'button';
+                var n = tally && tally[p.id];
+                if (n) b.appendChild(Play.el('span', 'tally', ' ' + n));
+                b.onclick = function () { onPick(p); };
+                row.appendChild(b);
+            });
+            card.appendChild(row);
+            return card;
+        }
+
+        function alivePlayers() {
+            return ((state && state.players) || []).filter(isAlive);
+        }
+
+        /* ---------- 渲染：夜间行动 ---------- */
+
+        /**
+         * 狼人眼里的「非狼人」候选：协议里别人的 role 恒为 null，
+         * 只能靠 wolfVotes 的键（其他狼的座位）+ 自己来判，判不出来的由服务端兜底。
+         */
+        function wolfSet() {
+            var set = {};
+            if (mySeat) set[mySeat] = true;
+            var votes = (state && state.wolfVotes) || {};
+            Object.keys(votes).forEach(function (id) { set[id] = true; });
+            ((state && state.players) || []).forEach(function (p) {
+                if (p.role === 'wolf') set[p.id] = true;
+            });
+            return set;
+        }
+
+        function nightCard(kind) {
+            var card = Play.el('div', 'act-card');
+            var row;
+            var wolves;
+
+            if (kind === 'wolf') {
+                card.appendChild(Play.el('div', 'act-title', '狼人行动：选择今晚要刀的人'));
+                row = Play.el('div', 'btn-row');
+                wolves = wolfSet();
+                alivePlayers().forEach(function (p) {
+                    if (wolves[p.id]) return;
+                    var b = Play.el('button', 'btn', '刀他：' + (p.name || '玩家'));
+                    b.type = 'button';
+                    b.onclick = function () {
+                        Play.action('wolfVote', { target: p.id });
+                        Play.toast('已选择刀 ' + (p.name || '该玩家'));
+                    };
+                    row.appendChild(b);
+                });
+                if (!row.firstChild) row.appendChild(Play.el('div', 'act-hint', '没有可选目标'));
+                card.appendChild(row);
+
+            } else if (kind === 'seer') {
+                card.appendChild(Play.el('div', 'act-title', '预言家行动：查验一个人'));
+                row = Play.el('div', 'btn-row');
+                alivePlayers().forEach(function (p) {
+                    var b = Play.el('button', 'btn', '查验：' + (p.name || '玩家'));
+                    b.type = 'button';
+                    b.onclick = function () {
+                        Play.action('seerCheck', { target: p.id });
+                        Play.toast('已查验 ' + (p.name || '该玩家'));
+                    };
+                    row.appendChild(b);
+                });
+                card.appendChild(row);
+
+            } else if (kind === 'witch') {
+                card.appendChild(Play.el('div', 'act-title', '女巫行动：今晚要用什么药？'));
+                row = Play.el('div', 'btn-row');
+                if (witchMode !== 'poison') {
+                    var save = Play.el('button', 'btn primary', '用解药');
+                    save.type = 'button';
+                    save.onclick = function () {
+                        Play.action('witchAct', { use: 'save' });
+                        Play.toast('已使用解药');
+                    };
+                    row.appendChild(save);
+
+                    var poison = Play.el('button', 'btn', '用毒药');
+                    poison.type = 'button';
+                    poison.onclick = function () {
+                        witchMode = 'poison';
+                        renderActs();
+                    };
+                    row.appendChild(poison);
+
+                    var none = Play.el('button', 'btn', '本夜不用药');
+                    none.type = 'button';
+                    none.onclick = function () {
+                        Play.action('witchAct', { use: 'none' });
+                        Play.toast('本夜不用药');
+                    };
+                    row.appendChild(none);
+                    card.appendChild(row);
+                } else {
+                    card.appendChild(Play.el('div', 'act-hint', '选一个要毒死的人：'));
+                    alivePlayers().forEach(function (p) {
+                        var b = Play.el('button', 'btn on', '毒 ' + (p.name || '玩家'));
+                        b.type = 'button';
+                        b.onclick = function () {
+                            Play.action('witchAct', { use: 'poison', target: p.id });
+                            witchMode = '';
+                            Play.toast('已下毒 ' + (p.name || '该玩家'));
+                        };
+                        row.appendChild(b);
+                    });
+                    var cancel = Play.el('button', 'btn', '取消');
+                    cancel.type = 'button';
+                    cancel.onclick = function () {
+                        witchMode = '';
+                        renderActs();
+                    };
+                    row.appendChild(cancel);
+                    card.appendChild(row);
+                }
+
+            } else if (kind === 'guard') {
+                card.appendChild(Play.el('div', 'act-title', '守卫行动：守护一个人'));
+                row = Play.el('div', 'btn-row');
+                alivePlayers().forEach(function (p) {
+                    var b = Play.el('button', 'btn', '守护：' + (p.name || '玩家'));
+                    b.type = 'button';
+                    b.onclick = function () {
+                        Play.action('guardProtect', { target: p.id });
+                        Play.toast('已守护 ' + (p.name || '该玩家'));
+                    };
+                    row.appendChild(b);
+                });
+                card.appendChild(row);
+            }
+
+            return card;
+        }
+
+        function renderActs() {
+            Play.clear(actsEl);
+            if (!state) return;
+
+            // 夜间：按 pendingFor 逐个显示面板（空数组 = 不需要行动或已提交）
+            var pending = state.pendingFor || [];
+            pending.forEach(function (kind) {
+                actsEl.appendChild(nightCard(kind));
+            });
+
+            // 白天/投票：投票按钮
+            if ((state.phase === 'voting' || state.phase === 'vote') && state.canVote) {
+                actsEl.appendChild(voteCard('投票：选出你要放逐的人',
+                    alivePlayers(), state.myVote, state.tally, function (p) {
+                        Play.action('vote', { target: p.id });
+                        Play.toast('已投给 ' + (p.name || '该玩家'));
+                    }));
+            }
+
+            // 夜间已就绪的提示（我自己没有行动时也知道在等谁）
+            if (state.phase === 'night' && state.nightReady && !pending.length) {
+                var note = Play.el('div', 'note', '夜间行动已齐，等待房主结算。');
+                actsEl.appendChild(note);
+            }
+        }
+
+        /* ---------- 渲染：房主管理 ---------- */
+
+        function hostButton(label, cls, fn) {
+            var b = Play.el('button', 'btn ' + (cls || ''), label);
+            b.type = 'button';
+            b.onclick = fn;
+            return b;
+        }
+
+        function renderHost() {
+            if (!state || !state.isHost) { show(hostPanel, false); return; }
+            show(hostPanel, true);
+            hostPhase.textContent = Play.phaseName(state.phase);
+
+            Play.clear(hostBody);
+            var phase = state.phase;
+
+            if (phase === 'waiting') {
+                if (state.canStart) {
+                    hostBody.appendChild(hostButton('开始游戏', 'primary', function () {
+                        Play.action('start');
+                    }));
+                }
+            } else if (phase === 'playing' || phase === 'day') {
+                hostBody.appendChild(hostButton('发起投票', 'primary', function () {
+                    Play.action('startVote');
+                }));
+            } else if (phase === 'night') {
+                hostBody.appendChild(hostButton('强制结算夜晚', 'primary', function () {
+                    Play.action('resolveNight');
+                }));
+            } else if (phase === 'voting' || phase === 'vote') {
+                hostBody.appendChild(hostButton('结算投票', 'primary', function () {
+                    Play.action('resolveVote');
+                }));
+            } else if (phase === 'finished') {
+                hostBody.appendChild(hostButton('再开一局', 'primary', function () {
+                    Play.action('endGame');
+                }));
+            }
+
+            // 平票裁决
+            if (state.awaitingTie && state.tieCandidates && state.tieCandidates.length) {
+                var map = playerMap();
+                var list = state.tieCandidates.map(function (id) {
+                    return map[id] || { id: id, name: id, alive: true };
+                });
+                hostBody.appendChild(voteCard('平票裁决：选一个人出局', list, null, null,
+                    function (p) { Play.action('breakTie', { target: p.id }); }, '裁决：'));
+            }
+        }
+
+        /* ---------- 渲染：聊天频道 ---------- */
+
+        function renderWolfTab() {
+            if (state && state.myRole === 'wolf') {
+                show(wolfTab, true);
+                wolfTab.className = 'btn tiny wolf-tab' + (wolfScope ? ' on' : '');
+                wolfTab.textContent = wolfScope ? '狼人频道（点回公共）' : '狼人频道';
+            } else {
+                wolfScope = false;
+                show(wolfTab, false);
+            }
+        }
+
+        /* ---------- 渲染总入口 ---------- */
+
+        function render() {
+            if (!state) return;
+            roomIdEl.textContent = room || state.room || '----';
+            phaseHint.textContent = Play.phaseName(state.phase) +
+                (state.round ? ' · 第 ' + state.round + ' 轮' : '');
+            renderMe();
+            Play.renderPlayers(playersEl, state);
+            playerCount.textContent = (state.players || []).length + ' 人';
+            Play.renderLog(logEl, state.log);
+            renderSeer();
+            renderWolfVotes();
+            renderDeaths();
+            renderBanner();
+            renderActs();
+            renderHost();
+            renderWolfTab();
+        }
+
+        /* ---------- 状态/事件 ---------- */
+
+        function applyJoined(msg) {
+            room = msg.room || room;
+            mySeat = msg.seat || mySeat;
+            if (room && mySeat) Play.setSeat(room, mySeat);
+            if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+            show(lobbyEl, false);
+            show(roomEl, true);
+            show(roomChip, true);
+            roomIdEl.textContent = room;
+        }
+
+        function applyState(msg) {
+            room = msg.room || room;
+            mySeat = msg.seat || mySeat;
+            if (room && mySeat) Play.setSeat(room, mySeat);
+            state = msg.state || {};
+            gotState = true;
+            if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+            // 不再是夜间行动了就把女巫的选人态收起，避免下一晚误触
+            var pending = state.pendingFor || [];
+            if (pending.indexOf('witch') < 0) witchMode = '';
+            if (state.myRole !== 'wolf') wolfScope = false;
+            show(lobbyEl, false);
+            show(roomEl, true);
+            show(roomChip, true);
+            showErr('');
+            render();
+        }
+
+        /* ---------- 连接 ---------- */
+
+        function onStatus(s) {
+            dot.className = 'conn-dot ' + s;
+            dot.title = STATUS_TEXT[s] || '';
+        }
+
+        function resumeOrLobby() {
+            var seat = room ? Play.getSeat(room) : '';
+            if (room && seat) {
+                mySeat = seat;
+                // 重连后要重新订阅，等新 state 到达才算恢复；页面继续显示旧内容
+                gotState = false;
+                Play.send({ type: 'resume', room: room, seat: seat });
+                if (resumeTimer) clearTimeout(resumeTimer);
+                resumeTimer = setTimeout(function () {
+                    resumeTimer = null;
+                    if (!gotState) {
+                        Play.clearSeat(room);
+                        Play.toast('房间已失效，回到大厅');
+                        enterLobby();
+                    }
+                }, 6000);
+            } else {
+                Play.send({ type: 'lobby' });
+            }
+        }
+
+        Play.connect({
+            onOpen: resumeOrLobby,
+            onJoined: applyJoined,
+            onState: applyState,
+            onRoomList: function (rooms) {
+                Play.renderRooms(roomsEl, rooms, goRoom);
+            },
+            onError: function (text) {
+                showErr(text);
+                Play.toast(text);
+            },
+            onStatus: onStatus
+        });
+
+        /* ---------- 交互绑定 ---------- */
+
+        Play.$('createBtn').onclick = function () {
+            if (!Play.send({ type: 'create', game: GAME, name: myName() })) {
+                Play.toast('还没连上服务器，稍等一下');
+            }
+        };
+
+        Play.$('joinBtn').onclick = pickRoom;
+
+        roomInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); pickRoom(); }
+        });
+        nameInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); pickRoom(); }
+        });
+
+        Play.$('copyBtn').onclick = function () {
+            if (!room) return;
+            Play.copyText(room, function (ok) {
+                Play.toast(ok ? '房号已复制' : '复制失败，请手动复制');
+            });
+        };
+
+        wolfTab.onclick = function () {
+            wolfScope = !wolfScope;
+            renderWolfTab();
+            Play.toast(wolfScope ? '切到狼人频道' : '切回公共频道');
+        };
+
+        function sendChat() {
+            var text = (chatInput.value || '').trim();
+            if (!text) return;
+            var scope = wolfScope ? 'wolves' : 'public';
+            if (!Play.chat(text, scope)) {
+                Play.toast('未连接，消息没有发出');
+                return;
+            }
+            chatInput.value = '';
+        }
+
+        Play.$('sendBtn').onclick = sendChat;
+        chatInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); sendChat(); }
+        });
+
+        /* ---------- 启动 ---------- */
+
+        var q = {};
+        (location.search.replace(/^\?/, '') || '').split('&').forEach(function (kv) {
+            if (!kv) return;
+            var i = kv.indexOf('=');
+            var k = i < 0 ? kv : kv.slice(0, i);
+            var v = i < 0 ? '' : kv.slice(i + 1);
+            try { q[decodeURIComponent(k)] = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) { q[k] = v; }
+        });
+
+        var urlRoom = (q.room || '').toUpperCase();
+        if (urlRoom) {
+            roomInput.value = urlRoom;
+            if (Play.getSeat(urlRoom)) {
+                room = urlRoom;
+            }
+        }
+
+        Play.renderRooms(roomsEl, null, goRoom);
+    })();
+</script>
+</body>
+</html>

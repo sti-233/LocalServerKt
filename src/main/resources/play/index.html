@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Play 游戏</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/page-store.js"></script>
+    <script src="/resources/lib/theme.js"></script>
+    <link rel="stylesheet" href="/resources/play/play.css">
+</head>
+<body>
+
+<div class="topbar">
+    <div class="topbar-left">
+        <h1>🎮 Play 游戏</h1>
+        <span id="connText" class="conn-text">连接中…</span>
+    </div>
+    <div class="topbar-right">
+        <span id="connDot" class="conn-dot wait" title="正在连接…"></span>
+        <a class="top-link" href="/">← 返回</a>
+    </div>
+</div>
+
+<div class="wrap">
+    <h2 class="page-title">选择游戏</h2>
+    <div class="cards">
+        <button class="game-card" type="button" id="cardUndercover">
+            <span class="gc-icon">🕵️</span>
+            <span class="gc-name">谁是卧底</span>
+            <span class="gc-desc">每人拿到一个相近的词，其中少数人拿到的词和大家略有不同。描述、投票、找出卧底。</span>
+        </button>
+        <button class="game-card" type="button" id="cardWerewolf">
+            <span class="gc-icon">🐺</span>
+            <span class="gc-name">狼人杀</span>
+            <span class="gc-desc">夜晚狼人刀人、预言家查验、女巫用药、守卫守护；白天讨论后投票放逐。</span>
+        </button>
+    </div>
+
+    <h2 class="page-title">房间列表</h2>
+    <div class="panel">
+        <div class="btn-row">
+            <button id="refreshRooms" class="btn tiny" type="button">刷新列表</button>
+        </div>
+        <div id="rooms" class="room-list"></div>
+        <p class="card-hint">点一个房间直接进入对应游戏；没有房间就在游戏页里创建。</p>
+    </div>
+</div>
+
+<script src="/resources/play/play.js"></script>
+<script>
+    (function () {
+        'use strict';
+
+        var dot = Play.$('connDot');
+        var connText = Play.$('connText');
+        var roomsEl = Play.$('rooms');
+
+        var STATUS_TEXT = { ok: '已连接', wait: '连接中…', down: '已断开，重连中…' };
+
+        function unknownRoom(room) {
+            // 房间游戏类型未知时给个二次确认，避免误入另一边
+            Play.toast('这个房间的游戏类型未知');
+            if (window.confirm('房间 ' + room + ' 的游戏类型未知，进入谁是卧底？')) {
+                location.href = '/resources/play/undercover.html?room=' + encodeURIComponent(room);
+            }
+        }
+
+        function enterRoom(r) {
+            var id = String((r && r.id) || '').toUpperCase();
+            if (!id) return;
+            if (r.game === 'undercover' || r.game === 'werewolf') {
+                location.href = '/resources/play/' + r.game + '.html?room=' + encodeURIComponent(id);
+            } else {
+                unknownRoom(id);
+            }
+        }
+
+        function onStatus(s) {
+            dot.className = 'conn-dot ' + s;
+            connText.textContent = STATUS_TEXT[s] || '';
+            dot.title = STATUS_TEXT[s] || '';
+        }
+
+        Play.connect({
+            onOpen: function () {
+                Play.send({ type: 'lobby' });
+            },
+            onRoomList: function (rooms) {
+                Play.renderRooms(roomsEl, rooms, enterRoom);
+            },
+            onError: function (text) {
+                Play.toast(text);
+            },
+            onStatus: onStatus
+        });
+
+        // 断线重连成功后要重新要一次房间列表
+        Play.$('refreshRooms').onclick = function () {
+            if (Play.send({ type: 'lobby' })) Play.toast('已刷新房间列表');
+            else Play.toast('未连接，稍后再试');
+        };
+
+        Play.$('cardUndercover').onclick = function () {
+            location.href = '/resources/play/undercover.html';
+        };
+        Play.$('cardWerewolf').onclick = function () {
+            location.href = '/resources/play/werewolf.html';
+        };
+
+        // 空态先摆上，收到 roomList 后覆盖
+        Play.renderRooms(roomsEl, [], enterRoom);
+    })();
+</script>
+</body>
+</html>

@@ -6,6 +6,7 @@ import localserver.module.Control
 import localserver.module.Control.controlRoute
 import localserver.module.File.fileRoute
 import localserver.module.Music.musicRoute
+import localserver.module.Play.playRoute
 import localserver.module.Prefs.prefsRoute
 import localserver.module.Terminal.terminalRoute
 import localserver.module.Video.videoRoute
@@ -139,6 +140,7 @@ fun main() {
             videoRoute()
             fileRoute()
             terminalRoute()
+            playRoute()
             prefsRoute()
             network()
         }

@@ -83,6 +83,36 @@
 |---|---|---|
 | `/terminal` | control | 跳转 `terminal.html`；WS 帧 `{"cmd":"..."}` → `{"out":"...===EXIT <code>"}` |
 
+## Play（小游戏，谁是卧底 / 狼人杀）
+| 端点 | 鉴权 | 用法 |
+|---|---|---|
+| `/play` | auth | 跳转 `play/index.html`：游戏选择 + 房间列表 |
+| `/play/undercover` | auth | 跳转 `play/undercover.html`：「谁是卧底」房间 |
+| `/play/werewolf` | auth | 跳转 `play/werewolf.html`：「狼人杀」房间 |
+| `/play/ws` | auth | 实时游戏的唯一 WebSocket；单行 JSON 一帧，房间列表也走这里（`{"type":"lobby"}`） |
+
+房间状态**全在内存里**，进程重启即全部消失 —— 一局游戏本来就只有几十分钟，没有值得落盘的东西。
+
+客户端 → 服务端：`{"type":"create","game":"undercover"\|"werewolf","name"?}`、`{"type":"join","room":"ABCD","name"?}`、
+`{"type":"resume","room","seat"}`（断线重连）、`{"type":"lobby","game"?}`、`{"type":"action","action","data":{}}`、
+`{"type":"chat","text","scope":"public"\|"wolves"}`。
+
+服务端 → 客户端：`{"type":"joined",...}`、`{"type":"state","room","game","seat","state":{}}`、`{"type":"roomList","rooms":[...]}`、`{"type":"err","text"}`。
+
+要点：
+
+- **房号 4 位**，字母表去掉 `0/O/1/I`（念出来不会混）；**座位号 8 位**，一个座位同时只有一条连接，新连接顶掉旧的，所以换设备/换标签页请用 `resume`。
+- **房主 = 首个入座者**，只有房主能 `start`／`config`／`startVote`／`resolveVote`／`resolveNight`／`breakTie`／`endGame`。房主出局后**自动转移**给下一个存活玩家（`GameEngine.ensureHost`），否则最容易被针对的位置一出局整局就卡死。
+- **`state` 按座位裁剪后再发**：`broadcast` 对每个座位单独调 `engine.view(room, seat)`，不走「生成一份广播给所有人」—— 这是唯一防泄漏的出口。
+- 「谁是卧底」：**所有平民共用一个词、所有卧底共用一个词**（每人发不同的词会让「猜谁和大家不一样」失去判据）。**`myRole` 在进行中恒为 `null`**，只有自己出局或 `finished` 才给 —— 一开局就知道自己是卧底的话这游戏没得玩。`players[]` 里**永远没有 `word` 字段**，谁都看不到别人的词，出局的也一样。
+- 出局日志形如「小明被放逐，身份：卧底」—— **只公布身份，不公布词**。
+- 房主可在 `waiting` 期自定义词组（`config{group}`）：按 `[,，、\s]+` 切分、去重，2..6 个词、每词不超过 16 字符；`group:""` 恢复内置随机词组。自定义词组与卧底人数**跨局保留**在房间上。
+- 内置词库**只在服务端**（`PlayUndercover.BUILTIN_GROUPS`）—— 放进 `resources/` 就等于把答案挂到 `/resources` 上。
+- 「狼人杀」5 种角色（狼人/预言家/女巫/守卫/平民），**4 ≤ 人数 ≤ 12**：4 人=狼1预1女1民1（无守卫）；5 人各 1；6-8 人=狼2预1女1守1+民（n-5）；9-11 人=狼3；12 人=狼4+民5。
+- 夜间结算顺序：守卫守护 → 狼人袭击（被守护则免刀）→ 女巫解药（未被守护、女巫存活、有解药、目标不是女巫自己）→ 女巫毒药（**无视守护**）→ 天亮**只公布死亡名单、不公布身份** → 清空上一夜守卫目标 → 判胜负。
+- 女巫不能自救、同夜不能既救又毒同一人；守卫不能守自己、不能连续两晚守同一个人。
+- 胜负：卧底局「卧底全出局 = 平民胜」「存活卧底 ≥ 存活平民 = 卧底胜」；狼人杀「狼人全灭 = 好人胜」「存活狼 ≥ 存活好人 = 狼人胜」。
+
 ## Network（网络代理）
 | 端点 | 鉴权 | 用法 |
 |---|---|---|

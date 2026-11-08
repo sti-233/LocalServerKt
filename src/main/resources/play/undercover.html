@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>谁是卧底 - Play</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/page-store.js"></script>
+    <script src="/resources/lib/theme.js"></script>
+    <link rel="stylesheet" href="/resources/play/play.css">
+</head>
+<body>
+
+<div class="topbar">
+    <div class="topbar-left">
+        <h1>🕵️ 谁是卧底</h1>
+        <div class="room-chip hidden" id="roomChip">
+            <span class="room-chip-label">房号</span>
+            <strong class="room-id" id="roomId">----</strong>
+            <button class="btn tiny" id="copyBtn" type="button">复制</button>
+        </div>
+        <span class="conn-text" id="phaseHint"></span>
+    </div>
+    <div class="topbar-right">
+        <a class="top-link" href="/resources/play/index.html">← 游戏大厅</a>
+        <span id="connDot" class="conn-dot wait" title="正在连接…"></span>
+    </div>
+</div>
+
+<div class="wrap">
+
+    <!-- ================= A. 大厅态 ================= -->
+    <div id="lobby">
+        <div class="lobby">
+            <div class="card">
+                <h3 class="card-title">创建房间</h3>
+                <div class="join-row">
+                    <input id="nameInput" class="text-input" placeholder="昵称（可留空）" maxlength="20">
+                    <button id="createBtn" class="btn primary" type="button">创建房间</button>
+                </div>
+                <p class="card-hint">创建后把房号发给朋友，他们用「加入」进来。</p>
+            </div>
+            <div class="card">
+                <h3 class="card-title">加入房间</h3>
+                <div class="join-row">
+                    <input id="roomInput" class="text-input" placeholder="房号，如 ABCD" maxlength="8">
+                    <button id="joinBtn" class="btn" type="button">加入</button>
+                </div>
+                <p class="card-hint">房号不区分大小写。</p>
+            </div>
+        </div>
+
+        <h2 class="page-title">房间列表</h2>
+        <div class="panel">
+            <div id="rooms" class="room-list"></div>
+        </div>
+    </div>
+
+    <!-- ================= B. 房间态 ================= -->
+    <div id="room" class="hidden">
+        <div id="banner" class="banner hidden"></div>
+        <div id="errBar" class="err-bar hidden"></div>
+
+        <div class="room-cols">
+            <div class="col side">
+                <div class="panel" id="mePanel"></div>
+
+                <div class="panel">
+                    <div class="sec-head">
+                        <span class="sec-title">玩家</span>
+                        <span class="sec-count" id="playerCount"></span>
+                    </div>
+                    <div id="players" class="players"></div>
+                </div>
+
+                <div class="panel hidden" id="hostPanel">
+                    <div class="sec-head">
+                        <span class="sec-title">房主管理</span>
+                        <span class="sec-count" id="hostPhase"></span>
+                    </div>
+                    <div id="hostBody" class="host-body"></div>
+
+                    <div class="field hidden" id="groupField">
+                        <span class="field-label">自定义词组（英文逗号分隔）</span>
+                        <input id="groupInput" class="text-input" placeholder="苹果,梨,草莓" maxlength="200">
+                        <div class="btn-row">
+                            <button id="groupApply" class="btn tiny" type="button">应用词组</button>
+                            <button id="groupReset" class="btn tiny" type="button">恢复随机</button>
+                        </div>
+                    </div>
+
+                    <div class="field hidden" id="ucField">
+                        <span class="field-label">卧底人数</span>
+                        <select id="ucSelect" class="text-input">
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col main">
+                <div id="log" class="log"></div>
+                <div id="acts" class="acts"></div>
+                <div class="chatbar">
+                    <input id="chatInput" class="text-input chat-input" placeholder="说点什么…" maxlength="200">
+                    <button id="sendBtn" class="btn primary" type="button">发送</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/resources/play/play.js"></script>
+<script>
+    (function () {
+        'use strict';
+
+        var GAME = 'undercover';
+
+        var state = null;
+        var room = '';
+        var mySeat = '';
+        var gotState = false;
+        var resumeTimer = null;
+
+        var dot = Play.$('connDot');
+        var phaseHint = Play.$('phaseHint');
+        var roomChip = Play.$('roomChip');
+        var roomIdEl = Play.$('roomId');
+        var lobbyEl = Play.$('lobby');
+        var roomEl = Play.$('room');
+        var bannerEl = Play.$('banner');
+        var errBar = Play.$('errBar');
+        var mePanel = Play.$('mePanel');
+        var playersEl = Play.$('players');
+        var playerCount = Play.$('playerCount');
+        var hostPanel = Play.$('hostPanel');
+        var hostBody = Play.$('hostBody');
+        var hostPhase = Play.$('hostPhase');
+        var groupField = Play.$('groupField');
+        var groupInput = Play.$('groupInput');
+        var ucField = Play.$('ucField');
+        var ucSelect = Play.$('ucSelect');
+        var logEl = Play.$('log');
+        var actsEl = Play.$('acts');
+        var chatInput = Play.$('chatInput');
+        var nameInput = Play.$('nameInput');
+        var roomInput = Play.$('roomInput');
+        var roomsEl = Play.$('rooms');
+
+        var STATUS_TEXT = { ok: '已连接', wait: '连接中…', down: '已断开，重连中…' };
+
+        /* ---------- 公共小工具 ---------- */
+
+        function show(node, on) {
+            if (!node) return;
+            if (on) node.classList.remove('hidden');
+            else node.classList.add('hidden');
+        }
+
+        function showErr(text) {
+            if (!text) { show(errBar, false); return; }
+            errBar.textContent = String(text);
+            show(errBar, true);
+        }
+
+        function pickRoom() {
+            var v = (roomInput.value || '').replace(/\s+/g, '').toUpperCase();
+            if (!v) { Play.toast('先输入房号'); roomInput.focus(); return; }
+            Play.send({ type: 'join', room: v, name: (nameInput.value || '').trim() });
+        }
+
+        function myName() {
+            return (nameInput.value || '').trim();
+        }
+
+        /* ---------- A. 大厅 ---------- */
+
+        function enterLobby() {
+            room = '';
+            state = null;
+            gotState = false;
+            show(lobbyEl, true);
+            show(roomEl, false);
+            show(roomChip, false);
+            phaseHint.textContent = '';
+            // 不在这里清空房间列表：先保留上一次的内容，等服务端回新的 roomList 再覆盖，
+            // 否则每次回大厅都会闪一下「还没有人开房」
+            Play.send({ type: 'lobby' });
+        }
+
+        function goRoom(r) {
+            if (!r || !r.id) return;
+            if (r.game && r.game !== GAME) {
+                location.href = '/resources/play/' + r.game + '.html?room=' + encodeURIComponent(r.id);
+                return;
+            }
+            roomInput.value = String(r.id).toUpperCase();
+            pickRoom();
+        }
+
+        /* ---------- 渲染 ---------- */
+
+        function addInfoRow(parent, key, val, extraCls) {
+            var row = Play.el('div', 'info-row');
+            row.appendChild(Play.el('span', 'info-key', key));
+            row.appendChild(Play.el('span', 'info-val' + (extraCls ? ' ' + extraCls : ''), val));
+            parent.appendChild(row);
+        }
+
+        function renderMe() {
+            Play.clear(mePanel);
+            if (!state) return;
+            var word = state.myWord;
+            addInfoRow(mePanel, '我拿到的词：', word ? word : '等待发词…', word ? '' : 'dim');
+            // 游戏中服务端把 myRole 置 null，前端不猜身份
+            if (state.myRole) {
+                addInfoRow(mePanel, '我的身份：', Play.roleName(state.myRole),
+                    state.myRole === 'undercover' ? 'role-undercover' : '');
+            }
+            if (state.undercoverCount) {
+                addInfoRow(mePanel, '卧底人数：', state.undercoverCount + ' 位');
+            }
+        }
+
+        function renderBanner() {
+            if (!state) { show(bannerEl, false); return; }
+            var text = '';
+            if (state.phase === 'finished') {
+                if (state.result === 'civilian') text = '🎉 平民胜利';
+                else if (state.result === 'undercover') text = '🎉 卧底胜利';
+                else text = '本局结束';
+            }
+            if (!text) { show(bannerEl, false); return; }
+            bannerEl.textContent = text;
+            bannerEl.className = 'banner' + (state.result === 'undercover' ? ' win' : '');
+            show(bannerEl, true);
+        }
+
+        function voteCard(title, players, myVote, tally, onPick, prefix) {
+            var card = Play.el('div', 'act-card');
+            card.appendChild(Play.el('div', 'act-title', title));
+            var row = Play.el('div', 'btn-row');
+            var any = false;
+            (players || []).forEach(function (p) {
+                if (!p || p.alive === false) return;
+                any = true;
+                var label = (prefix || '') + (p.name || '玩家');
+                var b = Play.el('button', 'btn' + (myVote && myVote === p.id ? ' sel' : ''), label);
+                b.type = 'button';
+                var n = tally && tally[p.id];
+                if (n) b.appendChild(Play.el('span', 'tally', ' ' + n));
+                b.onclick = function () { onPick(p); };
+                row.appendChild(b);
+            });
+            if (!any) row.appendChild(Play.el('div', 'act-hint', '没有可选的玩家'));
+            card.appendChild(row);
+            return card;
+        }
+
+        function renderActs() {
+            Play.clear(actsEl);
+            if (!state) return;
+
+            if ((state.phase === 'voting' || state.phase === 'vote') && state.canVote) {
+                actsEl.appendChild(voteCard('投票：选出你认为是卧底的人',
+                    state.players, state.myVote, state.tally, function (p) {
+                        Play.action('vote', { target: p.id });
+                        Play.toast('已投给 ' + (p.name || '该玩家'));
+                    }));
+            }
+        }
+
+        function hostButton(label, cls, fn) {
+            var b = Play.el('button', 'btn ' + (cls || ''), label);
+            b.type = 'button';
+            b.onclick = fn;
+            return b;
+        }
+
+        function renderHost() {
+            if (!state || !state.isHost) { show(hostPanel, false); return; }
+            show(hostPanel, true);
+            hostPhase.textContent = Play.phaseName(state.phase);
+
+            Play.clear(hostBody);
+            var phase = state.phase;
+
+            if (phase === 'waiting') {
+                if (state.canStart) {
+                    hostBody.appendChild(hostButton('开始游戏', 'primary', function () {
+                        Play.action('start');
+                    }));
+                }
+                show(groupField, true);
+                show(ucField, true);
+
+                // 词组只在没聚焦时回显，避免打断正在输入的文字
+                var g = (state.customGroup && state.customGroup.length) ? state.customGroup.join(',') : '';
+                if (document.activeElement !== groupInput && groupInput.value !== g) {
+                    groupInput.value = g;
+                }
+                if (state.undercoverCount && document.activeElement !== ucSelect) {
+                    ucSelect.value = String(state.undercoverCount);
+                }
+            } else if (phase === 'playing' || phase === 'day') {
+                hostBody.appendChild(hostButton('发起投票', 'primary', function () {
+                    Play.action('startVote');
+                }));
+                show(groupField, false);
+                show(ucField, false);
+            } else if (phase === 'voting' || phase === 'vote') {
+                hostBody.appendChild(hostButton('结算投票', 'primary', function () {
+                    Play.action('resolveVote');
+                }));
+                show(groupField, false);
+                show(ucField, false);
+            } else if (phase === 'finished') {
+                hostBody.appendChild(hostButton('再开一局', 'primary', function () {
+                    Play.action('endGame');
+                }));
+                show(groupField, false);
+                show(ucField, false);
+            } else {
+                show(groupField, false);
+                show(ucField, false);
+            }
+
+            // 平票裁决
+            if (state.awaitingTie && state.tieCandidates && state.tieCandidates.length) {
+                var card = voteCard('平票裁决：选一个人出局', idsToPlayers(state.tieCandidates),
+                    null, null, function (p) {
+                        Play.action('breakTie', { target: p.id });
+                    }, '裁决：');
+                hostBody.appendChild(card);
+            }
+        }
+
+        function idsToPlayers(ids) {
+            var map = {};
+            (state.players || []).forEach(function (p) { map[p.id] = p; });
+            return (ids || []).map(function (id) {
+                return map[id] || { id: id, name: id, alive: true };
+            });
+        }
+
+        function render() {
+            if (!state) return;
+            roomIdEl.textContent = room || state.room || '----';
+            phaseHint.textContent = Play.phaseName(state.phase) +
+                (state.round ? ' · 第 ' + state.round + ' 轮' : '');
+            renderMe();
+            Play.renderPlayers(playersEl, state);
+            playerCount.textContent = (state.players || []).length + ' 人';
+            Play.renderLog(logEl, state.log);
+            renderBanner();
+            renderActs();
+            renderHost();
+        }
+
+        /* ---------- 状态/事件 ---------- */
+
+        function applyJoined(msg) {
+            room = msg.room || room;
+            mySeat = msg.seat || mySeat;
+            if (room && mySeat) Play.setSeat(room, mySeat);
+            if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+            show(lobbyEl, false);
+            show(roomEl, true);
+            show(roomChip, true);
+            roomIdEl.textContent = room;
+        }
+
+        function applyState(msg) {
+            room = msg.room || room;
+            mySeat = msg.seat || mySeat;
+            if (room && mySeat) Play.setSeat(room, mySeat);
+            state = msg.state || {};
+            gotState = true;
+            if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+            show(lobbyEl, false);
+            show(roomEl, true);
+            show(roomChip, true);
+            showErr('');
+            render();
+        }
+
+        /* ---------- 连接 ---------- */
+
+        function onStatus(s) {
+            dot.className = 'conn-dot ' + s;
+            dot.title = STATUS_TEXT[s] || '';
+        }
+
+        function resumeOrLobby() {
+            var seat = room ? Play.getSeat(room) : '';
+            if (room && seat) {
+                mySeat = seat;
+                // 重连后要重新订阅，等新 state 到达才算恢复；页面继续显示旧内容
+                gotState = false;
+                Play.send({ type: 'resume', room: room, seat: seat });
+                // 服务端可能已把这个房间清掉：等不到 state 就退回大厅，别卡在空页面
+                if (resumeTimer) clearTimeout(resumeTimer);
+                resumeTimer = setTimeout(function () {
+                    resumeTimer = null;
+                    if (!gotState) {
+                        Play.clearSeat(room);
+                        Play.toast('房间已失效，回到大厅');
+                        enterLobby();
+                    }
+                }, 6000);
+            } else {
+                Play.send({ type: 'lobby' });
+            }
+        }
+
+        Play.connect({
+            onOpen: resumeOrLobby,
+            onJoined: applyJoined,
+            onState: applyState,
+            onRoomList: function (rooms) {
+                Play.renderRooms(roomsEl, rooms, goRoom);
+            },
+            onError: function (text) {
+                showErr(text);
+                Play.toast(text);
+            },
+            onStatus: onStatus
+        });
+
+        /* ---------- 交互绑定 ---------- */
+
+        Play.$('createBtn').onclick = function () {
+            if (!Play.send({ type: 'create', game: GAME, name: myName() })) {
+                Play.toast('还没连上服务器，稍等一下');
+            }
+        };
+
+        Play.$('joinBtn').onclick = pickRoom;
+
+        roomInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); pickRoom(); }
+        });
+        nameInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); pickRoom(); }
+        });
+
+        Play.$('copyBtn').onclick = function () {
+            if (!room) return;
+            Play.copyText(room, function (ok) {
+                Play.toast(ok ? '房号已复制' : '复制失败，请手动复制');
+            });
+        };
+
+        Play.$('groupApply').onclick = function () {
+            var v = (groupInput.value || '').trim();
+            if (!v) { Play.toast('先输入词组'); return; }
+            Play.action('config', { group: v });
+            Play.toast('词组已应用');
+        };
+
+        Play.$('groupReset').onclick = function () {
+            groupInput.value = '';
+            Play.action('config', { group: '' });
+            Play.toast('已恢复随机词组');
+        };
+
+        ucSelect.onchange = function () {
+            Play.action('config', { undercover: Number(ucSelect.value) });
+        };
+
+        function sendChat() {
+            var text = (chatInput.value || '').trim();
+            if (!text) return;
+            if (!Play.chat(text, 'public')) {
+                Play.toast('未连接，消息没有发出');
+                return;
+            }
+            chatInput.value = '';
+        }
+
+        Play.$('sendBtn').onclick = sendChat;
+        chatInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); sendChat(); }
+        });
+
+        /* ---------- 启动 ---------- */
+
+        var q = {};
+        (location.search.replace(/^\?/, '') || '').split('&').forEach(function (kv) {
+            if (!kv) return;
+            var i = kv.indexOf('=');
+            var k = i < 0 ? kv : kv.slice(0, i);
+            var v = i < 0 ? '' : kv.slice(i + 1);
+            try { q[decodeURIComponent(k)] = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) { q[k] = v; }
+        });
+
+        var urlRoom = (q.room || '').toUpperCase();
+        if (urlRoom) {
+            roomInput.value = urlRoom;
+            if (Play.getSeat(urlRoom)) {
+                room = urlRoom;         // 有 seat 才会在 onOpen 里 resume
+            }
+        }
+
+        Play.renderRooms(roomsEl, null, goRoom);
+    })();
+</script>
+</body>
+</html>
