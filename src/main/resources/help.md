@@ -18,7 +18,7 @@
 | `/deletePicture`（POST） | auth | 删除我的图片：JSON `{"name":"<sha256>.<ext>"}` → 只删 `cache/picture/<当前 IP 的用户名>/` 里的那一份（同一内容别人也存过则互不影响）；名字不合法 400、文件不存在 404；返回 `{ok,name,user}`，删失败时带 `error`。聊天页「缓存图片」面板的「删除」用 |
 | `/members` | auth | `{me, names}`：`names` 是全部已登记用户名（排序去重），供聊天页 @ 补全与 `@名字` 高亮。**只回名字不回 IP** |
 | `/avatars` | auth | `{me, items}`：`me` 是当前 IP 的用户名，`items` 是全站「用户名 → 图片地址」表，供聊天页按 `msg.name` 配头像 |
-| `/setAvatar`（POST） | auth | JSON `{"name":"<sha256>.<ext>"}`：把图库里的某张图设为头像（**只存引用不复制字节**）；名字不合法 400，图不在自己目录里 404；返回 `{ok,user,ref}` |
+| `/setAvatar`（POST） | auth | JSON `{"name":"<sha256>.<ext>"}`：把图库里的某张图设为头像（**只存引用不复制字节**）；名字不合法 400，图不在自己目录里 404；**GIF 不受支持**，`.gif` 一律 400 并在错误信息里点明原因（名字合法、图也在库里，只是头像位太小，动图看不清还白解码）；返回 `{ok,user,ref}` |
 | `/deleteAvatar`（POST） | auth | 恢复默认头像（首字 + 按名字取色），返回 `{ok,user}` |
 | `/migrateImages` | control | 聊天记录图片消息迁移（`ImageB64:` → `ImageRef:`） |
 | `/migratePictures` | control | 图片目录迁移（旧 `cache/<sha256>.<ext>` → `cache/picture/`） |
@@ -247,7 +247,7 @@ JSON 里对应 `summary.depFail`，每项还有 `use` 字段。
 | 页面 | 缓存内容 | 键 | 过期 / 上限 |
 |---|---|---|---|
 | `chat.html` | 每个会话（群聊某天 / 某个私聊对象）的消息列表，**含图片消息**（存的是 `ImageRef:/img/<sha256>.<ext>` 这行引用本身，图片字节在 `imgBlobs`） | `chatHistory`，`<targetuser 或空>|<yyyy-MM-dd>` | 按 `savedAt` 最多留 60 个会话 |
-| `chat.html` | 「缓存图片」面板的列表 + 所有聊天图/缩略图的字节 | `kv:pictures`、`imgBlobs`，键就是 `<sha256>.<ext>` | 列表无 TTL（每次打开都用服务端那份覆盖）；字节永不过期（名字即内容），最多留 240 张，单张 >6MB 不存 |
+| `chat.html` | 「缓存图片」面板的列表 + 所有聊天图/缩略图/**头像**的字节 | `kv:pictures`、`imgBlobs`，键就是 `<sha256>.<ext>` | 列表无 TTL（每次打开都用服务端那份覆盖）；字节永不过期（名字即内容），最多留 240 张，单张 >6MB 不存。头像与消息图共用这一份：`avatarNode()` 走同一个 `paintImg()`，命中时连 `/img` 请求都不发，没命中才回源并补存 |
 | `ai.html` | 会话列表、每个会话的消息 | `kv:ai_conv_list`、`aiConvs:<convId>` | 列表 24 小时；消息最多留 40 个会话；**匿名会话不缓存** |
 | `video/watch.html` | 播放进度（`t`/总时长/标题/封面/分P） | `progress`，`<bvid>|<cid>` | 看完（距结尾 <30 秒）或不足 5 秒不记；进页面若有记录且在 5 秒~结尾 30 秒之间，播放器左下浮出「上次看到 xx:xx / 继续播放 / 从头开始」 |
 | `video/index.html`、`search.html` | 推荐流 / 搜索结果快照 | `kv:video_feed@<tabId>`、`kv:video_search@<tabId>` | 30 分钟；按标签页隔离，后退回来直接照原样重画、不重新请求 |

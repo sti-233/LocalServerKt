@@ -31,6 +31,16 @@ object AvatarStore {
     private fun fileOf(user: String): File = File(DIR, AiHistory.sanitizeUser(user) + ".json")
 
     /**
+     * 头像**不接受 GIF**：头像位只有 22~32px，动图在那儿既看不清又白费解码，
+     * 而且 gif 首帧常常是个空白/占位帧，加载出来就是一块灰。聊天里发 gif 不受限，只是不能拿来当头像。
+     */
+    private val BANNED_EXT = setOf("gif")
+
+    /** 这个文件名能不能作头像：必须是内容寻址的图片名，且不是 gif */
+    fun isAllowedName(name: String): Boolean =
+        PictureStore.IMAGE_NAME.matches(name) && name.substringAfterLast('.').lowercase() !in BANNED_EXT
+
+    /**
      * 读一条头像记录；文件不存在、内容损坏、文件名不合法都返回 null。
      * `expect` 非空时还要求记录里的 user 与它相等。
      */
@@ -41,7 +51,8 @@ object AvatarStore {
             val name = obj["name"]?.jsonPrimitive?.contentOrNull
             when {
                 user.isNullOrBlank() || name.isNullOrBlank() -> null
-                !PictureStore.IMAGE_NAME.matches(name) -> null
+                // 老记录里可能存着 gif：读的时候按「没设置头像」处理，前端自动回落首字头像
+                !isAllowedName(name) -> null
                 expect != null && user != expect -> null
                 else -> user to name
             }
@@ -70,7 +81,7 @@ object AvatarStore {
      */
     @Synchronized
     fun set(user: String, name: String): String? {
-        if (!PictureStore.IMAGE_NAME.matches(name)) return null
+        if (!isAllowedName(name)) return null
         if (!File(PictureStore.userDir(user), name).isFile) return null
         dir()
         val body = buildJsonObject {

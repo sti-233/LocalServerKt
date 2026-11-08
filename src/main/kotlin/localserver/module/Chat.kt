@@ -391,6 +391,13 @@ object Chat {
                     contentType = ContentType.Application.Json, status = HttpStatusCode.BadRequest)
                 return@post
             }
+            // gif 单独回一条明确的原因：它名字合法、图也确实在自己库里的，
+            // 落到下面那句「不在你的图片库里」会让人以为文件找不到。
+            if (!AvatarStore.isAllowedName(name)) {
+                call.respondText("""{"ok":false,"error":"头像不支持 GIF 动图，请选一张静态图片"}""",
+                    contentType = ContentType.Application.Json, status = HttpStatusCode.BadRequest)
+                return@post
+            }
             val ref = AvatarStore.set(user, name)
             if (ref == null) {
                 call.respondText("""{"ok":false,"error":"这张图不在你的图片库里，请先保存再设为头像"}""",

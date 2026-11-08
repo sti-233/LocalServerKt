@@ -27,6 +27,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -116,6 +117,34 @@ class AvatarRouteTest {
         val alien = aliceDir.listFiles()!!.first().name
         assertNull(AvatarStore.set("tester", alien), "别人的图不能当自己的头像")
         assertNull(AvatarStore.get("tester"))
+    }
+
+    @Test
+    fun `gif is not allowed as an avatar`() {
+        // 同一份内容换个扩展名：名字完全合法，只是类型被头像拒收
+        val gifName = sha256Hex(pngBytes) + ".gif"
+        File(testerDir, gifName).writeBytes(pngBytes)
+        assertFalse(AvatarStore.isAllowedName(gifName), "gif 不能当头像")
+        assertNull(AvatarStore.set("tester", gifName), "set 也不该接受 gif")
+        assertNull(AvatarStore.get("tester"))
+        // 大小写不敏感：.GIF 一样拒
+        assertFalse(AvatarStore.isAllowedName(sha256Hex(pngBytes) + ".GIF"))
+        // png/jpeg 照旧可用
+        assertTrue(AvatarStore.isAllowedName(pngName))
+        assertTrue(AvatarStore.isAllowedName(sha256Hex(pngBytes) + ".jpeg"))
+    }
+
+    @Test
+    fun `an old gif record reads as no avatar`() {
+        // 老记录里可能已经存了 gif（禁令之前设的）：读时按"没设置"处理，前端回落首字头像
+        val gifName = sha256Hex(pngBytes) + ".gif"
+        File(testerDir, gifName).writeBytes(pngBytes)
+        avatarDir.mkdirs()
+        File(avatarDir, "tester.json").writeText(
+            """{"user":"tester","name":"$gifName","updatedAt":1}"""
+        )
+        assertNull(AvatarStore.get("tester"))
+        assertTrue(AvatarStore.all().isEmpty(), "all() 也要跳过 gif 记录")
     }
 
     @Test
@@ -229,6 +258,21 @@ class AvatarRouteTest {
             setBody("""{"name":"../../secret.png"}""")
         }
         assertEquals(HttpStatusCode.BadRequest, resp.status)
+    }
+
+    @Test
+    fun `setAvatar answers gif with a clear reason`() = withApp { client ->
+        val gifName = sha256Hex(pngBytes) + ".gif"
+        File(testerDir, gifName).writeBytes(pngBytes)
+        val resp = client.post("/setAvatar") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"name":"$gifName"}""")
+        }
+        // 名字合法、文件也在自己库里，只是类型被拒 —— 必须 400 而不是 404，
+        // 否则前端会提示"这张图不在你的图片库里"，让人以为文件没了
+        assertEquals(HttpStatusCode.BadRequest, resp.status)
+        assertTrue(resp.bodyAsText().contains("GIF"), "错误信息要点明是 GIF 的问题")
+        assertNull(AvatarStore.get("tester"))
     }
 
     @Test

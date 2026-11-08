@@ -226,6 +226,12 @@
             // 不重传字节（和「发送」一样走引用）
             async function setPickedAvatar() {
                 if (!pickSel) return;
+                // 面板里已经把 gif 标成不可选了，这里再挡一次：防止缓存里的旧列表
+                // （kv:pictures 可能还是空模式那次画的）让人点进可发状态。
+                if (/\.gif$/i.test(pickSel.name)) {
+                    showError('头像不支持 GIF 动图，请选一张静态图片');
+                    return;
+                }
                 const btn = document.getElementById('pickSetAvatar');
                 btn.disabled = true;
                 btn.textContent = '设置中…';
@@ -374,20 +380,31 @@
                 }
                 hint.style.display = 'none';
                 count.textContent = '最近 ' + items.length + ' / 共 ' + data.total + ' 张';
+                // 换头像不接受 GIF：头像位只有 22~32px，动图在那儿看不清还白解码，
+                // 首帧常常是空白帧，加载出来就是一块灰。发消息不受影响，只是不能当头像。
+                const asAvatar = pickMode() === 'avatar';
                 items.forEach(function (it) {
                     const img = document.createElement('img');
                     img.alt = it.name;
-                    img.title = it.name;
                     img.loading = 'lazy';
                     img.decoding = 'async';
                     img.setAttribute('data-name', it.name);
+                    const banned = asAvatar && /\.gif$/i.test(it.name);
+                    if (banned) {
+                        // 仍然显示（让人知道这张图存在），但不可选：点它不弹操作条，
+                        // 用 title + 半透明样式说明原因，省掉一次"选中了却被服务端拒绝"的往返。
+                        img.className = 'pick-banned';
+                        img.title = it.name + '（GIF 不能用作头像）';
+                    } else {
+                        img.title = it.name;
+                        img.addEventListener('click', function () {
+                            // 单击只选中，浮出「查看 / 删除 / 发送」；发不发由用户点按钮决定。
+                            // 发送永远只发 ref（服务端按引用转发），本地字节只用于「查看」
+                            selectPick({ name: it.name, ref: it.ref });
+                        });
+                    }
                     // 字节优先本地缓存，没有才走 /img/<name>（见 paintImg）
                     paintImg(img, it.name, it.ref);
-                    img.addEventListener('click', function () {
-                        // 单击只选中，浮出「查看 / 删除 / 发送」；发不发由用户点按钮决定。
-                        // 发送永远只发 ref（服务端按引用转发），本地字节只用于「查看」
-                        selectPick({ name: it.name, ref: it.ref });
-                    });
                     grid.appendChild(img);
                 });
             }
@@ -1112,8 +1129,20 @@
             return withWhite >= withDark ? '#ffffff' : '#10131a';
         }
 
+        // 头像引用（/img/<sha256>.<ext>）里取出裸文件名：它同时是 imgBlobs 的键
+        // （内容寻址，同名必然同字节），也是 GIF 判定的依据。
+        function avatarImageName(ref) {
+            if (!ref) return '';
+            const i = ref.lastIndexOf('/');
+            return i < 0 ? ref : ref.substring(i + 1);
+        }
+
         // 生成一个头像节点：设过图就是 <img>，否则是带首字的 <div>。
         // 两种都是 .avatar，尺寸/圆形裁剪共用一套样式。
+        //
+        // **头像字节优先走 IndexedDB**（imgBlobs 表，与聊天图/缩略图共用同一份缓存）：
+        // 命中时直接给 blob URL，连 /img 的请求都不发；没命中才回源，并顺手补存一份。
+        // 这样一排消息里的头像在弱网/离线时也能立刻画出来，刷新不会重新拉一遍。
         function avatarNode(name) {
             const ref = avatarMap[name];
             if (ref) {
@@ -1123,14 +1152,16 @@
                 img.title = name || '';
                 img.decoding = 'async';
                 img.loading = 'lazy';
-                // 设过头像的那张图后来被删了：静默换回首字头像。
-                // 不这么做的话会留一个破图占位符，而服务端那边其实已经回落成默认了
-                img.addEventListener('error', function () {
+                // 走和聊天图同一条取字节的路（paintImg：本地命中 → blob URL，否则回源补存）。
+                // 设过头像的那张图后来被删了（名字还在 map 里但文件没了）：静默换回首字头像，
+                // 否则会留一个破图占位符，而服务端那边其实已经回落成默认了。
+                // 用 onFail 而不是自己监听 error：本地那份坏字节会被 paintImg 退回网络重试，
+                // 我们挂的 error 会和它抢同一个事件，把"能救回来的图"误判成失效。
+                paintImg(img, avatarImageName(ref), ref, function () {
                     delete avatarMap[name];
                     const fallback = avatarFallback(name);
                     if (img.parentNode) img.parentNode.replaceChild(fallback, img);
-                }, { once: true });
-                img.src = ref;
+                });
                 return img;
             }
             return avatarFallback(name);
@@ -1850,14 +1881,22 @@
         /**
          * 给 <img> 上图：优先本地缓存，没有才走网络；走网络的那张加载成功后补存。
          * 故意不返回 Promise —— 调用方只管把节点摆上去，别为一张图阻塞整块渲染。
+         *
+         * `onFail` 只在**连网络都失败**时才回调：本地那份坏字节会先退回网络重试，
+         * 那一步不该被调用方当成"这张图已经不存在了"（头像靠它决定要不要回落首字）。
          */
-        function paintImg(img, name, ref) {
+        function paintImg(img, name, ref, onFail) {
             const net = ref || ('/img/' + name);
             const memo = imgUrlMemo.get(name);
-            if (memo) { img.src = memo; return; }
+            if (memo) {
+                if (onFail) img.addEventListener('error', function () { onFail(); }, { once: true });
+                img.src = memo;
+                return;
+            }
 
             function fromNet() {
                 img.addEventListener('load', function () { rememberImg(name); }, { once: true });
+                if (onFail) img.addEventListener('error', function () { onFail(); }, { once: true });
                 img.src = net;
             }
 
@@ -2822,6 +2861,12 @@
             display: block;
         }
         .pick-grid img:hover { border-color: var(--accent); }
+        /* 换头像时不接受的图（GIF）：仍然画出来，但压暗且不可点 */
+        .pick-grid img.pick-banned {
+            opacity: .38;
+            cursor: not-allowed;
+        }
+        .pick-grid img.pick-banned:hover { border-color: transparent; }
         /* 选中的那张：加一圈 accent 边，和操作条呼应 */
         .pick-grid img.sel {
             border-color: var(--accent);
