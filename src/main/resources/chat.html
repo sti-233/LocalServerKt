@@ -2300,19 +2300,49 @@
             min-width: 0;
         }
 
-        /* 会话侧边栏：默认宽 230px，收起时贴左边框 */
+        /* 会话侧边栏：默认宽 230px，收起时贴左边框
+           整体**不滚**（overflow: hidden），两段各自在列表里滚：私聊一多就把"群聊记录"
+           整段顶出可视区，那才是最常用的入口。见下面 .conv-section 两条规则。 */
         #sidebar {
             width: 230px;
             flex: 0 0 230px;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
             background: var(--card);
             border-right: 1px solid var(--border);
-            overflow-y: auto;
+            overflow: hidden;
             padding: 12px 10px;
             transition: margin-left .2s ease;
         }
         #sidebar:not(.open) { margin-left: -230px; }
-        .conv-section { margin-bottom: 14px; }
+        .conv-section {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        /* 两段各占侧边栏一半：都用 flex-basis 0 + grow 1，谁也不会因为内容多而挤占对方。
+           内容超了就在自己的 .conv-list 里滚，不会把另一段顶出去。 */
+        .conv-section-priv,
+        .conv-section-group {
+            flex: 1 1 0;
+            min-height: 0;
+        }
+        /* 群聊段顶部那条线就是两段的分割线 */
+        .conv-section-group {
+            margin-top: 6px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border);
+        }
+        .conv-list {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            /* 列表内滚到头别再带动侧边栏/页面（触屏上会"橡皮筋"，回弹把位置带歪） */
+            overscroll-behavior: contain;
+        }
         .conv-section h3 {
+            flex: 0 0 auto;
             margin: 0 0 8px;
             font-size: 12px;
             font-weight: 700;
@@ -2982,13 +3012,15 @@
     <div class="layout">
         <!-- 会话侧边栏：按 message/history_*.json 文件名分组（私聊 "名A-名B"、群聊 yyyy-MM-dd），点击切换 -->
         <aside id="sidebar">
-            <div class="conv-section">
+            <!-- 两段各占一半高度（.conv-section 用 flex:1 1 0），各自列表内部滚动；
+                 群聊段带一条上分割线，内容再多也不会把另一段顶出去 -->
+            <div class="conv-section conv-section-priv">
                 <h3>私聊</h3>
-                <div id="privList"></div>
+                <div id="privList" class="conv-list"></div>
             </div>
-            <div class="conv-section">
+            <div class="conv-section conv-section-group">
                 <h3>群聊记录</h3>
-                <div id="dayList"></div>
+                <div id="dayList" class="conv-list"></div>
             </div>
         </aside>
 
