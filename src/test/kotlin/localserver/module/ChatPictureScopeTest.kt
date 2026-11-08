@@ -38,7 +38,7 @@ import kotlin.test.assertEquals
 class ChatPictureScopeTest {
 
     private val json = Json { ignoreUnknownKeys = true }
-    private val pictureDir = File(Chat.PICTURE_DIR)
+    private val pictureDir = File(PictureStore.DIR)
     private val myDir = File(pictureDir, "tester")
     private val otherDir = File(pictureDir, "someone-else")
 

@@ -172,6 +172,167 @@ object Util {
         return list[0] + "-" + list[1]
     }
 
+    /**
+     * 用户名是否可用（新增/改名时校验）。
+     *
+     * 挡住 `-`：它是私聊归档名的分隔符（`history_<排序后两人名>.json`）。名字里带它，
+     * `alice-b` 与 `bob` 的归档就叫 `alice-b-bob`，光看文件名分不清切点 —— 前端
+     * `partnerOf` 的 `split('-')` 会解出 `alice`，服务端 `getTarget` 也拼不出原名。
+     * 写入口禁掉，归档名就永远无歧义，不必再猜。
+     *
+     * 控制字符一并挡掉：它们混进文件名与 JSON 键，肉眼只看得到空白。
+     *
+     * 注意只约束**新写入**的名字，不追溯现有的：读取侧 [partnerIn] 按 `getTarget`
+     * 回验，带 `-` 的老名字仍然认得出来，不会因为加了这个校验就读不出旧档。
+     */
+    fun isValidUserName(name: String): Boolean {
+        if (name.isBlank()) return false
+        return name.none { it == '-' || it.isISOControl() }
+    }
+
+    // ===== 改名迁移 =====
+    // 用户名同时被当成「归档文件名的一部分」和「消息体里的发送者」，改名之后两头都对不上：
+    //   - 私聊归档叫 history_旧名-对方.json，与新名字拼出来的 getTarget(新名, 对方) 不符，
+    //     chat.html 的 `p.split('-').includes(me)` 直接跳过整条会话 → 侧边栏里会话消失，
+    //     手打旧名也读不出来（/history 会因 userExists(旧名) 为 false 回 400）；
+    //   - 消息体的 name 还是旧名，前端 `msg.name === me` 不成立，自己发的旧消息被当成
+    //     别人发的（亮未读红点、没有撤回按钮）。
+    // 所以改名必须连带迁移数据，且要做到「没改过名也跑不坏」（幂等）。
+
+    /** 迁移期间独占：改名要同时动源与目标两个文件，逐个加锁容易和 addHistory 交叉 */
+    private val renameLock = Any()
+
+    private val DATE_ARCHIVE = Regex("^\\d{4}-\\d{2}-\\d{2}$")
+
+    /**
+     * 从私聊归档名里找出「另一个人」，[from] 必须是参与者之一；解析不出返回 null。
+     *
+     * 名字本身可能含 `-`（[AiHistory.sanitizeUser] 放行它），所以**不能 `split('-')`**：
+     * 把每个 `-` 当作切点试一遍，用 [getTarget] 回验（排序后拼回去必须等于原名），
+     * 再要求 [from] 出现在两侧之一，才能排除 `alice-bob-cat` 这种多解。
+     */
+    fun partnerIn(fileBase: String, from: String): String? {
+        for (i in fileBase.indices) {
+            if (fileBase[i] != '-') continue
+            val a = fileBase.substring(0, i)
+            val b = fileBase.substring(i + 1)
+            if (a.isEmpty() || b.isEmpty()) continue
+            if (getTarget(a, b) != fileBase) continue
+            if (a == from) return b
+            if (b == from) return a
+        }
+        return null
+    }
+
+    /**
+     * 把 [from] 相关的聊天记录迁到 [to] 名下：
+     * 1. 私聊归档改名（目标已存在就按时间合并，不覆盖、不丢消息）；
+     * 2. 所有存档里 `name == from` 的消息改写为 [to]（群聊按天归档也要改）。
+     *
+     * 幂等：跑第二遍时已经没有 `from` 参与的归档与消息，返回全 0。
+     * 内容不删：合并策略下两条会话的消息都留着，只在同一 (name,time,text) 上取一条。
+     */
+    fun migrateRename(from: String, to: String): Map<String, Int> {
+        val stats = mutableMapOf(
+            "historyFiles" to 0, "historyRenamed" to 0, "historyMerged" to 0,
+            "messagesRewritten" to 0, "failed" to 0
+        )
+        if (from == to || from.isBlank() || to.isBlank()) return stats
+        synchronized(renameLock) {
+            val dir = File("message")
+            val files = dir.listFiles { f ->
+                f.isFile && f.name.startsWith("history_") && f.name.endsWith(".json")
+            }.orEmpty()
+
+            // 第 1 步：私聊归档改名/合并
+            for (f in files) {
+                val base = f.name.removePrefix("history_").removeSuffix(".json")
+                if (DATE_ARCHIVE.matches(base)) continue // 群聊按日期，与名字无关
+                val other = partnerIn(base, from) ?: continue
+                // 自己发给自己的归档叫 `我-我`：partnerIn 会把两侧都解成本人，改完之后应该是
+                // `新名-新名`，不能拼成 `旧名-新名`（那样前端 partnerOf 会解出一个不存在的人）
+                val destBase = if (other == from) getTarget(to, to) else getTarget(to, other)
+                if (destBase == base) continue // 例如改名前后的名字排序后仍拼出同一个串
+                stats["historyFiles"] = stats["historyFiles"]!! + 1
+                val destFile = historyFileOf(destBase)
+                val srcList = readHistoryFile(f)
+                if (srcList == null) {
+                    stats["failed"] = stats["failed"]!! + 1
+                    continue
+                }
+                val rewritten = srcList.map { m ->
+                    if (m.name == from) stats["messagesRewritten"] = stats["messagesRewritten"]!! + 1
+                    rewriteName(m, from, to)
+                }
+                val destList = if (destFile.exists()) readHistoryFile(destFile) else null
+                if (destFile.exists() && destList == null) {
+                    // 目标文件坏了：不动它，也不删源文件，留给人处理
+                    Logger.error("migrateRename: refuse to merge into unreadable ${destFile.path}")
+                    stats["failed"] = stats["failed"]!! + 1
+                    continue
+                }
+                if (destList != null) {
+                    // 去重键：同一条消息（同人同时刻同内容）只留一条。用不可见字符当分隔符，
+                    // 免得 "ab|cd" 和 "a|bcd" 撞成同一个键
+                    val seen = mutableSetOf<String>()
+                    val sep = '\u0000'
+                    val union = (destList + rewritten)
+                        .filter { seen.add("" + it.name + sep + it.time + sep + it.text) }
+                        .sortedBy { it.time }
+                    writeAtomic(destFile, prettyJson.encodeToString(union.toMutableList()))
+                    stats["historyMerged"] = stats["historyMerged"]!! + 1
+                } else {
+                    writeAtomic(destFile, prettyJson.encodeToString(rewritten.toMutableList()))
+                    stats["historyRenamed"] = stats["historyRenamed"]!! + 1
+                }
+                if (!f.delete()) {
+                    Logger.error("migrateRename: cannot delete ${f.path} after writing ${destFile.path}")
+                    stats["failed"] = stats["failed"]!! + 1
+                }
+            }
+
+            // 第 2 步：其余存档（尤其是群聊按天归档）里的发送者名字
+            val remaining = dir.listFiles { f ->
+                f.isFile && f.name.startsWith("history_") && f.name.endsWith(".json")
+            }.orEmpty()
+            for (f in remaining) {
+                val list = readHistoryFile(f) ?: continue
+                // 判据不能只看「有没有旧名字发的消息」：一条别人发的消息也可能
+                // 通过 reply 快照引用着旧名字，那种文件同样需要改写（否则引用块里
+                // 一直挂着旧名，看着像另一个人）。两种引用都算命中。
+                val touched = list.any { it.name == from || it.reply?.name == from }
+                if (!touched) continue
+                val rewritten = list.map { m ->
+                    if (m.name == from) stats["messagesRewritten"] = stats["messagesRewritten"]!! + 1
+                    rewriteName(m, from, to)
+                }
+                writeAtomic(f, prettyJson.encodeToString(rewritten.toMutableList()))
+            }
+        }
+        return stats
+    }
+
+    /**
+     * 把一条消息里所有「指向旧名字」的地方换成新名字。
+     *
+     * 除了 [Message.name]，还要改 [Message.reply] 里的快照名字 —— 回复块显示的是
+     * "回复了某某"的一行摘要，改了名之后那里若还写着旧名，看着像另一个人在说话。
+     * 回复的**时间与文本不改**：那是当时那条消息的内容快照。
+     */
+    private fun rewriteName(m: Message, from: String, to: String): Message {
+        val renamed = if (m.name == from) m.copy(name = to) else m
+        val reply = renamed.reply ?: return renamed
+        return if (reply.name == from) renamed.copy(reply = reply.copy(name = to)) else renamed
+    }
+
+    /** 读一份存档；文件不存在或解析失败返回 null（迁移里宁可跳过也不清空别人的记录） */
+    private fun readHistoryFile(file: File): MutableList<Message>? = try {
+        historyJson.decodeFromString<MutableList<Message>>(file.readText().trimStart('\uFEFF'))
+    } catch (e: Exception) {
+        Logger.error("migrateRename: cannot read ${file.path}: ${e.message}")
+        null
+    }
+
     fun getUserName(ip: String): String {
         return Util.getUserList().firstOrNull { (it.ip == ip).and(!it.name.isNullOrEmpty()) }?.name ?: throw Exception("User name is null!")
     }

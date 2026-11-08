@@ -190,6 +190,56 @@ object Prefs {
         settingPage()
     }
 
+    /**
+     * 改名迁移：`<旧名>.json` → `<新名>.json`，并把键名里带旧名字的顺手改掉。
+     *
+     * 为什么键名也要改：chat 的配置键是 `lastRead_<用户名>`（整张已读表一个键）。
+     * 只搬文件的话，新名字的页面去读 `lastRead_<新名>` 是空的 —— 所有会话重新变未读，
+     * 而那份旧记录还占着地方。已知的这类键只有 `lastRead_`，其它页面都是固定键名。
+     *
+     * 新旧文件都存在时按「目标优先」合并：已有的键不覆盖，只补目标缺少的键。
+     */
+    @Synchronized
+    fun renameUser(from: String, to: String, base: File = File(ROOT)): Map<String, Int> {
+        val stats = mutableMapOf("keys" to 0, "failed" to 0)
+        val src = userFile(from, base)
+        if (!src.exists()) return stats
+        val dest = userFile(to, base)
+        if (src.absolutePath == dest.absolutePath) return stats
+        val oldName = localserver.utils.AiHistory.sanitizeUser(from)
+        val newName = localserver.utils.AiHistory.sanitizeUser(to)
+        try {
+            val merged = (if (dest.exists()) load(to, base) else JsonObject(emptyMap())).toMutableMap()
+            for ((page, pageValue) in load(from, base)) {
+                val pageObj = (pageValue as? JsonObject) ?: continue
+                val target = (merged[page] as? JsonObject)?.toMutableMap() ?: mutableMapOf()
+                for ((key, value) in pageObj) {
+                    val renamed = key.replace("lastRead_$oldName", "lastRead_$newName")
+                    if (target.containsKey(renamed)) continue
+                    target[renamed] = value
+                    stats["keys"] = stats["keys"]!! + 1
+                }
+                if (target.isNotEmpty()) merged[page] = JsonObject(target)
+            }
+            val text = storeJson.encodeToString(JsonObject.serializer(), JsonObject(merged))
+            if (text.length > MAX_BYTES) throw IllegalStateException("$text.length bytes > $MAX_BYTES")
+            val dir = dest.parentFile
+            if (!dir.exists() && !dir.mkdirs()) throw IllegalStateException("cannot create ${dir.path}")
+            val tmp = File(dir, dest.name + ".tmp")
+            tmp.writeText(text)
+            if (dest.exists()) dest.delete()
+            if (!tmp.renameTo(dest)) {
+                dest.writeText(text)
+                tmp.delete()
+            }
+            src.delete()
+        } catch (e: Exception) {
+            Logger.error("Prefs.renameUser failed: ${e.message}")
+            stats["failed"] = stats["failed"]!! + 1
+        }
+        return stats
+    }
+
     // 设置页：日间/夜间切换 + 各页面配置存储概览
     private fun Route.settingPage() = authenticate("auth") {
         get("/setting") {

@@ -41,6 +41,48 @@ object AiHistory {
     /** 用户目录：cache/ai/<用户名> */
     fun userDir(user: String, base: File = File(DEFAULT_ROOT)): File = File(base, sanitizeUser(user))
 
+    /**
+     * 改名迁移：把 `<旧名>/` 里的会话并进 `<新名>/`，并改掉 `_shares.json` 里的 owner。
+     *
+     * 会话 id 含到秒的时间戳 + 随机 hex，两个目录里撞 id 的概率可以忽略；真撞上了
+     * 以目标目录那份为准（不覆盖已有文件），旧文件改名成 `<id>_dup` 也不清掉 ——
+     * 会话内容是用户数据，宁可留个看不懂的文件也不能悄悄丢。
+     */
+    fun renameUser(from: String, to: String, base: File = File(DEFAULT_ROOT)): Map<String, Int> {
+        val oldName = sanitizeUser(from)
+        val newName = sanitizeUser(to)
+        val stats = mutableMapOf("conversations" to 0, "shares" to 0, "failed" to 0)
+        if (oldName == newName) return stats
+        val src = File(base, oldName)
+        if (src.isDirectory) {
+            val dest = File(base, newName)
+            for (f in src.listFiles { f -> f.isFile && f.name.endsWith(".json") }.orEmpty()) {
+                try {
+                    if (!dest.exists() && !dest.mkdirs()) throw IllegalStateException("cannot create ${dest.path}")
+                    var target = File(dest, f.name)
+                    if (target.exists()) target = File(dest, f.name.removeSuffix(".json") + "_dup.json")
+                    if (!f.renameTo(target)) {
+                        target.writeBytes(f.readBytes())
+                        if (!f.delete()) throw IllegalStateException("cannot delete ${f.path}")
+                    }
+                    stats["conversations"] = stats["conversations"]!! + 1
+                } catch (e: Exception) {
+                    Logger.error("AiHistory.renameUser failed on ${f.name}: ${e.message}")
+                    stats["failed"] = stats["failed"]!! + 1
+                }
+            }
+            src.delete()
+        }
+        // 分享记录：owner 存的是净化后的名字，不改就查不到自己的分享链接了
+        val shares = loadShares(base)
+        val touched = shares.filter { it.owner == oldName }
+        if (touched.isNotEmpty()) {
+            val updated = shares.map { if (it.owner == oldName) AiShare(it.token, newName, it.convId, it.createdAt) else it }
+            if (saveShares(updated, base)) stats["shares"] = touched.size else stats["failed"] = stats["failed"]!! + 1
+        }
+        return stats
+    }
+
     /** Windows 保留设备名（CON/NUL/COM1…）不能作目录名，前缀下划线规避 */
     private val RESERVED_NAMES = Regex("(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\\..*)?$")
 

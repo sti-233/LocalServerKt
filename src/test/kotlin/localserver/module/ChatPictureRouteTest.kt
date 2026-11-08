@@ -43,7 +43,7 @@ class ChatPictureRouteTest {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val cacheDir = File("cache")
-    private val pictureDir = File(Chat.PICTURE_DIR)
+    private val pictureDir = File(PictureStore.DIR)
 
     // 图片现在按用户分目录存：userList 里 localhost → tester，所以测试用户的目录是 cache/picture/tester
     private val testerDir = File(pictureDir, "tester")
