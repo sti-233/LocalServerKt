@@ -112,9 +112,13 @@ fun main() {
                 cacheControl { resource ->
                     // HTML / JSON 用 no-cache：允许存但每次都要带 If-Modified-Since 来验，
                     // 改动页面后刷新立刻生效，不必等 max-age 过期。
-                    // JS/CSS/图片用长缓存 + must-revalidate 兜底：这些文件很少变，改了就换文件名。
-                    // 图片也归进这一类，是因为 environment.html 那条「图片二次加载走缓存」的探测
-                    // 靠的就是它 —— 若图片仍走 no-cache，第二次只会拿到 304，量出来的传输量不是 0。
+                    // JS/CSS 与图片一样给 7 天：正常浏览时零请求，过期后带 If-Modified-Since 来验，
+                    // 没改回 304 几乎不花钱。代价是「新 HTML + 旧 common.js」——两边函数名对不上，
+                    // 页面直接抛 ReferenceError（video 页的 snapSet 就是这么没的）。这个窗口靠
+                    // setting.html 的「强制刷新 JS/CSS」按钮兜底：它走 fetch(cache:'reload') 无条件
+                    // 回源，不受这里 max-age 的影响，改完脚本点一下即可，不必逐台设备强刷。
+                    // 图片同样 7 天：字节不变就不该变，environment.html 的「图片二次加载走缓存」
+                    // 探测靠的就是它 —— 若图片走 no-cache，第二次只会拿到 304、传输量不为 0。
                     val name = resource.path.substringAfterLast('/').lowercase()
                     when {
                         name.endsWith(".html") || name.endsWith(".json") || name.endsWith(".md") ->

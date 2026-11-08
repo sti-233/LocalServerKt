@@ -45,16 +45,25 @@ class StaticCacheTest {
     }
 
     @Test
-    fun `javascript and css get a long max age and a last modified`() = testApplication {
+    fun `javascript and css are cached as long as images`() = testApplication {
         application { routing { staticWithCache() } }
 
+        // JS/CSS 曾经只给 5 小时以防「新 HTML + 旧 JS」，现在改成 7 天：那个窗口由设置页的
+        // 「强制刷新 JS/CSS」按钮兜底（fetch cache:'reload' 无条件回源，与 max-age 无关）。
         for (path in listOf("/resources/lib/theme.css", "/resources/lib/lightbox.js")) {
             val res = client.get(path)
             assertEquals(HttpStatusCode.OK, res.status, "expected 200 for $path")
 
             val cacheControl = res.headers[HttpHeaders.CacheControl]
             assertNotNull(cacheControl, "$path should carry Cache-Control")
-            assertTrue(cacheControl.contains("max-age="), "$path should carry max-age, got: $cacheControl")
+            assertTrue(
+                cacheControl.contains("max-age=604800"),
+                "$path should be cached for a week, got: $cacheControl"
+            )
+            assertTrue(
+                cacheControl.contains("must-revalidate"),
+                "$path must revalidate once stale, got: $cacheControl"
+            )
 
             assertNotNull(
                 res.headers[HttpHeaders.LastModified],

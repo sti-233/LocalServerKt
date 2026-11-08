@@ -121,6 +121,7 @@
 | `/download?url=&inline=` | — | 下载代理；`inline=1` 时将 CSS/HTML 相对 URL 改写为绝对 URL |
 | `/resources/...` | — | 静态资源（各页面 HTML/CSS/JS） |
 | `/environment` | auth | 跳转 `environment.html`：浏览器能力检测页 |
+| `/api/assets` | — | 列出 `/resources` 下全部 `.js`/`.css`（`{assets:["lib/theme.js",…]}`），供设置页「强制刷新」逐个回源；`no-store` |
 
 ## Timetable（课表）
 | 端点 | 鉴权 | 用法 |
@@ -204,8 +205,9 @@ JSON 里对应 `summary.depFail`，每项还有 `use` 字段。
   ⑦ `caches.match()`；⑧ sessionStorage 能否写下 256KB 快照（video 页用它存标签页 ID，把
   IndexedDB 快照按标签页隔开）。
   这一组在 DevTools 勾了 Disable cache 时，①④ 会如实报 ✗ —— 那不是页面坏了，是浏览器在按
-  `no-store` 处理一切请求。`/resources` 下的图片与 JS/CSS 一样走 `max-age=604800, must-revalidate`，
-  所以 ①②③ 三项在正常情况下都应是 ✓。
+  `no-store` 处理一切请求。`/resources` 下的图片与 JS/CSS 都走 `max-age=604800, must-revalidate`，
+  所以 ①②③ 三项在正常情况下都应是 ✓。改完 JS/CSS 若担心浏览器还在用旧的，用设置页的
+  「强制刷新 JS/CSS」按钮（`fetch(cache:'reload')` 强制回源，不受 max-age 影响）。
 - **网络**：fetch、XMLHttpRequest、WebSocket、EventSource、ReadableStream、AbortController、
   sendBeacon、`performance` 的 `navigation.type`（video 页据此判断是不是后退回来的，决定要不要复用快照）、
   `history.replaceState`、`scrollTo({behavior})`。

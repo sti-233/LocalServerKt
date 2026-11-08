@@ -235,6 +235,21 @@
             </div>
         </section>
 
+        <!-- 强制刷新 -->
+        <section class="card">
+            <h2>强制刷新页面缓存</h2>
+            <p class="hint">
+                HTML 每次都会回源验证，但 <code>.js</code> / <code>.css</code> 会被浏览器缓存 7 天。
+                改完脚本后如果页面报错说某个函数不存在，多半就是它拿到了旧的 JS。
+                点一次这里会把全站脚本样式重新拉一遍 —— 不用记快捷键、手机上也能用，
+                而且连本页没加载的那些也一起更新，之后再打开哪一页都是新的。
+            </p>
+            <div class="row">
+                <button class="btn" id="reloadAssetsBtn" onclick="forceReloadAssets()">强制刷新 JS/CSS</button>
+                <span id="reloadAssetsHint"></span>
+            </div>
+        </section>
+
         <!-- 服务端配置 -->
         <section class="card">
             <h2>服务端保存的配置</h2>
@@ -336,6 +351,63 @@
             paintChat();
         });
         paintChat();
+
+        // ===== 强制刷新 JS/CSS =====
+        // 浏览器按 Cache-Control 记账，服务端改了 max-age 对已缓存的那份没有追溯力，
+        // 所以只能让客户端主动把每个文件重新要一遍（cache:'reload' 强制跳过缓存回源，
+        // 回源后会带着新的 max-age / ETag 覆盖掉旧条目）。
+        //
+        // 清单由 GET /api/assets 在服务端枚举，不写死在前端：写死的话以后新增的 js 一定漏，
+        // 而漏掉的那个恰好就是下次出 ReferenceError 的那个。
+        function forceReloadAssets() {
+            var btn = document.getElementById('reloadAssetsBtn');
+            var hint = document.getElementById('reloadAssetsHint');
+            btn.disabled = true;
+            hint.className = '';
+            hint.textContent = '正在读取清单…';
+
+            fetch('/api/assets', { cache: 'no-store' })
+                .then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(function (data) {
+                    var list = (data && data.assets) || [];
+                    if (!list.length) throw new Error('服务器没有返回任何资源');
+                    var done = 0, failed = 0;
+                    var total = list.length;
+                    function step() {
+                        if (done + failed < total) return;
+                        if (failed) {
+                            hint.className = 'err';
+                            hint.textContent = '已刷新 ' + done + ' 个，' + failed + ' 个失败（可再点一次）';
+                            toast('有 ' + failed + ' 个资源没能刷新', true);
+                        } else {
+                            hint.textContent = '已刷新 ' + done + ' 个文件';
+                            toast('已刷新 ' + done + ' 个脚本/样式，请打开目标页面（或按 F5）');
+                        }
+                        btn.disabled = false;
+                    }
+                    // 并发拉取：它们互不依赖，一个个排队在慢网络下体感很差。
+                    // 必须把响应体读完（r.text()）再丢掉 —— 只拿到响应头就不管了，
+                    // 浏览器可能把这条请求当成被取消，新内容落不进缓存，等于白点。
+                    list.forEach(function (rel) {
+                        fetch('/resources/' + rel, { cache: 'reload' })
+                            .then(function (r) {
+                                if (!r.ok) throw new Error('HTTP ' + r.status);
+                                return r.text();
+                            })
+                            .then(function () { done++; })
+                            .catch(function () { failed++; })
+                            .then(step); // step 自己判断是否全部收工
+                    });
+                })
+                .catch(function (err) {
+                    hint.className = 'err';
+                    hint.textContent = '刷新失败：' + (err && err.message ? err.message : err);
+                    btn.disabled = false;
+                });
+        }
 
         // ===== 服务端配置 =====
         function esc(s) {

@@ -7,6 +7,8 @@ import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +43,7 @@ object Network {
         environment()
         fileDir()
         update()
+        assets()
     }
 
     // 零代码快传分享页基址（/update 抓分享页取短时效下载签名）
@@ -69,6 +72,65 @@ object Network {
         // no-store：地址会变，别让浏览器把旧 IP 缓存下来
         call.response.header(HttpHeaders.CacheControl, "no-store")
         call.respondText(body, contentType = ContentType.Application.JavaScript)
+    }
+
+    /** 静态资源里会走长缓存的扩展名（与 Server.kt 的 cacheControl 保持一致：只有 .js/.css 走 max-age） */
+    private val ASSET_EXT = listOf(".js", ".css")
+
+    private fun isAsset(path: String) = ASSET_EXT.any { path.endsWith(it, ignoreCase = true) }
+
+    /**
+     * 枚举类路径里 `lib/`、`video/`、`play/` 下的 .js/.css，返回形如 `lib/theme.js` 的相对路径。
+     *
+     * 目录形态（`./gradlew run`，资源是 build/resources/main 里的散文件）与 jar 形态（`java -jar` 的
+     * fat jar）各走一条路；任一分支失败只少几个名字，不抛异常。
+     */
+    private fun assetPaths(): List<String> {
+        val cl = Network::class.java.classLoader
+        val found = sortedSetOf<String>()
+        for (root in listOf("lib", "video", "play")) {
+            val url = runCatching { cl.getResource(root) }.getOrNull() ?: continue
+            runCatching {
+                when (url.protocol) {
+                    "file" -> {
+                        val base = File(url.toURI()).toPath()
+                        base.toFile().walkTopDown().filter { it.isFile }.forEach { f ->
+                            val rel = base.relativize(f.toPath()).toString().replace('\\', '/')
+                            if (isAsset(rel)) found += "$root/$rel"
+                        }
+                    }
+                    "jar" -> {
+                        // useCaches=false 拿一份独立的 JarFile 再关，不要关类加载器缓存的那份
+                        val conn = url.openConnection() as java.net.JarURLConnection
+                        conn.useCaches = false
+                        conn.jarFile.use { jar ->
+                            jar.entries().asSequence()
+                                .map { it.name }
+                                .filter { it.startsWith("$root/") && isAsset(it) }
+                                .forEach { found += it }
+                        }
+                    }
+                }
+            }
+        }
+        return found.toList()
+    }
+
+    /**
+     * `/api/assets`：列出 `/resources` 下所有 .js/.css，供设置页的「强制刷新」逐个回源。
+     *
+     * 为什么在服务端枚举：前端写死一份清单一定会漏掉以后新增的文件，而漏掉的往往就是下次改完
+     * 报 ReferenceError 的那个（旧 JS 躺在浏览器缓存里几天不回源，snapSet 事故即如此）。
+     *
+     * 为什么不要 auth：这些文件本来就匿名可 GET，列个名字不多暴露什么；反过来，按这个按钮的时候
+     * 往往正是鉴权链路出问题的时候，再要求登录等于按钮点了没用。
+     */
+    private fun Route.assets() = get("/api/assets") {
+        call.response.header(HttpHeaders.CacheControl, "no-store")
+        val payload = buildJsonObject {
+            put("assets", JsonArray(assetPaths().map { JsonPrimitive(it) }))
+        }
+        call.respondText(payload.toString(), contentType = ContentType.Application.Json)
     }
 
     private fun Route.fileDir() = authenticate("control") {
@@ -323,6 +385,9 @@ object Network {
             call.respondRedirect("http://$serverIp/resources/browser.html")
         }
         get("/question/{...}") {
+            call.respondRedirect("http://$serverIp/resources/browser.html")
+        }
+        get("/business/{...}") {
             call.respondRedirect("http://$serverIp/resources/browser.html")
         }
     }
