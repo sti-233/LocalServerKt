@@ -560,7 +560,7 @@ object Chat {
             // 新连接落地就广播一次：连上的这个客户端自己也收得到，
             // 于是「刚打开页面时没有绿点、要等别人上下线才亮」这个空窗就不存在了
             broadcastPresence()
-            Logger.debug("Client $clientId connected. Total clients: ${clients.size}")
+            //Logger.debug("Client $clientId connected. Total clients: ${clients.size}")
 
             // 本连接的发送协程：按入队顺序逐条写出（保证同一连接上的消息不乱序）。
             // 写失败（客户端已断）就关掉队列并摘表；读循环随后会因 incoming 关闭而退出
@@ -568,7 +568,7 @@ object Chat {
                 try {
                     for (frame in me.outbox) me.session.send(frame)
                 } catch (e: Exception) {
-                    Logger.debug("Writer for $clientId stopped: ${e.message}")
+                    //Logger.debug("Writer for $clientId stopped: ${e.message}")
                 } finally {
                     // 队列被 deliver 关掉（对端不读了）时这条连接也要算下线；
                     // 已经在读循环那边摘过表就返回 null，别重复广播（presence 帧不贵，但没必要发两遍）
@@ -605,7 +605,7 @@ object Chat {
                     }
                 }
             } catch (e: ClosedReceiveChannelException) {
-                Logger.debug("Client $clientId disconnected")
+                //Logger.debug("Client $clientId disconnected")
             } catch (e: Exception) {
                 Logger.error("Error with client $clientId: ${e.message}")
             } finally {
@@ -616,7 +616,7 @@ object Chat {
                 writer.cancel()
                 // 摘表之后再广播：这个人如果还开着别的标签页，他仍然留在名单里
                 broadcastPresence()
-                Logger.debug("Client $clientId removed. Total clients: ${clients.size}")
+                //Logger.debug("Client $clientId removed. Total clients: ${clients.size}")
             }
         }
     }

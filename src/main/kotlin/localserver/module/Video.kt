@@ -25,6 +25,7 @@ import localserver.lib.bilibili.USER_AGENT
 import localserver.utils.BiliImg
 import localserver.utils.Http
 import localserver.utils.Logger
+import localserver.utils.Util
 import localserver.utils.Util.prettyJson
 
 object Video {
@@ -125,7 +126,7 @@ object Video {
             return@get
         }
         // 降级：热门榜按页码翻
-        Logger.debug("Video recommend fallback to popular, fresh=$fresh")
+        //Logger.debug("Video recommend fallback to popular, fresh=$fresh")
         val popular = Recommend.popular(fresh + 1, ps)
         if (popular.isEmpty()) {
             return@get call.respondJson("Failed to fetch recommend feed.", HttpStatusCode.BadGateway)
@@ -154,7 +155,7 @@ object Video {
         if (Search.apiTypeOf(publicType) == null) {
             return@get call.respondJson("Unknown type \"$publicType\".", HttpStatusCode.BadRequest)
         }
-        Logger.debug("Search: type=$publicType keyword=$keyword, page=$page")
+        Logger.debug("User ${Util.getUserName(call.request.local.remoteAddress)} Search: type=$publicType keyword=$keyword, page=$page")
 
         val data = if (isUser) {
             Search.searchUser(keyword, page)
@@ -191,7 +192,7 @@ object Video {
             ?: return@get call.respondJson("Please provide \"keyword\".", HttpStatusCode.BadRequest)
         val page = call.parameters["page"]?.toIntOrNull()?.coerceIn(1, Search.MAX_PAGE) ?: DEFAULT_PAGE
         val userType = call.parameters["userType"]?.toIntOrNull()
-        Logger.debug("User search: keyword=$keyword, page=$page")
+        Logger.debug("User ${Util.getUserName(call.request.local.remoteAddress)} search: keyword=$keyword, page=$page")
         val data = Search.searchUser(keyword, page, userType)
             ?: return@get call.respondJson("Failed to search users.", HttpStatusCode.BadGateway)
         call.respondJsonObject(buildJsonObject {
@@ -229,7 +230,7 @@ object Video {
         val page = call.parameters["page"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
         // mode: 3 仅按热度 / 2 仅按时间 / 1 热度+时间
         val sort = call.parameters["sort"]?.toIntOrNull()?.coerceIn(0, 3) ?: 3
-        Logger.debug("Video comments: aid=$aid, page=$page, sort=$sort")
+        //Logger.debug("Video comments: aid=$aid, page=$page, sort=$sort")
         val json = Reply.list(aid, page, sort)
             ?: return@get call.respondJson("Failed to fetch comments.", HttpStatusCode.BadGateway)
         if (json.code != 0) {
@@ -595,10 +596,10 @@ object Video {
                 if (body.isEmpty()) return@launch
                 if (headCache.size >= HEAD_CACHE_MAX) headCache.clear()
                 headCache[url] = Head(body, total, up.header(HttpHeaders.ContentType), System.currentTimeMillis())
-                Logger.debug("prefetch ok: ${body.size}B / total ${total}B")
+                //Logger.debug("prefetch ok: ${body.size}B / total ${total}B")
             } catch (e: Exception) {
                 // 预取失败不影响正常播放，静默降级
-                Logger.debug("prefetch skipped: ${e.message}")
+                //Logger.debug("prefetch skipped: ${e.message}")
             } finally {
                 runCatching { up.body.close() }
             }
