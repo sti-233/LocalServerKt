@@ -2,6 +2,7 @@ package localserver.module
 
 import localserver.types.Content
 import localserver.types.Message
+import localserver.types.ReplyRef
 import localserver.utils.Logger
 import localserver.utils.Time
 import localserver.utils.Util
@@ -69,6 +70,10 @@ object Chat {
         pictures()
         savePicture()
         deletePicture()
+        avatars()
+        setAvatar()
+        deleteAvatar()
+        members()
         migrateImages()
         migratePictures()
         serverInfo()
@@ -158,11 +163,45 @@ object Chat {
             // 最后一条里 @ 了谁：只回名字集合、不回正文。
             // 侧边栏据此把红点升级成「@」胶囊；不回整段文本是为了别把所有人的
             // 私聊内容随 /conversations 一遍遍摊给每个登录用户（虽然 /history 本来就能读）
+            put("at", Json.encodeToJsonElement(mentionsIn(m.text)))
         }
     } catch (e: Exception) {
         Logger.error("Failed to parse ${name}: ${e.message}")
         null
     }
+
+    /// 从文本里找出 @了哪些已登记用户
+    ///
+    /// 两条规则与前端 renderText 保持一致（两边算出来的结果不同步会出现
+    /// 「侧边栏挂了 @ 胶囊、气泡里却没高亮」这种自相矛盾的画面）：
+    /// - 长名优先：`@张三丰` 不能被当成 `@张三`
+    /// - 名字后面紧跟字母/数字/下划线/汉字就不算命中：`@bob123` 不是 `@bob`
+    private fun mentionsIn(text: String): List<String> {
+        if (!text.contains('@')) return emptyList()
+        val names = Util.getUserList().mapNotNull { it.name?.takeIf { n -> n.isNotBlank() } }
+            .distinct()
+            .sortedByDescending { it.length }
+        // 输出按名字排序：长度倒序只用于"长名优先"的匹配过程，
+        // 结果顺序若也跟着长度走，前端对比/测试都得猜，没必要
+        return names.filter { name -> isMentioned(text, name) }.sorted()
+    }
+
+    private fun isMentioned(text: String, name: String): Boolean {
+        val token = "@$name"
+        var from = 0
+        while (from <= text.length - token.length) {
+            val at = text.indexOf(token, from)
+            if (at < 0) return false
+            val next = at + token.length
+            if (next >= text.length || !isWordChar(text[next])) return true
+            from = at + 1
+        }
+        return false
+    }
+
+    /// 与前端 `/[A-Za-z0-9_\u4e00-\u9fa5]/` 对齐：ASCII 字母数字下划线 + 中日韩统一表意文字
+    private fun isWordChar(c: Char): Boolean =
+        c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c == '_' || c in '\u4e00'..'\u9fa5'
 
     // ===== 图片 HTTP 端点 =====
 
@@ -317,6 +356,94 @@ object Chat {
             )
         }
     }
+
+    // ===== 头像 =====
+
+    // 头像列表：GET /avatars → {"me":"<我的用户名>","items":{"<用户名>":"/img/<name>"}}
+    // 前端渲染每条消息时按 msg.name 查这张表；查不到就用默认首字头像。
+    // 一次回全部（用户数是个位到十位数，几十字节一条），比每条消息单独请求划算得多。
+    private fun Route.avatars() = authenticate("auth") {
+        get("/avatars") {
+            val me = runCatching { Util.getUserName(call.request.local.remoteAddress) }.getOrNull()
+            val items = AvatarStore.all()
+            call.respondText(
+                buildJsonObject {
+                    put("me", JsonPrimitive(me.orEmpty()))
+                    put("items", buildJsonObject {
+                        items.forEach { (user, ref) -> put(user, JsonPrimitive(ref)) }
+                    })
+                }.toString(),
+                contentType = ContentType.Application.Json
+            )
+        }
+    }
+
+    // 设置头像：POST /setAvatar JSON {"name":"<sha256>.<ext>"}
+    // 只接受自己 cache/picture/<用户名>/ 里已有的文件（面板里挑的那张），不复制字节、不接收 base64。
+    private fun Route.setAvatar() = authenticate("auth") {
+        post("/setAvatar") {
+            val user = PictureStore.userOf(call.request.local.remoteAddress)
+            val name = runCatching {
+                Json.parseToJsonElement(call.receiveText()).jsonObject["name"]?.jsonPrimitive?.content
+            }.getOrNull()
+            if (name.isNullOrEmpty() || !PictureStore.IMAGE_NAME.matches(name)) {
+                call.respondText("""{"ok":false,"error":"图片名不合法"}""",
+                    contentType = ContentType.Application.Json, status = HttpStatusCode.BadRequest)
+                return@post
+            }
+            val ref = AvatarStore.set(user, name)
+            if (ref == null) {
+                call.respondText("""{"ok":false,"error":"这张图不在你的图片库里，请先保存再设为头像"}""",
+                    contentType = ContentType.Application.Json, status = HttpStatusCode.NotFound)
+                return@post
+            }
+            Logger.debug("setAvatar: $user -> $name")
+            call.respondText(
+                """{"ok":true,"user":${jsonStr(user)},"ref":${jsonStr(ref)}}""",
+                contentType = ContentType.Application.Json
+            )
+        }
+    }
+
+    // 清除头像：POST /deleteAvatar → 回默认首字头像
+    private fun Route.deleteAvatar() = authenticate("auth") {
+        post("/deleteAvatar") {
+            val user = PictureStore.userOf(call.request.local.remoteAddress)
+            val ok = AvatarStore.clear(user)
+            call.respondText(
+                """{"ok":$ok,"user":${jsonStr(user)}}""",
+                contentType = ContentType.Application.Json,
+                status = if (ok) HttpStatusCode.OK else HttpStatusCode.InternalServerError
+            )
+        }
+    }
+
+    // ===== @ 提及 =====
+
+    // 成员名单：GET /members → {"me":"<我的名字>","names":["alice","bob"]}
+    //
+    // 只回**名字**，不回 IP。/userList 那份是 IP→名字的完整映射（而且要 control 才该看），
+    // 输入框里补全 @ 只需要一串名字，没理由把内网地址摊给每个聊天的人。
+    // 名字本身已经是全站公开的：谁发过言，气泡上就写着谁。
+    private fun Route.members() = authenticate("auth") {
+        get("/members") {
+            val me = runCatching { Util.getUserName(call.request.local.remoteAddress) }.getOrNull()
+            val names = Util.getUserList()
+                .mapNotNull { it.name?.takeIf { n -> n.isNotBlank() } }
+                .distinct()
+                .sorted()
+            call.respondText(
+                buildJsonObject {
+                    put("me", JsonPrimitive(me.orEmpty()))
+                    put("names", Json.encodeToJsonElement(names))
+                }.toString(),
+                contentType = ContentType.Application.Json
+            )
+        }
+    }
+
+    /** 把一个字符串编成 JSON 字面量（用户名里可能有引号、中文） */
+    private fun jsonStr(s: String): String = JsonPrimitive(s).toString()
 
     // 一次性迁移端点（control 鉴权）：/migratePictures
     // 把旧版直接摊在 cache/ 根下的 <sha256>.<ext> 图片搬进 cache/picture/（新目录）。
@@ -507,6 +634,11 @@ object Chat {
 
         val textToSend = imageRef ?: json.text
         val now = Time.getCurrentTimeWithDate()
+        // 回复引用：只留一小段文本快照，并做长度截断。发送者自己伪造的 reply 也照收 ——
+        // 它只是气泡里的一块引用文字（前端用 textContent 渲染），不参与任何权限判断。
+        val reply = json.reply?.takeIf { it.name.isNotBlank() && it.time.isNotBlank() }?.let {
+            ReplyRef(it.name, it.time, it.text.take(ReplyRef.TEXT_LIMIT))
+        }
         // 先落盘再广播：反过来的话，收到消息的一方立刻点「刷新」会看不到这条
         // （/history 读的正是还没写进去的归档），看着像消息丢了。
         // 顺序反过来也意味着进程在两步之间挂掉时，这条消息在存档里凭空消失。
@@ -516,13 +648,13 @@ object Chat {
         // 「聊天突然发不出任何消息」。这里兜住、回一条 err 让用户看见原因。
         val target = if (sendTo.isNullOrEmpty()) null else Util.getTarget(current, sendTo)
         try {
-            Util.addHistory(Message(current, now, textToSend), target)
+            Util.addHistory(Message(current, now, textToSend, reply), target)
         } catch (e: Exception) {
             Logger.error("Failed to archive message from $current: ${e.message}")
             err(me, current, "消息未能存档（聊天记录文件损坏或不可写），已取消发送", sendTo)
             return
         }
-        deliver(targetsFor(me, sendTo), Json.encodeToString(Content("send", current, now, textToSend, sendTo)))
+        deliver(targetsFor(me, sendTo), Json.encodeToString(Content("send", current, now, textToSend, sendTo, reply)))
     }
 
     /**

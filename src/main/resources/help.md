@@ -7,15 +7,19 @@
 |---|---|---|
 | `/chat` | auth | 跳转 `chat.html` 聊天页 |
 | `/whoami` | auth | 当前客户端 IP 对应的用户名 |
-| `/history` | — | 群聊记录；`?targetuser=<user>` 私聊记录，`&date=yyyy-MM-dd` 指定日期 |
-| `/conversations` | — | `{today, names, last}`：侧边栏会话列表与各会话最后一条消息 |
-| `/message` | — | WebSocket：聊天/私聊（`sendTo` 参数），图片 `ImageB64:` 前缀，2 分钟内可撤回 |
+| `/history` | auth | 群聊记录；`?targetuser=<user>` 私聊记录，`&date=yyyy-MM-dd` 指定日期 |
+| `/conversations` | auth | `{today, names, last}`：侧边栏会话列表与各会话最后一条消息；`last` 每条为 `{time, by, at}`，`at` 是该条 @ 到的用户名数组（只回名字、不回正文），供侧边栏把红点升级成「@」胶囊 |
+| `/message` | auth | WebSocket：聊天/私聊（`sendTo` 参数），图片 `ImageB64:` 前缀，2 分钟内可撤回；带 `reply:{name,time,text}` 表示回复某条消息（服务端把引用摘要截到 200 字后随消息落盘并广播） |
 | `/clients` | — | 当前在线 WS 客户端列表 |
 | `/wsSever` | — | 纯文本服务信息（typo 路由，沿用） |
-| `/img/{*}` | — | 聊天图片（按文件名在 `cache/picture/<用户名>/` 各子目录 → `cache/picture/` 根 → 旧 `cache/` 根依次查找） |
-| `/pictures` | — | 我的图片列表（**只列自己目录下的**）：`?limit=`（默认 60，上限 200）→ `{dir,user,total,items:[{name,ref,size,mtime}]}`，按修改时间倒序；聊天页「缓存图片」面板用 |
-| `/savePicture`（POST） | — | 保存图片：JSON `{"data":"data:image/...;base64,..."}` → 去重落盘 `cache/picture/<当前 IP 的用户名>/`（全屏查看器的「保存」与「裁剪并保存」共用此端点；返回 `{ok,ref,name,dir,user,existed}`） |
-| `/deletePicture`（POST） | — | 删除我的图片：JSON `{"name":"<sha256>.<ext>"}` → 只删 `cache/picture/<当前 IP 的用户名>/` 里的那一份（同一内容别人也存过则互不影响）；名字不合法 400、文件不存在 404；返回 `{ok,name,user}`，删失败时带 `error`。聊天页「缓存图片」面板的「删除」用 |
+| `/img/{*}` | auth | 聊天图片（按文件名在 `cache/picture/<用户名>/` 各子目录 → `cache/picture/` 根 → 旧 `cache/` 根依次查找） |
+| `/pictures` | auth | 我的图片列表（**只列自己目录下的**）：`?limit=`（默认 60，上限 200）→ `{dir,user,total,items:[{name,ref,size,mtime}]}`，按修改时间倒序；聊天页「缓存图片」面板用 |
+| `/savePicture`（POST） | auth | 保存图片：JSON `{"data":"data:image/...;base64,..."}` → 去重落盘 `cache/picture/<当前 IP 的用户名>/`（全屏查看器的「保存」与「裁剪并保存」共用此端点；返回 `{ok,ref,name,dir,user,existed}`） |
+| `/deletePicture`（POST） | auth | 删除我的图片：JSON `{"name":"<sha256>.<ext>"}` → 只删 `cache/picture/<当前 IP 的用户名>/` 里的那一份（同一内容别人也存过则互不影响）；名字不合法 400、文件不存在 404；返回 `{ok,name,user}`，删失败时带 `error`。聊天页「缓存图片」面板的「删除」用 |
+| `/members` | auth | `{me, names}`：`names` 是全部已登记用户名（排序去重），供聊天页 @ 补全与 `@名字` 高亮。**只回名字不回 IP** |
+| `/avatars` | auth | `{me, items}`：`me` 是当前 IP 的用户名，`items` 是全站「用户名 → 图片地址」表，供聊天页按 `msg.name` 配头像 |
+| `/setAvatar`（POST） | auth | JSON `{"name":"<sha256>.<ext>"}`：把图库里的某张图设为头像（**只存引用不复制字节**）；名字不合法 400，图不在自己目录里 404；返回 `{ok,user,ref}` |
+| `/deleteAvatar`（POST） | auth | 恢复默认头像（首字 + 按名字取色），返回 `{ok,user}` |
 | `/migrateImages` | control | 聊天记录图片消息迁移（`ImageB64:` → `ImageRef:`） |
 | `/migratePictures` | control | 图片目录迁移（旧 `cache/<sha256>.<ext>` → `cache/picture/`） |
 
@@ -27,9 +31,9 @@
 | `/userList` | — | 用户列表 JSON |
 | `/start`、`/exit` | control | 切换 `Control.state`（只影响 auth 放行逻辑，不停服） |
 | `/openVideo`、`/closeVideo` | control | 临时放行 / 收回视频模块，**只对当节课有效**（下节课的上下课切换会自动收回） |
-| `/addUser?ip=&username=` | control | 添加白名单用户 |
+| `/addUser?ip=&username=` | control | 添加白名单用户（用户名不能含 `-` 与控制字符） |
 | `/removeUser?ip=` | control | 移除白名单用户 |
-| `/resetName?ip=&username=` | control | 改名 |
+| `/resetName?ip=&username=` | control | 改名，并连带迁移旧名下的聊天记录、图片、AI 会话与页面配置（回 `{users, migrated}`）；用户名不能含 `-` 与控制字符，也不能改成别人正在用的名字 |
 | `/vnc` | control | 重定向到 `http://<serverIp>:5901` |
 | `/defaultFileDir` | control | 运行中 jar/classes 目录绝对路径 |
 | `/help` | control | 本页 |
