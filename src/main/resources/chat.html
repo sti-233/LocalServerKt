@@ -892,7 +892,7 @@
         }
 
         // 当前是不是私聊视图：对象框里填了人名（既不是日期，也不是空）。
-        // 「群聊不显示头像」和「私聊不提供 @」两件事都以这个判断为准。
+        // 只用来关 @（私聊里 @ 对方没人看）；头像在群聊和私聊里都显示。
         function isPrivateView() {
             const el = document.getElementById('user');
             const v = el && el.value ? el.value : '';
@@ -1553,18 +1553,18 @@
 
         function crtMsg(sender, time, content, reply) {
             const own = sender === me;
-            // 群聊不显示头像：群里每个人的名字本来就写在气泡头上，头像只是占地方；
-            // 私聊（就两个人）才需要头像来分辨谁是谁
-            const showAvatar = isPrivateView();
+            // 私聊视图（就两个人）：@ 在那种场景没意义，既不高亮也不弹补全。
+            // **只用来关 @**，与头像无关 —— 群聊和私聊都显示头像。
+            const priv = isPrivateView();
             const box = document.createElement('div');
-            box.className = 'message-box' + (own ? ' own' : '') + (showAvatar ? '' : ' no-avatar');
+            box.className = 'message-box' + (own ? ' own' : '');
             // 撤回/删除/回复都要按"发送者 + 时间"定位一条消息，存在 data 属性里而不是去读文本：
             // 自己的消息不显示名字（.sender 是 display:none），innerText 会读成空串
             box.setAttribute('data-name', sender);
             box.setAttribute('data-time', time);
             if (own) box.setAttribute('data-own', '1');
             // @ 高亮只对群聊有意义（私聊里 @ 对方没人看）
-            if (!own && !showAvatar && mentionsMe(content)) box.classList.add('mentions-me');
+            if (!own && !priv && mentionsMe(content)) box.classList.add('mentions-me');
 
             // 气泡外面包一层竖排容器，时间才能稳稳贴在气泡下面
             //（直接挂在 .message-box 上会跑到 row-reverse 的另一端去）
@@ -1608,7 +1608,7 @@
                 contentEl.appendChild(img);
                 isImage = true;
             } else {
-                renderText(contentEl, content, !showAvatar);
+                renderText(contentEl, content, !priv);
             }
             // 纯图片消息去掉气泡内边距，让缩略图铺满
             if (isImage) bubble.className = 'bubble has-image';
@@ -1668,8 +1668,8 @@
                 col.appendChild(timeEl);
             }
 
-            // 群聊不挂头像
-            if (showAvatar) box.appendChild(avatarNode(sender));
+            // 头像：群聊与私聊都挂，每人一条自己的（默认是首字 + 按名字取色）
+            box.appendChild(avatarNode(sender));
             box.appendChild(col);
             return box;
         }
@@ -2399,9 +2399,6 @@
         /* 头像与气泡之间留 8px（Chrome<84 不支持 flex gap，用外边距兜底） */
         .message-box.message-box > * + * { margin-left: 8px; }
         .message-box.own { align-self: flex-end; flex-direction: row-reverse; }
-        /* 群聊不挂头像：气泡直接贴到行首，名字本来就在气泡头上，
-           再加个头像只是把正文往右挤，还让人误以为这是私聊 */
-        .message-box.no-avatar { max-width: 78%; }
         /* row-reverse 下气泡排在视觉左侧，间距要改到它的右外边距 */
         .message-box.own.own > * + * { margin-left: 0; margin-right: 8px; }
 
