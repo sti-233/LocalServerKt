@@ -593,6 +593,9 @@
             // 不重建列表，避免把用户刚点的项/高亮冲掉
             const namesKey = names.join('|');
             if (lastConvNames !== null && lastConvNames === namesKey) {
+                // 名单没变但要重排：私聊的顺序只看"最后一条消息时间"，而新消息不会
+                // 改变文件名（同一个归档里追加），断线重连补拉时顺序可能已经过期
+                sortPrivList();
                 updateUnreadState();
                 return;
             }
@@ -661,6 +664,7 @@
                 privList.appendChild(item);
             }
             if (privShown === 0) privList.innerHTML = '<p class="conv-empty">暂无私聊记录</p>';
+            sortPrivList(); // 按最后一条消息由新到旧（DOM 是乱序建出来的，见 privSortKey）
             updateUnreadState(); // 重建列表后按实时缓存（convLast/lastRead）同步红点
             syncSidebarActive();
         }
@@ -670,6 +674,41 @@
             dot.className = 'unread-dot' + (mention ? ' mention' : '');
             if (mention) dot.textContent = '@';
             item.appendChild(dot);
+        }
+
+        // ===== 私聊列表：按最后一条消息排序 =====
+
+        /**
+         * 私聊项的排序键：该对象"最后一条消息"的时间，没有记录的空串。
+         * 时间戳是 `yyyy-MM-dd HH:mm:ss` 定长，直接字符串比较就是时间比较。
+         */
+        function privSortKey(other) {
+            const last = privLastMap[other];
+            return last && last.time ? last.time : '';
+        }
+
+        /**
+         * 把私聊项按"最后一条消息由新到旧"重排。
+         *
+         * 用 appendChild 移动已有节点而不是重建列表：重建会丢掉滚动位置、
+         * 正在 hover 的项，以及 `privPartners` 之外那些只存在于 DOM 的状态。
+         * 新消息到达（onWsUnread）与列表重建（loadConversations）后都要调**一次**，
+         * 不调的话新会话只会被追加到最底下，用户得往下翻才找得到刚聊的人。
+         */
+        function sortPrivList() {
+            const list = document.getElementById('privList');
+            if (!list) return;
+            const items = Array.prototype.slice.call(list.querySelectorAll('.conv-item'))
+                .filter(function (el) { return el.dataset.other !== undefined; });
+            if (items.length < 2) return;
+            items.sort(function (a, b) {
+                const ka = privSortKey(a.dataset.other);
+                const kb = privSortKey(b.dataset.other);
+                if (ka !== kb) return ka < kb ? 1 : -1; // 时间晚的在前
+                // 都没消息记录（理论上不该有）时按名字兜底，保证顺序稳定不抖
+                return a.dataset.other < b.dataset.other ? -1 : 1;
+            });
+            for (const el of items) list.appendChild(el);
         }
 
         // 实时维护未读状态：WS 消息到达时更新各会话"最后消息"缓存，
@@ -707,6 +746,7 @@
                 convLast[pair] = { time: msg.time, by: msg.name, at: [] };
                 privLastMap[partner] = convLast[pair];
                 ensurePrivItem(partner);
+                sortPrivList(); // 刚聊过的人冒到最上面（顺序按最后一条消息时间）
                 if (isRelevant(msg)) {
                     markRead('p:' + partner, msg.time);
                 } else if (msg.name !== me) {
