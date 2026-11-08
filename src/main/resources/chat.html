@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="/resources/lib/lightbox.css">
     <script src="/resources/lib/idb-store.js"></script>
     <script src="/resources/lib/lightbox.js"></script>
+    <script src="/resources/lib/chat-prefs.js"></script>
     <script>
         // 本页配置存 Cookie（路径 /resources/chat.html，与其他页面互不混杂）
         // remote：同时同步一份到服务端 /api/prefs —— 已读表条目数随私聊对象增长，
@@ -27,6 +28,8 @@
         let privPartners = new Set(); // 侧边栏已渲染的私聊对象，用于判断是否需要重新拉取会话列表
         let lastConvNames = null; // 上次拉取到的会话名单（拼接串）；重连后重拉时名单没变就只重算红点、不重建列表
         let lastRead = {}; // 各会话已读到的时间戳 {键: 时间}，存 Cookie；私聊键 'p:对方'，群聊键 'g:'
+        let memberNames = []; // 全部用户名（来自 /members），@ 补全与高亮都按这份名单认人
+        let replyTo = null;   // 正在回复的那条消息 {name, time, text}；null = 不回复
 
         document.addEventListener('DOMContentLoaded', async function () {
             document.getElementById('sendBtn').addEventListener('click', sendMsg);
@@ -49,7 +52,8 @@
             // 裁剪不开放（聊天图直接改内容容易误伤存档）。
             Lightbox.mount({ dblclick: 'img.img-message', save: true, edit: false });
             // 图片发送：点 🖼️ 打开选择面板（本地选取 / 从自己的 cache/picture/<用户名>/ 里挑），两个 tab
-            document.getElementById('imgBtn').addEventListener('click', openPickPanel);
+            document.getElementById('imgBtn').addEventListener('click', function () { openPickPanel('send'); });
+            document.getElementById('avatarBtn').addEventListener('click', function () { openPickPanel('avatar'); });
             document.getElementById('pickClose').addEventListener('click', closePickPanel);
             document.getElementById('pickMask').addEventListener('click', closePickPanel);
             document.getElementById('pickTabLocal').addEventListener('click', function () { switchPickTab('local'); });
@@ -58,6 +62,8 @@
             document.getElementById('pickView').addEventListener('click', viewPicked);
             document.getElementById('pickDelete').addEventListener('click', deletePicked);
             document.getElementById('pickSend').addEventListener('click', sendPicked);
+            document.getElementById('pickSetAvatar').addEventListener('click', setPickedAvatar);
+            document.getElementById('pickResetAvatar').addEventListener('click', resetAvatar);
             // 本地选取：面板上的大按钮转去点隐藏的 file input
             document.getElementById('pickLocalBtn').addEventListener('click', function () {
                 document.getElementById('imgInput').click();
@@ -79,10 +85,10 @@
                     return;
                 }
                 const reader = new FileReader();
-                reader.onload = function (ev) {
+                reader.onload = async function (ev) {
                     // 参考 talk.html 的前缀协议：ImageB64: + 完整 data URL，服务端校验后广播并存档
-                    closePickPanel();
-                    sendRaw('ImageB64:' + ev.target.result);
+                    // 上传不成功就把面板留着，用户不用重新挑文件
+                    if (await sendRaw('ImageB64:' + ev.target.result)) closePickPanel();
                 };
                 reader.onerror = function () {
                     showError('读取图片文件失败');
@@ -98,15 +104,28 @@
             });
 
             // ===== 图片选择面板 =====
-            function openPickPanel() {
-                if (inOldGroupDay()) {
+            // mode：'send' 发图（🖼️ 触发）/ 'avatar' 设头像（顶栏「换头像」触发）。
+            // 两种用途共用同一个面板：缩略图网格、查看、删除全都一样，
+            // 差别只在底部操作条最后那个按钮是「发送」还是「设为头像」。
+            function openPickPanel(mode) {
+                const asAvatar = mode === 'avatar';
+                // 发图时要挡旧日归档（那天不能发消息）；换头像是全局设置，与当前会话无关
+                if (!asAvatar && inOldGroupDay()) {
                     showError('正在浏览旧日群聊记录，该日不可发送图片');
                     return;
                 }
+                document.getElementById('pickPanel').setAttribute('data-mode', asAvatar ? 'avatar' : 'send');
                 document.getElementById('pickMask').classList.add('show');
                 document.getElementById('pickPanel').classList.add('show');
-                // 默认落在缓存 tab：多数时候发的是已经保存过的图
+                // 默认落在缓存 tab：发图时多是已经存过的图；换头像也**只能**选缓存里的图
+                // （设头像走的是"引用已有文件"，不接受重新上传 base64）
+                if (asAvatar) {
+                    document.getElementById('pickTabLocal').style.display = 'none';
+                } else {
+                    document.getElementById('pickTabLocal').style.display = '';
+                }
                 switchPickTab('cache');
+                if (asAvatar) updatePickSetAvatarLabel();
             }
 
             function closePickPanel() {
@@ -114,6 +133,10 @@
                 document.getElementById('pickPanel').classList.remove('show');
                 // 关掉时清掉选中态，下次打开是干净的
                 selectPick(null);
+            }
+
+            function pickMode() {
+                return document.getElementById('pickPanel').getAttribute('data-mode') || 'send';
             }
 
             function switchPickTab(tab) {
@@ -143,6 +166,8 @@
 
             function selectPick(item) {
                 pickSel = item;
+                // 头像模式下操作条常驻，但「设为头像」要跟着选中态置灰
+                if (pickMode() === 'avatar') updatePickSetAvatarLabel();
                 const actions = document.getElementById('pickActions');
                 const nameEl = document.getElementById('pickSelName');
                 if (item) {
@@ -164,7 +189,7 @@
             }
 
             // 发送当前选中的图：服务端已有这份文件，只发引用，不走 base64 重传
-            function sendPicked() {
+            async function sendPicked() {
                 if (!pickSel) return;
                 // 面板开着的时候可能切到了旧日群聊，这里再挡一次（与本地选取一致）
                 if (inOldGroupDay()) {
@@ -172,8 +197,9 @@
                     return;
                 }
                 const ref = pickSel.ref;
+                // 断线时别先把面板关掉：关了就得从头再找这张图。发成功了才收起
+                if (!(await sendRaw('ImageRef:' + ref))) return;
                 closePickPanel();
-                sendRaw('ImageRef:' + ref);
             }
 
             // 查看当前选中的图：交给共用查看器（缩放/保存都在那边，裁剪仍关闭）
@@ -183,6 +209,67 @@
             function viewPicked() {
                 if (!pickSel || !window.Lightbox) return;
                 Lightbox.open(imgUrlMemo.get(pickSel.name) || pickSel.ref);
+            }
+
+            // ===== 换头像（复用图片选择面板，mode=avatar） =====
+
+            // 头像模式下「设为头像」的可用态跟着选中项走：
+            // 没选图时置灰，选了才亮。不再额外维护一份状态，直接从 pickSel 推。
+            function updatePickSetAvatarLabel() {
+                const btn = document.getElementById('pickSetAvatar');
+                if (!btn) return;
+                btn.disabled = !pickSel;
+                btn.textContent = '设为头像';
+            }
+
+            // 把当前选中的缓存图设为头像：服务端只接受自己目录里已存在的文件名，
+            // 不重传字节（和「发送」一样走引用）
+            async function setPickedAvatar() {
+                if (!pickSel) return;
+                const btn = document.getElementById('pickSetAvatar');
+                btn.disabled = true;
+                btn.textContent = '设置中…';
+                try {
+                    const res = await fetch('/setAvatar', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: pickSel.name })
+                    });
+                    const data = await res.json().catch(function () { return {}; });
+                    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+                    // 本地先记住，省一次 /avatars；in-screen 的消息就地换头像
+                    if (me) avatarMap[me] = data.ref || pickSel.ref;
+                    paintMeAvatar();
+                    repaintOwnAvatars();
+                    closePickPanel();
+                } catch (err) {
+                    showError('设置头像失败：' + err.message);
+                } finally {
+                    btn.textContent = '设为头像';
+                    updatePickSetAvatarLabel();
+                }
+            }
+
+            // 恢复默认（首字头像）
+            async function resetAvatar() {
+                const btn = document.getElementById('pickResetAvatar');
+                btn.disabled = true;
+                btn.textContent = '恢复中…';
+                try {
+                    const res = await fetch('/deleteAvatar', { method: 'POST' });
+                    const data = await res.json().catch(function () { return {}; });
+                    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+                    if (me) delete avatarMap[me];
+                    paintMeAvatar();
+                    repaintOwnAvatars();
+                    closePickPanel();
+                    showError('已恢复默认头像');
+                } catch (err) {
+                    showError('恢复默认头像失败：' + err.message);
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = '恢复默认';
+                }
             }
 
             // 删除当前选中的图：只删自己目录里的那一份，成功后从网格里摘掉
@@ -311,6 +398,30 @@
                     sendMsg();
                 }
             });
+            // 输入时自己长高。少了这一句 autoGrow 就只在"发送后还原"时被调用过，
+            // 打多行字的时候输入框一直只有一行高、内部滚动，写在下面那些注释也就白说了
+            const contentEl = document.getElementById('content');
+            contentEl.addEventListener('input', function () {
+                autoGrow();
+                paintMentionPop();
+            });
+            // 补全面板开着时 ↑↓/Enter/Tab 归面板、Esc 关掉；否则按键照常进 textarea
+            contentEl.addEventListener('keydown', handleMentionKey);
+            // 光标跑了（点别处、方向键移动）就收起面板，避免停在旧位置
+            document.addEventListener('selectionchange', function () {
+                if (document.activeElement !== contentEl) hideMentionPop();
+            });
+            document.getElementById('replyBarClose').addEventListener('click', clearReply);
+            // 触屏上展开的消息操作条，点消息别处就收起（同一时刻只留一个展开的）
+            document.addEventListener('click', function (e) {
+                const box = e.target && e.target.closest
+                    ? e.target.closest('#MsgBox .message-box')
+                    : null;
+                if (!box || !box.classList.contains('actions-open')) closeAllMsgActions();
+            });
+            // 设置页改了「显示消息时间」时本页立刻跟着重画（同一标签页走 notify、
+            // 另一个标签页走 BroadcastChannel，chat-prefs.js 两种都转成 onChange）
+            ChatPrefs.onChange(applyShowTimePref);
             // 手动改私聊对象时退出"浏览某日群聊记录"模式；直接填入日期（yyyy-MM-dd）则切换为该日群聊记录
             document.getElementById('user').addEventListener('input', function () {
                 if (isDateStr(this.value)) {
@@ -320,6 +431,14 @@
                     currentDay = null; // 改回人名或清空时由后续"刷新"/发送/侧边栏点击重新载入
                 }
                 syncSidebarActive();
+            });
+            // 敲完人名离开输入框就切过去。只有 input 事件时，手动输入私聊对象
+            // 之后画面还停在原会话上，必须再去点"刷新"才生效（发送时才顺带刷新）。
+            // 日期模式已经由 input 处理过，这里跳过，避免同一次编辑刷两遍。
+            document.getElementById('user').addEventListener('change', function () {
+                if (isDateStr(this.value)) return;
+                if (this.value === nowTarget) return;
+                refresh();
             });
             await loadMe();
             await refresh();
@@ -335,9 +454,27 @@
         // 键名直接用用户名，PageStore 内部会做 Cookie 名安全编码（中文等非 token 字符）
         function lastReadKey() { return 'lastRead_' + (me || 'unknown'); }
 
+        // lastRead 是否已经从 Cookie/服务端读进来了。
+        // 关键：saveLastRead() 写的是**整张表**，而 loadMe() 里的 store.sync 是异步的
+        // （回调式 XHR）。若 WS 在同步回来之前就收到消息，onWsUnread -> markRead 会拿空的
+        // lastRead 写进去，把整张表覆盖成"只读过这一条"，其余会话的已读状态全丢；
+        // 而且写进去之后 overlay 里就有这个键了，服务端那份也盖不回来。
+        // 所以没读完之前一律不写，宁可少记一次已读（红点下次点开会补上）。
+        let lastReadLoaded = false;
+
+        // "明确知道自己有一条没看过"的会话（键同 lastRead：'g:' / 'p:对方'）。
+        //
+        // 为什么时间戳不够：消息时间只精确到秒。已读到 10:00:00 之后，同一秒又来一条，
+        // 用 `last.time > readTime` 判不出来（相等），红点不亮且永远不会自愈。
+        // 所以"消息到达时用户没正看着这个会话"这件事单独记一笔，作为时间比较的补充。
+        // 只活在本页会话里：刷新后靠 lastRead 与 convLast 的时间比较兜底（那时至少不会更糟）。
+        // 用户一旦进入该会话（markRead）就删掉，所以它不会和 lastRead 长期打架。
+        const unreadKeys = new Set();
+
         function loadLastRead() {
             try { lastRead = JSON.parse(store.get(lastReadKey()) || '{}'); }
             catch (e) { lastRead = {}; }
+            lastReadLoaded = true;
         }
 
         // 全量已读表：Cookie 只当本机缓存（可能因 4KB 上限被裁剪），
@@ -347,6 +484,9 @@
         }
 
         function markRead(key, time) {
+            // 进过这个会话就算看过，把"明确未读"的标记抹掉（即使时间戳没有前进）
+            unreadKeys.delete(key);
+            if (!lastReadLoaded) return; // 已读表还没读进来，写了会覆盖掉其他会话（见 lastReadLoaded）
             if (time && (!lastRead[key] || time > lastRead[key])) {
                 lastRead[key] = time;
                 saveLastRead();
@@ -354,9 +494,13 @@
         }
 
         // 判断一个"最后消息"是否构成未读：晚于已读时间，且发送者不是我（System 归档创建消息也不算）
-        function isUnread(last, readTime) {
+        function isUnread(last, readTime, key) {
             if (!last || !last.time || !last.by || last.by === 'System') return false;
             if (me && last.by === me) return false;
+            // 消息时间戳只精确到秒："刚刚读过 10:00:00" 与"10:00:00 又来一条"用
+            // 字符串比较分不出来（`> ` 为假，红点不亮，而且永远不会自愈）。
+            // 所以在"用户没正看着这个会话时收到消息"的那一刻明确记一笔，不指望时间戳。
+            if (key && unreadKeys.has(key)) return true;
             return last.time > (readTime || '');
         }
 
@@ -372,16 +516,21 @@
         async function loadConversations() {
             let names = [];
             let today = null;
-            convLast = {};
-            privLastMap = {}; // 等拿到 me 后再把各私聊归档按"对方"归并取最新
             try {
                 const resp = await fetch('/conversations');
-                if (resp.ok) {
-                    const data = await resp.json();
-                    names = data.names || [];
-                    today = data.today || null; // 服务端 Asia/Shanghai 的今天，避免前端时区偏差
-                    convLast = data.last || {}; // 各会话最后一条消息 {time, by}
+                if (!resp.ok) {
+                    // 鉴权失败/服务端 500：保持现状，别拿一份空名单去重建侧边栏
+                    console.warn('获取会话列表失败: HTTP ' + resp.status);
+                    return;
                 }
+                const data = await resp.json();
+                names = data.names || [];
+                today = data.today || null; // 服务端 Asia/Shanghai 的今天，避免前端时区偏差
+                // 只在真拿到数据时才替换：请求失败（服务器刚重启、网络抖）时
+                // 保留上一轮的 convLast/privLastMap，否则红点会整片熄灭，
+                // 而下一次成功拉取前用户会以为"消息都读过了"
+                convLast = data.last || {};
+                privLastMap = {};
             } catch (e) {
                 console.warn('获取会话列表失败:', e);
                 return;
@@ -417,9 +566,15 @@
                 const item = document.createElement('button');
                 item.className = 'conv-item';
                 item.dataset.day = d; // 供 syncSidebarActive 判断高亮
-                item.textContent = d === todayLabel ? '今天（' + d + '）' : d;
+                // 群聊项不挂头像（群没有"某个人"，一个「群」字占位反而占地方）
+                const dayName = document.createElement('span');
+                dayName.className = 'conv-name';
+                dayName.textContent = d === todayLabel ? '今天（' + d + '）' : d;
+                item.appendChild(dayName);
                 // 红点只挂在"今天"项上：旧日归档是只读历史，新消息只会进当天的文件
-                if (d === todayLabel && isUnread(convLast[d], lastRead['g:'])) addUnreadDot(item);
+                if (d === todayLabel && isUnread(convLast[d], lastRead['g:'], 'g:')) {
+                    addUnreadDot(item, lastMentionsMe(convLast[d]));
+                }
                 item.addEventListener('click', function () { switchGroupDay(d); });
                 dayList.appendChild(item);
             }
@@ -442,14 +597,25 @@
                 item.className = 'conv-item';
                 if (other !== null) {
                     item.dataset.other = other; // 供 syncSidebarActive 判断高亮
-                    item.textContent = other;
+                    item.appendChild(avatarNode(other));
+                    const nameEl = document.createElement('span');
+                    nameEl.className = 'conv-name';
+                    nameEl.textContent = other;
+                    item.appendChild(nameEl);
                     privPartners.add(other);
-                    if (isUnread(privLastMap[other], lastRead['p:' + other])) addUnreadDot(item);
+                    if (isUnread(privLastMap[other], lastRead['p:' + other], 'p:' + other)) {
+                        // 私聊不提供 @，所以不会出现「@」胶囊，只有点
+                        addUnreadDot(item, false);
+                    }
                     item.addEventListener('click', function () { switchPrivate(other); });
                     privShown++;
                 } else {
                     // 拿不到自己的用户名时无法确定私聊对象，先禁用
-                    item.textContent = p;
+                    item.appendChild(unknownAvatarNode());
+                    const nameEl = document.createElement('span');
+                    nameEl.className = 'conv-name';
+                    nameEl.textContent = p;
+                    item.appendChild(nameEl);
                     item.disabled = true;
                     item.title = '无法确定当前用户，请刷新页面';
                     privShown++;
@@ -461,9 +627,10 @@
             syncSidebarActive();
         }
 
-        function addUnreadDot(item) {
+        function addUnreadDot(item, mention) {
             const dot = document.createElement('span');
-            dot.className = 'unread-dot';
+            dot.className = 'unread-dot' + (mention ? ' mention' : '');
+            if (mention) dot.textContent = '@';
             item.appendChild(dot);
         }
 
@@ -475,23 +642,73 @@
             const today = serverToday || todayStr();
             if (msg.sendTo === '') {
                 const day = msg.time.slice(0, 10); // 群消息按天归档
-                convLast[day] = { time: msg.time, by: msg.name };
+                // at 由服务端在 /conversations 里算，实时消息得在这儿自己补，
+                // 否则刚落地的这条会把上一次带 at 的记录覆盖掉、@ 胶囊一闪就没
+                convLast[day] = { time: msg.time, by: msg.name, at: mentionsMe(msg.text) ? [me] : [] };
                 ensureDayItem(day); // 当天归档刚创建时侧边栏可能还没有"今天"项，补上才能挂红点
+                // 跨午夜：页面从昨天一直开着，serverToday 只在初始化/重连时更新，
+                // 于是"今天"的判定还停在前一天，新一天的消息永远挂不上红点
+                // （updateUnreadState 只给 serverToday 那一天挂点）。
+                // 收到不属于"当前以为的今天"的消息就重拉一次会话列表，把 serverToday 校准过来。
+                if (day !== today) loadConversations();
                 // 正在看"今天的群聊"（对象框为空且未浏览旧日，或填的就是今天）才算已读；
                 // 浏览旧日归档时新群消息仍算未读
                 const viewingTodayGroup = userVal === '' ? currentDay === null : (isDateStr(userVal) && userVal === today);
-                if (viewingTodayGroup && day === today) markRead('g:', msg.time);
+                if (viewingTodayGroup && day === today) {
+                    markRead('g:', msg.time);
+                } else if (msg.name !== me) {
+                    // 没在看今天：明确记一笔未读（时间戳同秒时靠它，见 unreadKeys）
+                    unreadKeys.add('g:');
+                }
             } else if (me) {
                 // 对方：我发的消息时是 sendTo，我收到时是 name
                 const partner = msg.name === me ? msg.sendTo : msg.name;
                 // 文件名与服务端 getTarget 一致：两人名字排序后以 - 连接
                 const pair = [msg.name, msg.sendTo].sort().join('-');
-                convLast[pair] = { time: msg.time, by: msg.name };
+                // 私聊不提供 @，at 恒为空数组（否则侧边栏会出现「@」胶囊）
+                convLast[pair] = { time: msg.time, by: msg.name, at: [] };
                 privLastMap[partner] = convLast[pair];
                 ensurePrivItem(partner);
-                if (isRelevant(msg)) markRead('p:' + partner, msg.time);
+                if (isRelevant(msg)) {
+                    markRead('p:' + partner, msg.time);
+                } else if (msg.name !== me) {
+                    // 别人发来的、而我没在看这个会话：明确记一笔未读
+                    unreadKeys.add('p:' + partner);
+                }
             }
             updateUnreadState();
+        }
+
+        /**
+         * 收到一帧 `del`（撤回）。
+         *
+         * 关键点：撤回**不一定发生在我正在看的那个会话里**（对方撤回、或我正在看别的会话）。
+         * 旧实现把整段包在 `isRelevant(resp)` 里，不相关就什么都不做 —— 于是 `convLast`
+         * 里还留着那条已经被删掉的消息，红点一直亮到下次 /conversations 才自愈。
+         *
+         * 现在分两件事：
+         *   1. 正在看的会话：立刻从 DOM 里删掉这条并记为已读（原来就有的行为）；
+         *   2. 不管是不是正在看：重拉一次 /conversations 让服务端重算「最后一条消息」。
+         *      前端手上只有"那条被删掉的消息"，推不出新的最后一条，只能问服务端。
+         *      撤回是低频操作，多这一次请求不值得为省它再在本地维护一份消息序列。
+         */
+        function handleDelFrame(resp) {
+            if (isRelevant(resp)) {
+                delMessage(resp.name, resp.time);
+                // 被撤回的会话：消息在我方可见过，记为已读到该时刻，避免小红点误亮
+                if (resp.sendTo === '') markRead('g:', resp.time);
+                else if (me && resp.name === me) markRead('p:' + resp.sendTo, resp.time);
+            }
+            // unreadKeys 记的是"我确定有一条没看过"，万一被撤回的正是那一条，
+            // 这个标记就过期了 —— 不清掉红点会一直亮着（时间比较那边已经看不到它了）。
+            // 删掉后交给时间比较判断，最多漏掉"同一秒"那一种情况，比一直亮着好。
+            // 键的算法与 onWsUnread 一致
+            if (resp.sendTo === '') unreadKeys.delete('g:');
+            else {
+                const partner = me && resp.name === me ? resp.sendTo : resp.name;
+                if (partner) unreadKeys.delete('p:' + partner);
+            }
+            loadConversations();
         }
 
         // 对方还没出现在侧边栏（第一次私聊）时补一个可点击的项。
@@ -505,7 +722,11 @@
             const item = document.createElement('button');
             item.className = 'conv-item';
             item.dataset.other = other;
-            item.textContent = other;
+            item.appendChild(avatarNode(other));
+            const nameEl = document.createElement('span');
+            nameEl.className = 'conv-name';
+            nameEl.textContent = other;
+            item.appendChild(nameEl);
             item.addEventListener('click', function () { switchPrivate(other); });
             list.appendChild(item);
         }
@@ -521,7 +742,10 @@
             item.className = 'conv-item';
             item.dataset.day = day;
             const today = serverToday || todayStr();
-            item.textContent = day === today ? '今天（' + day + '）' : day;
+            const dayName = document.createElement('span');
+            dayName.className = 'conv-name';
+            dayName.textContent = day === today ? '今天（' + day + '）' : day;
+            item.appendChild(dayName);
             item.addEventListener('click', function () { switchGroupDay(day); });
             // 日期按新→旧排序：插到第一个"比它旧"的项之前
             const items = Array.prototype.slice.call(list.querySelectorAll('.conv-item'));
@@ -549,12 +773,12 @@
             document.getElementById('user').value = '';
             const today = serverToday || todayStr();
             currentDay = day === today ? null : day;
+            clearReply(); // 上一条待回复属于原来的会话，带过去会回错地方
             // 只有切到"今天"的群聊视图才把今天的群消息记为已读；浏览旧日归档不影响今天的红点
-            if (currentDay === null) {
-                markRead('g:', convLast[today]?.time || today);
-            }
+            markCurrentAsRead();
             syncSidebarActive();
             updateUnreadState();
+            closeSidebarIfNarrow();
             refresh();
         }
 
@@ -562,15 +786,48 @@
         function switchPrivate(other) {
             document.getElementById('user').value = other;
             currentDay = null;
-            markRead('p:' + other, privLastMap[other]?.time || null); // 进入该私聊即已读
+            clearReply(); // 同上：别把待回复带到另一个人的会话里
+            markCurrentAsRead(); // 进入该私聊即已读
             syncSidebarActive();
             updateUnreadState();
+            closeSidebarIfNarrow();
             refresh();
+        }
+
+        // 窄屏上侧边栏固定占 230px（flex 0 0 230px），手机竖屏只剩几十像素给消息区，
+        // 选完会话不收起就基本看不见对话内容。宽屏是并排布局，收起反而多一步，故只在小屏自动收。
+        function closeSidebarIfNarrow() {
+            if (window.innerWidth > 600) return;
+            document.getElementById('sidebar').classList.remove('open');
         }
 
         // ===== 未读小红点 =====
         // 数据：convLast（服务端 /conversations 的 last 字段，按会话文件），已读：Cookie 里的 lastRead
         // 实时：收到 WS 消息后更新 convLast 并刷新红点；切换会话时把对应"已读时间"记到 lastRead
+
+        /**
+         * 把"当前正在看的这个会话"记为已读。
+         *
+         * 三类入口都要走这里，否则红点会赖着不灭：
+         *   1. 点侧边栏项（switchGroupDay / switchPrivate）；
+         *   2. 手打私聊对象后按回车/失焦（input 的 change 事件）；
+         *   3. 点「刷新」按钮 —— 用户看到消息、点刷新，本来就该算读过了。
+         * 早先只有第 1 类调 markRead，后两类只重画历史不动已读表：明明看完了，
+         * 切回去红点还在，只能再点一次侧边栏项才能消掉。
+         */
+        function markCurrentAsRead() {
+            const userVal = document.getElementById('user').value;
+            const today = serverToday || todayStr();
+            if (userVal !== '' && !isDateStr(userVal)) {
+                // 私聊：对方就是输入框里的人
+                const last = privLastMap[userVal];
+                markRead('p:' + userVal, last && last.time);
+                return;
+            }
+            // 群聊：只有在看"今天"时才算已读，浏览旧日归档不能顺手把今天标记掉
+            const day = isDateStr(userVal) ? userVal : (currentDay || today);
+            if (day === today) markRead('g:', (convLast[today] && convLast[today].time) || null);
+        }
 
         // 根据 convLast 与 lastRead 重算侧边栏所有红点（不重建列表，只增删 dot）
         // 注意：me 为 null（/whoami 失败）时不能整体跳过——群聊红点照样可算，
@@ -579,18 +836,30 @@
             document.querySelectorAll('#dayList .conv-item').forEach(function (el) {
                 // 红点只可能在"今天"项上：旧日归档是只读历史，新消息只会进当天的文件
                 const isToday = el.dataset.day === (serverToday || todayStr());
-                setDot(el, isToday && isUnread(convLast[el.dataset.day], lastRead['g:']));
+                setDot(el, isToday && isUnread(convLast[el.dataset.day], lastRead['g:'], 'g:'),
+                    lastMentionsMe(convLast[el.dataset.day]));
             });
             document.querySelectorAll('#privList .conv-item[data-other]').forEach(function (el) {
-                setDot(el, isUnread(privLastMap[el.dataset.other], lastRead['p:' + el.dataset.other]));
+                // 私聊没有 @ 提及，第二个参数恒为 false（不升级成「@」胶囊）
+                setDot(el, isUnread(privLastMap[el.dataset.other], lastRead['p:' + el.dataset.other],
+                    'p:' + el.dataset.other), false);
             });
         }
 
-        // 在按钮上增/删小红点
-        function setDot(el, show) {
+        // 在按钮上增/删小红点。[mention] 为真时升级成「@」胶囊：
+        // 一屏会话里「有人找我说话」和「有人点名找我」该长得不一样
+        function setDot(el, show, mention) {
             const dot = el.querySelector('.unread-dot');
-            if (show && !dot) addUnreadDot(el);
-            else if (!show && dot) dot.remove();
+            if (!show) {
+                if (dot) dot.remove();
+                return;
+            }
+            if (!dot) {
+                addUnreadDot(el, mention);
+            } else if (!!mention !== dot.classList.contains('mention')) {
+                dot.remove();
+                addUnreadDot(el, mention);
+            }
         }
 
         function todayStr() {
@@ -603,6 +872,14 @@
         // 私聊对象框填 yyyy-MM-dd 时进入"浏览该日群聊记录"模式
         function isDateStr(v) {
             return /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+        }
+
+        // 当前是不是私聊视图：对象框里填了人名（既不是日期，也不是空）。
+        // 「群聊不显示头像」和「私聊不提供 @」两件事都以这个判断为准。
+        function isPrivateView() {
+            const el = document.getElementById('user');
+            const v = el && el.value ? el.value : '';
+            return v !== '' && !isDateStr(v);
         }
 
         // 群聊模式（对象框为空或填日期）下正在浏览非今天的记录；
@@ -618,6 +895,10 @@
 
         // 获取自己的用户名（依赖 Chat.kt 的 /whoami 路由；失败时 me 保持 null，页面照常可用）
         async function loadMe() {
+            // 只有 /whoami 这一段用 try 兜：它失败（服务器刚重启、网络抖）时 me 留 null，
+            // 但侧边栏照样要建起来。旧写法把 store.sync 一起圈在 try 里，fetch 一抛异常
+            // 就直接跳到 catch，loadLastRead/loadConversations 永远不执行 —— 表现为
+            // 断线时刷新页面，左侧会话列表一直是空的，连重连都拉不回来。
             try {
                 const resp = await fetch('/whoami');
                 if (resp.ok) {
@@ -627,15 +908,21 @@
                         document.getElementById('meName').textContent = me;
                     }
                 }
-                // 侧边栏依赖自己的用户名与已读记录，成功后加载会话列表
-                // 已读表先向服务端同步一次（跨浏览器/清缓存后仍能对上），失败就用本机 Cookie
-                store.sync(function () {
-                    loadLastRead();
-                    loadConversations();
-                });
             } catch (e) {
                 console.warn('获取当前用户名失败:', e);
             }
+            // 头像表必须在首次 renderHistory 之前拿到，否则第一屏全是首字头像，
+            // 等表回来后还得整块重画（会滚回底部、闪一下）。拉不到就当没有，照常渲染。
+            await loadAvatars();
+            paintMeAvatar();
+            // 成员名单只用于 @ 高亮与补全，拿不到不影响聊天，所以列在头像之后、不挡渲染
+            await loadMembers();
+            // 已读表先向服务端同步一次（跨浏览器/清缓存后仍能对上），失败就用本机 Cookie；
+            // 不管同步成没成，回调里都要把侧边栏拉起来
+            store.sync(function () {
+                loadLastRead();
+                loadConversations();
+            });
         }
 
         // ===== WebSocket 连接（自动重连）=====
@@ -645,12 +932,31 @@
         let wsReconnectTimer = null;
         let wsReconnectDelay = 3000;
 
+        // 顶栏那个小圆点：连接断了要让人看见。以前只 console.log，
+        // 页面照旧显示旧消息、输入框照旧能打字，用户以为一切正常
+        function setConnState(state) {
+            const dot = document.getElementById('connDot');
+            if (!dot) return;
+            dot.className = 'conn-dot ' + state;
+            dot.title = state === 'ok' ? '已连接'
+                : state === 'wait' ? '正在连接…'
+                : '连接已断开，正在重连（期间消息发不出去）';
+        }
+
         function connect() {
-            const url = 'ws://' + SERVER_IP + '/message';
+            // 跟 terminal.html 同一套拼法：优先跟着当前页面的 host 与协议走，
+            // 硬写 'ws://' + SERVER_IP 有两个坑 —— https 页面下混合内容会被浏览器直接拦，
+            // 而 SERVER_IP 是 /config.js 探测出来的网卡地址，用域名或反代进来时对不上。
+            // SERVER_IP 只在 file:// 直开时兜底。
+            const url = (location.protocol === 'file:'
+                ? 'ws://' + SERVER_IP
+                : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host) + '/message';
             websocket = new WebSocket(url);
+            setConnState('wait');
 
             websocket.onopen = function () {
                 console.log('Connected to WebSocket server');
+                setConnState('ok');
                 if (wsWasConnected) {
                     // 非首次连接（重连成功）：刷新当前视图的历史并同步会话列表/红点
                     refresh();
@@ -661,15 +967,20 @@
             };
 
             websocket.onmessage = function (event) {
-                const resp = JSON.parse(event.data);
+                // 单帧解析失败只丢这一帧：一帧异常不该让 onmessage 中断在半路，
+                // 更不该连锁到 onclose（那会触发一次没必要的重连）
+                let resp;
+                try {
+                    resp = JSON.parse(event.data);
+                } catch (e) {
+                    console.warn('忽略无法解析的 WS 帧:', e);
+                    return;
+                }
                 if (resp.type === 'send') {
                     addMessage(resp);
                     onWsUnread(resp);
-                } else if (resp.type === 'del' && isRelevant(resp)) {
-                    delMessage(resp.name, resp.time);
-                    // 被撤回的会话：消息在我方可见过，记为已读到该时刻，避免小红点误亮
-                    if (resp.sendTo === '') markRead('g:', resp.time);
-                    else if (me && resp.name === me) markRead('p:' + resp.sendTo, resp.time);
+                } else if (resp.type === 'del') {
+                    handleDelFrame(resp);
                 } else if (resp.type === 'err') {
                     showError(resp.text);
                 }
@@ -677,6 +988,7 @@
 
             websocket.onclose = function () {
                 console.log('Disconnected from WebSocket server, auto-reconnecting');
+                setConnState('down');
                 scheduleReconnect();
             };
 
@@ -686,9 +998,28 @@
             };
         }
 
+        // 从后台切回来 / 合盖唤醒后，退避计时可能已经等了很久也还没到点，
+        // 而连接其实早就死了（服务端 pingPeriod 5s / timeout 15s 早把它判掉）。
+        // 这里立刻探一次：不是 OPEN 就清掉待定的计时器、马上重连，别让人干等 30 秒。
+        function wakeCheck() {
+            if (document.visibilityState !== 'visible') return;
+            // CONNECTING 也算活着：再 connect 一次会多插一条连接（服务端按连接存会话，
+            // 多出来那条会重复收消息）
+            if (websocket && (websocket.readyState === WebSocket.OPEN ||
+                              websocket.readyState === WebSocket.CONNECTING)) return;
+            clearTimeout(wsReconnectTimer);
+            wsReconnectDelay = 3000;
+            connect();
+        }
+        document.addEventListener('visibilitychange', wakeCheck);
+        window.addEventListener('online', wakeCheck);
+
         function scheduleReconnect() {
             clearTimeout(wsReconnectTimer);
             wsReconnectTimer = setTimeout(function () {
+                // 这期间可能已经由 wakeCheck 重连上了，别在这里再插一条
+                if (websocket && (websocket.readyState === WebSocket.OPEN ||
+                                  websocket.readyState === WebSocket.CONNECTING)) return;
                 connect();
                 wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000); // 指数退避，封顶 30s
             }, wsReconnectDelay);
@@ -707,6 +1038,10 @@
                 return target === msg.sendTo || target === msg.name;
             }
             if (target === '') {
+                // 侧边栏选了旧日归档时输入框是空的（当前日期在 currentDay 里），
+                // 这里必须比一下日期：否则新群消息会被追加到正在看的那一天的历史里，
+                // 看着像是"历史记录被改写了"。新消息只属于今天。
+                if (currentDay && (msg.time || '').slice(0, 10) !== currentDay) return false;
                 return msg.sendTo === '';
             }
             return (msg.name === me && msg.sendTo === target) ||
@@ -715,34 +1050,513 @@
 
         function addMessage(msg) {
             if (!isRelevant(msg)) return;
-            document.getElementById('MsgBox').appendChild(crtMsg(msg.name, msg.time, msg.text));
+            document.getElementById('MsgBox').appendChild(crtMsg(msg.name, msg.time, msg.text, msg.reply));
             // 自己正往上翻旧消息时不强行拽到底；否则跟随新消息
             if (stickBottom) scrollToBottom(true);
             stickToImages();
             // 本地副本同步追一条：否则切走的这一会儿再来回切，会看到"新消息又没了"
             patchHistoryCache(function (items) {
-                items.push({ name: msg.name, time: msg.time, text: msg.text });
+                const row = { name: msg.name, time: msg.time, text: msg.text };
+                if (msg.reply) row.reply = msg.reply;   // 没有就别写 null，省得撑大缓存
+                items.push(row);
                 return items;
             });
         }
 
-        function crtMsg(sender, time, content) {
+        // ===== 头像 =====
+        //
+        // 每人一张，优先用自己设过的图（服务端 /avatars 一次性回全表），没设过就是首字头像。
+        // 首字取名字里第一个"看起来是字"的字符：中文名取姓，英文名取首字母大写；
+        // emoji 之类取不到字符时退回 '?'，绝不抛异常（头像坏掉比没头像更显眼）。
+        // 十种底色：色相分散，便于一眼区分不同人。
+        // 每个色都配了好读的字色（见 avatarInk），白字/深字自动选，最差也有 4.5:1。
+        const AVATAR_COLORS = [
+            '#4f7cff', '#7a5cf0', '#c04fd0', '#e0526b', '#e0793a',
+            '#c9a227', '#3ba55d', '#2f9e9e', '#437dd7', '#8a6d3b'
+        ];
+
+        // 用户 → 头像图片地址（来自 /avatars 的 items）
+        const avatarMap = {};
+
+        // 首字：按码点取，避免把 emoji 的代理对切一半（那会渲染成方块）
+        function avatarLetter(name) {
+            const s = (name || '').trim();
+            if (!s) return '?';
+            const ch = Array.from(s)[0];
+            return ch.toUpperCase();
+        }
+
+        // 底色按名字哈希：同一个人永远是同一个颜色，刷新/换设备都一致
+        function avatarColor(name) {
+            let h = 0;
+            const s = name || '';
+            for (let i = 0; i < s.length; i++) {
+                h = (h * 31 + s.charCodeAt(i)) % 1000000007;
+            }
+            return AVATAR_COLORS[h % AVATAR_COLORS.length];
+        }
+
+        // 首字颜色按底色亮度自动选白或深色：十种底色明暗跨度很大，
+        // 一律压白字时 #c9a227 只有 2.42:1（黄底白字几乎看不清）。
+        // 用相对亮度公式（WCAG）算，取对比度更高的那个，实测最差 4.55:1。
+        function avatarInk(bg) {
+            const h = (bg || '').replace('#', '');
+            const rgb = [0, 2, 4].map(function (i) {
+                const v = parseInt(h.slice(i, i + 2), 16) / 255;
+                return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+            });
+            const lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+            // 与白(1.0)/深(#10131a 相对亮度 0.0065) 的对比度比较，谁大用谁
+            const withWhite = 1.05 / (lum + 0.05);
+            const withDark = (lum + 0.05) / 0.0565;
+            return withWhite >= withDark ? '#ffffff' : '#10131a';
+        }
+
+        // 生成一个头像节点：设过图就是 <img>，否则是带首字的 <div>。
+        // 两种都是 .avatar，尺寸/圆形裁剪共用一套样式。
+        function avatarNode(name) {
+            const ref = avatarMap[name];
+            if (ref) {
+                const img = document.createElement('img');
+                img.className = 'avatar';
+                img.alt = name || '';
+                img.title = name || '';
+                img.decoding = 'async';
+                img.loading = 'lazy';
+                // 设过头像的那张图后来被删了：静默换回首字头像。
+                // 不这么做的话会留一个破图占位符，而服务端那边其实已经回落成默认了
+                img.addEventListener('error', function () {
+                    delete avatarMap[name];
+                    const fallback = avatarFallback(name);
+                    if (img.parentNode) img.parentNode.replaceChild(fallback, img);
+                }, { once: true });
+                img.src = ref;
+                return img;
+            }
+            return avatarFallback(name);
+        }
+
+        function avatarFallback(name) {
+            const el = document.createElement('div');
+            el.className = 'avatar avatar-text';
+            const bg = avatarColor(name);
+            el.style.background = bg;
+            el.style.color = avatarInk(bg);
+            el.title = name || '';
+            el.textContent = avatarLetter(name);
+            return el;
+        }
+
+        // /whoami 失败时解析不出私聊对象是谁，给一个中性头像占位（该项本来就禁用了）
+        function unknownAvatarNode() {
+            const el = document.createElement('div');
+            el.className = 'avatar avatar-text';
+            const bg = '#9aa3b8';
+            el.style.background = bg;
+            el.style.color = avatarInk(bg);
+            el.textContent = '?';
+            return el;
+        }
+
+        // 拉全站头像表。失败就清空（全部回落首字头像），不弹错误 —— 头像不该影响聊天。
+        async function loadAvatars() {
+            try {
+                const res = await fetch('/avatars');
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                const items = data.items || {};
+                Object.keys(avatarMap).forEach(function (k) {
+                    if (!(k in items)) delete avatarMap[k];
+                });
+                Object.keys(items).forEach(function (k) { avatarMap[k] = items[k]; });
+            } catch (e) {
+                console.warn('获取头像列表失败:', e);
+            }
+        }
+
+        // 自己换了头像后，把已经在屏上的那些消息里的头像就地换掉
+        // （重画整个历史会滚回底部、还闪一下，没必要）
+        function repaintOwnAvatars() {
+            const boxes = document.getElementById('MsgBox').getElementsByClassName('message-box');
+            for (let i = 0; i < boxes.length; i++) {
+                if (boxes[i].getAttribute('data-own') !== '1') continue;
+                const old = boxes[i].querySelector('.avatar');
+                if (!old) continue;
+                boxes[i].replaceChild(avatarNode(me), old);
+            }
+        }
+
+        // 顶栏那颗自己的头像：跟着 avatarMap / me 走，任何一处变化都调它重画。
+        // **必须留在模块级**（不能塞进 DOMContentLoaded 回调）：loadMe 在模块级调用它，
+        // 放进回调里会变成"只在回调作用域可见"，loadMe 一调就 ReferenceError，
+        // 而它后面紧跟着 refresh()/connect() —— 整个初始化会断在那里，
+        // 表现为历史不加载、WebSocket 不连接、顶栏头像空白。
+        function paintMeAvatar() {
+            const slot = document.getElementById('meAvatar');
+            if (!slot) return;
+            slot.innerHTML = '';
+            slot.appendChild(avatarNode(me || '?'));
+        }
+
+        // ===== @ 提及 =====
+        //
+        // 名单来自 GET /members（只回名字，不回 IP）。打 @ 时弹一个小面板选人，
+        // 选中后往输入框里插一段纯文本 "@名字 "；服务端把消息原样存下来，
+        // 渲染时再由 renderText 按名单把 @名字 涂成高亮块 —— 协议里**不加任何标记**，
+        // 所以老存档、老客户端都不受影响。
+
+        let mentionMatches = [];   // 当前 @ 补全的候选
+        let mentionIndex = 0;      // 键盘高亮到第几个
+        let mentionAt = -1;        // 输入框里那个 '@' 的下标
+        let mentionRendered = '';  // 已经画进 DOM 的候选（内容变了才重建）
+
+        async function loadMembers() {
+            try {
+                const resp = await fetch('/members');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data = await resp.json();
+                const names = Array.isArray(data.names) ? data.names : [];
+                memberNames = names.filter(function (n) { return typeof n === 'string' && n !== ''; });
+            } catch (e) {
+                // 拉不到就当作没有名单：@ 不高亮、不补全，聊天本身不受影响
+                console.warn('获取成员名单失败:', e);
+            }
+        }
+
+        // 侧边栏的 last 只有 {time, by, at}，没有正文，所以只能看服务端给的 at[]。
+        // 正文级高亮（气泡左侧竖线）走下面的 mentionsMe(text)，两者别混。
+        function lastMentionsMe(last) {
+            if (!me || !last || !last.at) return false;
+            for (let i = 0; i < last.at.length; i++) if (last.at[i] === me) return true;
+            return false;
+        }
+
+        // 这条消息里是不是 @ 了我（用于气泡左侧竖线）
+        // 名字边界规则与服务端 mentionsIn 一致：@tester123 不算 @tester，
+        // 否则侧边栏（服务端算的 at[]）和气泡（这里算的）会互相打脸
+        const MENTION_WORD = /[A-Za-z0-9_\u4e00-\u9fa5]/;
+
+        function mentionsMe(text) {
+            if (!me || typeof text !== 'string') return false;
+            const token = '@' + me;
+            let from = 0;
+            while (from <= text.length - token.length) {
+                const at = text.indexOf(token, from);
+                if (at === -1) return false;
+                const next = text.charAt(at + token.length);
+                if (!next || !MENTION_WORD.test(next)) return true;
+                from = at + 1;
+            }
+            return false;
+        }
+
+        // 光标前正在打的 @片段；不在补全状态返回 null
+        function mentionQuery() {
+            const ta = document.getElementById('content');
+            const caret = ta.selectionStart;
+            if (caret !== ta.selectionEnd) return null;      // 有选区时不补全
+            const head = ta.value.slice(0, caret);
+            const at = head.lastIndexOf('@');
+            if (at === -1) return null;
+            const frag = head.slice(at + 1);
+            if (frag.length > 32) return null;
+            // 片段里不能有空白：打了空格就说明这个 @ 已经结束了
+            if (/\s/.test(frag)) return null;
+            // @ 前面必须是行首或非单词字符，否则 "a@b" 这种邮箱也会触发
+            if (at > 0 && /[A-Za-z0-9_\u4e00-\u9fa5]/.test(head.charAt(at - 1))) return null;
+            return { at: at, frag: frag };
+        }
+
+        function paintMentionPop() {
+            const pop = document.getElementById('mentionPop');
+            // 私聊不提供 @ 功能：两个人说话，点名没有意义，也省得弹出候选面板
+            if (isPrivateView()) { hideMentionPop(); return; }
+            const q = mentionQuery();
+            if (!q) { hideMentionPop(); return; }
+            const lower = q.frag.toLowerCase();
+            const list = memberNames.filter(function (n) {
+                if (n === me && q.frag === '') return true;  // 自己也能 @（留着给"提醒自己"用）
+                return n.toLowerCase().indexOf(lower) !== -1;
+            }).slice(0, 8);
+            if (!list.length) { hideMentionPop(); return; }
+            mentionAt = q.at;
+            if (mentionIndex >= list.length) mentionIndex = 0;
+            const changed = list.join('\u0001') !== mentionRendered;
+            mentionMatches = list;
+            if (changed) renderMentionList(pop);
+            updateMentionActive(pop);
+            pop.classList.add('show');
+        }
+
+        // 候选列表的**内容**变了才重建 DOM。
+        //
+        // 之前每次鼠标移动都整体重建（innerHTML=''），于是：
+        //   1) 滚动位置被清零，列表跳回顶部 —— 鼠标不动时高亮行却换了个位置，
+        //      看着就是"高亮反了"（指的那行和亮的那行不是一行）；
+        //   2) 鼠标底下的元素被换掉，mousemove 的目标也跟着换，容易抖。
+        // 现在把"渲染列表"和"标记高亮"拆开：鼠标移动只改 class，不动 DOM 结构。
+        function renderMentionList(pop) {
+            const scroll = pop.scrollTop;
+            pop.innerHTML = '';
+            mentionMatches.forEach(function (n, i) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.setAttribute('data-mi', String(i));
+                btn.appendChild(avatarNode(n));
+                const sp = document.createElement('span');
+                sp.className = 'mn';
+                sp.textContent = n;
+                btn.appendChild(sp);
+                // mousedown 而不是 click：click 之前 textarea 会先失焦，光标位置就丢了
+                btn.addEventListener('mousedown', function (e) { e.preventDefault(); pickMention(n); });
+                btn.addEventListener('mousemove', function () {
+                    if (mentionIndex === i) return;
+                    mentionIndex = i;
+                    updateMentionActive(pop);
+                });
+                pop.appendChild(btn);
+            });
+            mentionRendered = mentionMatches.join('\u0001');
+            pop.scrollTop = scroll;   // 重建别把滚动位置弄丢
+        }
+
+        // 只切换 .active 类，不重建 DOM
+        function updateMentionActive(pop) {
+            const buttons = pop.getElementsByTagName('button');
+            for (let i = 0; i < buttons.length; i++) {
+                if (i === mentionIndex) buttons[i].className = 'active';
+                else if (buttons[i].className === 'active') buttons[i].className = '';
+            }
+            // 键盘上下选时把高亮行滚进可视区（鼠标移动不滚，免得跟着晃）
+            // 自己算 scrollTop 而不是 scrollIntoView：后者会连带滚动祖先容器，
+            // 可能把整个页面拽一下
+            const btn = buttons[mentionIndex];
+            if (btn) {
+                const top = btn.offsetTop;
+                const bottom = top + btn.offsetHeight;
+                if (top < pop.scrollTop) pop.scrollTop = top;
+                else if (bottom > pop.scrollTop + pop.clientHeight) {
+                    pop.scrollTop = bottom - pop.clientHeight;
+                }
+            }
+        }
+
+        function hideMentionPop() {
+            mentionMatches = [];
+            mentionIndex = 0;
+            mentionAt = -1;
+            mentionRendered = '';
+            const pop = document.getElementById('mentionPop');
+            if (pop) pop.classList.remove('show');
+        }
+
+        function pickMention(name) {
+            if (mentionAt < 0) return;
+            const ta = document.getElementById('content');
+            const caret = ta.selectionStart;
+            const before = ta.value.slice(0, mentionAt);
+            const after = ta.value.slice(caret);
+            // 补一个空格：@名字 后面紧跟文字时渲染端要靠空格界定名字边界
+            ta.value = before + '@' + name + ' ' + after;
+            const pos = mentionAt + name.length + 2;
+            ta.setSelectionRange(pos, pos);
+            hideMentionPop();
+            autoGrow();
+            ta.focus();
+        }
+
+        // 补全面板开着时接管方向键/回车/Esc。
+        // Enter 在这里被吃掉的关键原因：它既"选中候选"又"发送消息"，不拦就是发出去半截 @。
+        function handleMentionKey(e) {
+            const pop = document.getElementById('mentionPop');
+            const open = pop && pop.classList.contains('show') && mentionMatches.length > 0;
+            if (!open) return;
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                const n = mentionMatches.length;
+                mentionIndex = e.key === 'ArrowDown'
+                    ? (mentionIndex + 1) % n
+                    : (mentionIndex - 1 + n) % n;
+                updateMentionActive(pop);
+                return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                pickMention(mentionMatches[mentionIndex]);
+                return;
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                hideMentionPop();
+            }
+        }
+
+        // ===== 回复某条消息 =====
+        //
+        // 状态只在前端：选中一条消息后，下一条发出去的消息带一个 reply 快照
+        // （name/time/text），服务端把它原样存进存档并广播，聊天记录里就能看到引用块。
+        function startReply(name, time, text) {
+            replyTo = { name: name, time: time, text: replyPreview(text) };
+            // 悬停浮出的条在别处，提示条要让人看得见
+            updateReplyBar();
+            const ta = document.getElementById('content');
+            ta.focus();
+            // 把光标放到末尾，接着就能打字
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+        }
+
+        function clearReply() {
+            replyTo = null;
+            updateReplyBar();
+        }
+
+        function updateReplyBar() {
+            const bar = document.getElementById('replyBar');
+            if (!bar) return;
+            if (!replyTo) { bar.classList.remove('show'); return; }
+            bar.classList.add('show');
+            document.getElementById('replyBarWho').textContent = '回复 ' + replyTo.name;
+            document.getElementById('replyBarText').textContent = replyPreview(replyTo.text);
+        }
+
+        // 文字里 `@某人` 的高亮。用 DOM 拼而不是 innerHTML：消息内容是用户输入，
+        // 拼字符串一定会被 XSS 打穿。只有**已知的成员名**才会被识别成 @，
+        // 否则 `a@b.com` 这种普通邮箱也会被涂成一块蓝。
+        function renderText(el, text, highlight) {
+            const s = typeof text === 'string' ? text : '';
+            // highlight 为 false 时只当纯文本：私聊不提供 @ 功能，正文里的 @xxx 不该被涂色
+            if (highlight === false || !memberNames.length) { el.textContent = s; return; }
+            let i = 0;
+            while (i < s.length) {
+                const at = s.indexOf('@', i);
+                if (at === -1) { el.appendChild(document.createTextNode(s.slice(i))); break; }
+                if (at > i) el.appendChild(document.createTextNode(s.slice(i, at)));
+                // @ 后面最长能匹配到哪个成员名（长名优先，避免 alice 吃掉 alice-b 的前缀）
+                let hit = '';
+                for (let k = 0; k < memberNames.length; k++) {
+                    const n = memberNames[k];
+                    if (n.length <= hit.length) continue;
+                    if (s.substr(at + 1, n.length) !== n) continue;
+                    // 名字后面不能紧跟字母数字，否则 @bob123 会被当成 @bob
+                    const next = s.charAt(at + 1 + n.length);
+                    if (next && /[A-Za-z0-9_\u4e00-\u9fa5]/.test(next)) continue;
+                    hit = n;
+                }
+                if (!hit) { el.appendChild(document.createTextNode('@')); i = at + 1; continue; }
+                const span = document.createElement('span');
+                span.className = 'mention';
+                span.textContent = '@' + hit;
+                el.appendChild(span);
+                i = at + 1 + hit.length;
+            }
+        }
+
+        // 一条消息的引用块：显示"回复的是谁、说了什么"，整块可点，点了滚到原消息
+        function replyQuoteNode(reply) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'reply-quote';
+            btn.title = '跳到被回复的那条消息';
+            const who = document.createElement('span');
+            who.className = 'reply-who';
+            who.textContent = reply.name || '';
+            const body = document.createElement('span');
+            body.className = 'reply-text';
+            body.textContent = replyPreview(reply.text);
+            btn.appendChild(who);
+            btn.appendChild(document.createTextNode(' '));
+            btn.appendChild(body);
+            btn.addEventListener('click', function () { jumpToMessage(reply.name, reply.time); });
+            return btn;
+        }
+
+        // 引用里显示的那一小段：图片消息只有前缀，给它一个人话名字
+        function replyPreview(text) {
+            const s = typeof text === 'string' ? text : '';
+            if (s.startsWith('ImageB64:') || s.startsWith('ImageRef:')) return '[图片]';
+            return s;
+        }
+
+        /**
+         * 滚到某条消息并闪一下。
+         *
+         * 找不到有两种情况：那条已经被撤回、或者它不在当前会话里（回复的是群聊里的消息，
+         * 而我现在看的是私聊）。后者要明确告诉用户，否则点了没反应像是坏了。
+         */
+        function jumpToMessage(name, time) {
+            const boxes = document.getElementById('MsgBox').getElementsByClassName('message-box');
+            for (let i = 0; i < boxes.length; i++) {
+                if (boxes[i].getAttribute('data-name') !== name) continue;
+                if (boxes[i].getAttribute('data-time') !== time) continue;
+                const el = boxes[i];
+                // 'center' 把目标放在可视区中间，比滚到顶端更容易看清上下文
+                el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                el.classList.remove('flash');
+                void el.offsetWidth;   // 强制重排，动画才能重播
+                el.classList.add('flash');
+                setTimeout(function () { el.classList.remove('flash'); }, 1400);
+                return;
+            }
+            showError('没找到被回复的那条消息（可能已撤回，或不在当前会话里）');
+        }
+
+        // 设置页改了「显示消息时间」就地生效：只增删 .time 节点，不重画历史
+        // （重画会 paintHistory → scrollToBottom，正在往上翻旧消息的人会被硬拽回底部）
+        function applyShowTimePref() {
+            const show = ChatPrefs.get().showTime;
+            document.querySelectorAll('#MsgBox .message-box').forEach(function (box) {
+                const col = box.querySelector('.msg-col');
+                if (!col) return;
+                const old = col.querySelector('.time');
+                if (!show) {
+                    if (old) old.remove();
+                    return;
+                }
+                if (old) return;
+                const timeEl = document.createElement('p');
+                timeEl.className = 'time';
+                timeEl.textContent = box.getAttribute('data-time') || '';
+                col.appendChild(timeEl);
+            });
+        }
+
+        function crtMsg(sender, time, content, reply) {
+            const own = sender === me;
+            // 群聊不显示头像：群里每个人的名字本来就写在气泡头上，头像只是占地方；
+            // 私聊（就两个人）才需要头像来分辨谁是谁
+            const showAvatar = isPrivateView();
             const box = document.createElement('div');
-            box.className = 'message-box' + (sender === me ? ' own' : '');
+            box.className = 'message-box' + (own ? ' own' : '') + (showAvatar ? '' : ' no-avatar');
+            // 撤回/删除/回复都要按"发送者 + 时间"定位一条消息，存在 data 属性里而不是去读文本：
+            // 自己的消息不显示名字（.sender 是 display:none），innerText 会读成空串
+            box.setAttribute('data-name', sender);
+            box.setAttribute('data-time', time);
+            if (own) box.setAttribute('data-own', '1');
+            // @ 高亮只对群聊有意义（私聊里 @ 对方没人看）
+            if (!own && !showAvatar && mentionsMe(content)) box.classList.add('mentions-me');
+
+            // 气泡外面包一层竖排容器，时间才能稳稳贴在气泡下面
+            //（直接挂在 .message-box 上会跑到 row-reverse 的另一端去）
+            const col = document.createElement('div');
+            col.className = 'msg-col';
+
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+
+            const head = document.createElement('div');
+            head.className = 'bubble-head';
 
             const senderEl = document.createElement('h2');
             senderEl.className = 'sender';
             senderEl.textContent = sender;
-
-            const timeEl = document.createElement('p');
-            timeEl.className = 'time';
-            timeEl.textContent = time;
+            head.appendChild(senderEl);
 
             // 图片消息渲染为缩略图：
             //   ImageB64:（旧存档）→ data URL 直接当 src；ImageRef:（新）→ /img/ 端点懒加载
-            // 普通文本走 textContent 防 XSS
+            // 普通文本走 renderText（内部只用 textContent / createTextNode，防 XSS）
             const contentEl = document.createElement('p');
             contentEl.className = 'content';
+            let isImage = false;
             if (typeof content === 'string' && content.startsWith('ImageB64:')) {
                 const img = document.createElement('img');
                 img.className = 'img-message';
@@ -750,6 +1564,7 @@
                 img.alt = '图片';
                 img.loading = 'lazy';
                 contentEl.appendChild(img);
+                isImage = true;
             } else if (typeof content === 'string' && content.startsWith('ImageRef:')) {
                 const img = document.createElement('img');
                 img.className = 'img-message';
@@ -760,31 +1575,111 @@
                 // 优先本地已存的字节（imgBlobs），没有才回源，见 paintImg
                 paintImg(img, ref.replace(/^\/img\//, ''), ref);
                 contentEl.appendChild(img);
+                isImage = true;
             } else {
-                contentEl.textContent = content; // 用 textContent，防 XSS
+                renderText(contentEl, content, !showAvatar);
             }
+            // 纯图片消息去掉气泡内边距，让缩略图铺满
+            if (isImage) bubble.className = 'bubble has-image';
 
-            box.appendChild(senderEl);
-            box.appendChild(timeEl);
-            box.appendChild(contentEl);
+            bubble.appendChild(head);
+            if (reply && reply.name) bubble.appendChild(replyQuoteNode(reply));
+            bubble.appendChild(contentEl);
 
-            // 服务端只允许撤回自己的消息（历史删除按当前用户匹配），所以按钮只挂在自己消息上
-            if (sender === me) {
+            // 触屏入口：点「⋯」展开「回复 / 撤回」。
+            // 桌面端能 hover，操作条本来就悬停浮现，这个按钮不显示；
+            // 触屏（hover: none）没有 hover，所以它必须常驻。
+            const moreBtn = document.createElement('button');
+            moreBtn.type = 'button';
+            moreBtn.className = 'msg-more';
+            moreBtn.textContent = '\u22ef';
+            moreBtn.title = '更多操作';
+            moreBtn.setAttribute('aria-label', '更多操作');
+            moreBtn.addEventListener('click', function (e) {
+                e.stopPropagation();   // 别让文档级"点别处收起"顺手把刚展开的又关了
+                toggleMsgActions(box);
+            });
+
+            // 悬停浮出的操作条：谁都能"回复"，只有自己的、且还在 2 分钟窗口内的才能"撤回"
+            //（服务端按当前用户匹配，过了窗口点了也只会拿到 err，留个必然失败的按钮更糟）
+            const actions = document.createElement('div');
+            actions.className = 'msg-actions';
+            const replyBtn = document.createElement('button');
+            replyBtn.type = 'button';
+            replyBtn.textContent = '回复';
+            replyBtn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                closeMsgActions(box);
+                startReply(sender, time, content);
+            });
+            actions.appendChild(replyBtn);
+            if (own && canRevoke(time)) {
                 const revokeBtn = document.createElement('button');
-                revokeBtn.className = 'revoke-btn';
+                revokeBtn.type = 'button';
+                revokeBtn.className = 'danger';
                 revokeBtn.textContent = '撤回';
-                revokeBtn.addEventListener('click', function () { delMsg(sender, time); });
-                box.appendChild(revokeBtn);
+                revokeBtn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    closeMsgActions(box);
+                    delMsg(sender, time);
+                });
+                actions.appendChild(revokeBtn);
             }
+            bubble.appendChild(moreBtn);
+            bubble.appendChild(actions);
+
+            col.appendChild(bubble);
+            // 时间放气泡下面；设置页关掉显示时整块都不生成（隐藏的节点仍会被读屏念出来）
+            if (ChatPrefs.get().showTime) {
+                const timeEl = document.createElement('p');
+                timeEl.className = 'time';
+                timeEl.textContent = time;
+                col.appendChild(timeEl);
+            }
+
+            // 群聊不挂头像
+            if (showAvatar) box.appendChild(avatarNode(sender));
+            box.appendChild(col);
             return box;
+        }
+
+        // ===== 触屏上的操作条 =====
+        //
+        // 桌面端靠 :hover 把「回复/撤回」浮出来；触屏没有 hover，那条操作条就永远看不见。
+        // 触屏改成常驻一个「⋯」按钮，点它展开操作条；点别处收起（同时只留一个展开的）。
+        function toggleMsgActions(box) {
+            const open = box.classList.contains('actions-open');
+            closeAllMsgActions();
+            if (!open) box.classList.add('actions-open');
+        }
+
+        function closeMsgActions(box) {
+            if (box) box.classList.remove('actions-open');
+        }
+
+        function closeAllMsgActions() {
+            document.querySelectorAll('#MsgBox .message-box.actions-open').forEach(function (el) {
+                el.classList.remove('actions-open');
+            });
+        }
+
+        // 服务端时间戳是 "yyyy-MM-dd HH:mm:ss"（Asia/Shanghai），与 Time.withinTwoMin 同一窗口。
+        // 解析不出来就当作不可撤回，避免挂个必然失败的按钮
+        function canRevoke(time) {
+            const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(time || '');
+            if (!m) return false;
+            const sent = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 8, +m[5], +m[6]);
+            const elapsed = Date.now() - sent;
+            return elapsed >= 0 && elapsed <= 120000;
         }
 
         function delMessage(user, time) {
             const messages = document.getElementById('MsgBox').getElementsByClassName('message-box');
+            // 按 data 属性匹配：自己的消息不显示名字（.sender 为 display:none），
+            // 读 innerText 会读到空串，永远匹配不上
             for (let i = messages.length - 1; i >= 0; i--) {
-                const senderEl = messages[i].getElementsByClassName('sender')[0];
-                const timeEl = messages[i].getElementsByClassName('time')[0];
-                if (senderEl && timeEl && senderEl.innerText === user && timeEl.innerText === time) {
+                if (messages[i].getAttribute('data-name') === user &&
+                    messages[i].getAttribute('data-time') === time) {
                     messages[i].remove();
                 }
             }
@@ -843,7 +1738,8 @@
             let h = items.length + ':';
             for (let i = 0; i < items.length; i++) {
                 const m = items[i] || {};
-                h += (m.name || '') + '\u0001' + (m.time || '') + '\u0001' + ((m.text || '').length) + ';';
+                h += (m.name || '') + '\u0001' + (m.time || '') + '\u0001' + ((m.text || '').length) +
+                     '\u0001' + (m.reply ? ((m.reply.name || '') + '@' + (m.reply.time || '')) : '') + ';';
             }
             return h;
         }
@@ -911,7 +1807,12 @@
             if (!name) return;
             const url = imgUrlMemo.get(name);
             if (url) {
-                try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+                // 消息区里可能还挂着同一张图（删除只是从「我的缓存」里摘掉，
+                // 已经发出的那条消息不受影响）。这时候 revoke 会把它变成裂图，
+                // 所以只摘映射、把 URL 留给页面继续用，等它自然消失。
+                if (!imgUrlInUse(url)) {
+                    try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ }
+                }
                 imgUrlMemo.delete(name);
             }
             if (window.IdbStore) IdbStore.blobDel(name);
@@ -992,7 +1893,7 @@
             const container = document.getElementById('MsgBox');
             container.innerHTML = '';
             for (const msg of items) {
-                container.appendChild(crtMsg(msg.name, msg.time, msg.text));
+                container.appendChild(crtMsg(msg.name, msg.time, msg.text, msg.reply));
             }
             // 切会话/切日期/刷新后一律回到最新一条：先瞬时到底（不走动画），
             // 再给懒加载的图片挂回调，等它们把高度撑开后继续贴底
@@ -1040,11 +1941,30 @@
             }
 
             // 2) 再对齐服务端
-            const resp = await fetch('/history?targetuser=' + encodeURIComponent(userParam) + dateParam);
+            let resp;
+            try {
+                resp = await fetch('/history?targetuser=' + encodeURIComponent(userParam) + dateParam);
+            } catch (e) {
+                // 服务器重启/网络断掉时 fetch 直接 reject。旧写法没人接，变成一次未处理的
+                // Promise 拒绝：控制台一片红，界面上什么提示都没有。
+                // refresh() 是按钮和侧边栏都会调的，这里必须就地兜住。
+                console.warn('拉取聊天记录失败:', e);
+                showError('拉取聊天记录失败：' + (e && e.message ? e.message : '网络异常'));
+                return; // 保留已经画出来的本地副本
+            }
             if (gen !== histGen) return;
             let history = [];
             if (resp.ok) {
-                history = await resp.json();
+                try {
+                    history = await resp.json();
+                } catch (e) {
+                    // /history 现在走 authenticate("auth")：鉴权失败时 form("auth") 的 challenge
+                    // 会 302 到外部 SSO 页，fetch 跟着跳过去拿到的是 HTML，状态码还是 200。
+                    // 这里不兜住就会变成一次未处理的 Promise 拒绝，页面停在旧内容上毫无提示。
+                    console.warn('解析历史记录失败（多半是登录状态失效）:', e);
+                    showError('无法读取聊天记录：登录状态可能已失效，请刷新页面重新登录');
+                    return; // 保留上面画出来的本地副本
+                }
             } else {
                 // 服务端返回 400（如私聊对象不存在于用户列表）时给出提示，不渲染旧消息
                 showError(await resp.text());
@@ -1086,36 +2006,65 @@
             }
             const text = document.getElementById('content').value;
             if (text.trim() === '') return; // 纯换行/空白不发送
-            sendRaw(text);
+            // 没发出去就不清输入框：清空后消息既没进存档也没广播，用户会以为发出去了
+            if (!(await sendRaw(text))) return;
             document.getElementById('content').value = '';
             autoGrow(); // 发送后把输入框高度还原
         }
 
-        // 统一的 WS 发送出口：切过私聊对象先刷新再发，保证历史渲染正确
+        // 统一的 WS 发送出口：切过私聊对象先刷新再发，保证历史渲染正确。
+        // 返回是否真的交给了 WS —— 断线期间调用方要把输入框留着
         async function sendRaw(text) {
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                showError('连接已断开，正在重连，消息未发送');
+                return false;
+            }
             if (document.getElementById('user').value !== nowTarget) {
                 await refresh();
             }
             const user = document.getElementById('user').value;
-            const json = JSON.stringify({ type: 'send', name: 'unused', time: 'unused', text, sendTo: user });
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                websocket.send(json);
+            const payload = { type: 'send', name: 'unused', time: 'unused', text, sendTo: user };
+            // 回复快照跟着这一条走；发出去之后就清掉，下一条不再带（否则会连着回好几条）
+            if (replyTo) {
+                payload.reply = { name: replyTo.name, time: replyTo.time, text: replyTo.text };
+            }
+            try {
+                websocket.send(JSON.stringify(payload));
+                if (replyTo) clearReply();
+                return true;
+            } catch (e) {
+                showError('发送失败：' + e.message);
+                return false;
             }
         }
 
         async function delMsg(name, time) {
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                showError('连接已断开，正在重连，撤回未生效');
+                return;
+            }
             if (document.getElementById('user').value !== nowTarget) {
                 await refresh();
             }
             const user = document.getElementById('user').value;
             const json = JSON.stringify({ type: 'del', name, time, text: 'unused', sendTo: user });
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
+            try {
                 websocket.send(json);
+            } catch (e) {
+                showError('撤回失败：' + e.message);
             }
         }
 
         async function refresh() {
             nowTarget = document.getElementById('user').value;
+            // 正在看的这个会话顺手记为已读：点「刷新」、敲完人名按回车都走这里。
+            // 早先只有点侧边栏项才 markRead，于是"手打对象名/点刷新"看完了消息，
+            // 红点还赖在侧边栏上，必须再点一次同名项才能消掉。
+            // 后台标签页（切回来时 onopen 触发的 refresh）不算看过，别把红点悄悄清掉。
+            if (document.visibilityState !== 'hidden') {
+                markCurrentAsRead();
+                updateUnreadState();
+            }
             await renderHistory();
         }
 
@@ -1148,8 +2097,10 @@
         }
 
         // 给还没加载完的图片挂一次性回调：加载完高度才最终确定，这时再补一次贴底
+        // 只认图片消息（.img-message）：头像是固定 32px，加载完也不会改变布局，
+        // 把它们也算进来只会白白多触发几次贴底
         function stickToImages() {
-            const imgs = document.getElementById('MsgBox').querySelectorAll('img');
+            const imgs = document.getElementById('MsgBox').querySelectorAll('img.img-message');
             for (let i = 0; i < imgs.length; i++) {
                 const img = imgs[i];
                 if (img.complete) continue; // 已加载好的不用管
@@ -1172,6 +2123,43 @@
         }
     </script>
     <style>
+        /* 气泡用色的本页局部覆盖。
+           theme.css 的 --accent(#4f7cff) 配白字只有 3.71:1，--muted(#8b91a5) 作小字
+           也只有 3.14:1，两者都够不上 WCAG AA 对正文/小字的 4.5:1。这里只覆盖聊天气泡
+           相关的几个变量，**不动全局 --accent**（全站按钮、链接、选中态都依赖它）。
+
+           自己的气泡用**浅色底 + 深字**：深蓝底（哪怕已提亮到 5.41:1）在一屏几十条消息里
+           太重，视觉上像一条条色块压在别人上面。浅蓝底既保持了"这是我的"这一眼可辨的
+           信号，对比度反而更好（10.75:1）。夜间同理，换成柔和的藏青而不是亮蓝。 */
+        :root {
+            --bubble-own: #cfe0ff;      /* 自己的气泡底：浅蓝，深字 10.75:1 */
+            --bubble-own-ink: #1b2235;  /* 上面那个底上的正文 11.88:1 */
+            --bubble-name: #3f68e8;     /* 别人的名字（12px 粗体）：白底 4.82:1 */
+            --bubble-time: #5f6678;     /* 时间戳（11px）：页面底 #f4f6fb 上 5.31:1 */
+            --reply-bg: #eef2fb;        /* 气泡里的引用块（别人，白气泡） */
+            --reply-ink: #4a5568;       /* 引用文字：上面那个底上 6.71:1 */
+            --reply-bg-own: #bdd4ff;    /* 引用块（自己，浅蓝气泡） */
+            --reply-ink-own: #2b3448;   /* 8.31:1 */
+            --mention-bg: #dbe5ff;      /* @某人 的高亮底 */
+            --mention-ink: #2b4bb5;     /* 6.00:1 */
+            --mention-bg-own: #b3cdff;  /* 自己的气泡里 @ 的底色（比气泡再深一档） */
+            --mention-ink-own: #1b2f6b;
+        }
+        html[data-theme="dark"] {
+            --bubble-own: #2c3f66;      /* 夜间改成柔和藏青，深字换成浅字 9.34:1 */
+            --bubble-own-ink: #eef2ff;
+            --bubble-name: #6b93ff;     /* 深底 5.69:1 */
+            --bubble-time: #9aa3b8;     /* 页面底 #12151c 上 7.22:1 */
+            --reply-bg: #232a37;
+            --reply-ink: #b6bfd0;       /* 7.79:1 */
+            --reply-bg-own: #24345a;
+            --reply-ink-own: #dbe4f7;   /* 9.60:1 */
+            --mention-bg: #2a3a5e;
+            --mention-ink: #cfe0ff;
+            --mention-bg-own: #3a4f7d;
+            --mention-ink-own: #e8efff;
+        }
+
         * { box-sizing: border-box; }
         html, body { height: 100%; }
         body {
@@ -1198,6 +2186,42 @@
         .topbar .meta.meta > * + * { margin-left: 14px; }
         .topbar .me { font-size: 13px; font-weight: 600; color: var(--muted); }
         .topbar .me:empty { display: none; }
+        /* 顶栏头像按钮：左边是自己的头像，右边「换头像」小字 */
+        .avatar-btn {
+            display: flex;
+            align-items: center;
+            padding: 3px 10px 3px 3px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            color: var(--text);
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .avatar-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+        .avatar-btn.avatar-btn > * + * { margin-left: 6px; }
+        /* 顶栏里那颗头像比消息里的小一号 */
+        .avatar-slot { display: flex; align-items: center; }
+        .avatar-slot .avatar { width: 26px; height: 26px; }
+        .avatar-slot .avatar-text { font-size: 12px; }
+        .avatar-btn-text { white-space: nowrap; }
+        @media (max-width: 600px) {
+            /* 小屏只留头像，文字省掉，顶栏挤不下 */
+            .avatar-btn { padding: 3px; }
+            .avatar-btn-text { display: none; }
+            .avatar-btn.avatar-btn > * + * { margin-left: 0; }
+        }
+        /* 连接状态小圆点：.ok 绿 / .wait 黄（首次连接或重连中） / .down 红（已断开） */
+        .conn-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            flex: 0 0 auto;
+        }
+        .conn-dot.ok { background: #35c46a; }
+        .conn-dot.wait { background: #e8b33a; }
+        .conn-dot.down { background: var(--danger); }
         .topbar a { color: var(--accent); font-size: 13px; text-decoration: none; }
         .topbar a:hover { text-decoration: underline; }
         .topbar-left { display: flex; align-items: center; }
@@ -1244,12 +2268,15 @@
             letter-spacing: .4px;
             padding: 0 8px;
         }
+        /* 会话项 = 小头像 + 名字。原来是 display:block + text-overflow，
+           要放头像就必须改成 flex；ellipsis 移到名字那一层，否则头像会被切掉。 */
         .conv-item {
-            display: block;
+            display: flex;
+            align-items: center;
             position: relative;
             width: 100%;
             text-align: left;
-            padding: 8px 10px;
+            padding: 6px 20px 6px 8px;   /* 右边留出红点的位置 */
             margin-bottom: 2px;
             border: none;
             border-radius: 8px;
@@ -1257,6 +2284,16 @@
             color: var(--text);
             font-size: 13px;
             cursor: pointer;
+        }
+        /* 名字与头像之间 8px（Chrome<84 无 flex gap） */
+        .conv-item.conv-item > * + * { margin-left: 8px; }
+        .conv-item .avatar { width: 22px; height: 22px; }
+        .conv-item .avatar-text { font-size: 11px; }
+        /* 群聊项没有头像，名字直接贴左边缘，不要多出来那一截缩进 */
+        .conv-item.conv-item > .conv-name:first-child { margin-left: 0; }
+        .conv-name {
+            flex: 1;
+            min-width: 0;                /* 允许收缩，ellipsis 才会生效 */
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -1274,75 +2311,327 @@
             font-size: 12px;
             color: var(--muted);
         }
-        /* 未读小红点（absolute 定位，不挤压文本） */
+        /* 未读小红点：absolute 定位在项右上角（.conv-item 已是 position: relative），
+           不占文本流，否则会话名会被挤短一截 */
         .unread-dot {
             position: absolute;
-            top: 8px;
-            right: 8px;
+            top: 50%;
+            right: 6px;
+            margin-top: -4px;
             width: 8px;
             height: 8px;
             border-radius: 50%;
             background: var(--danger);
         }
-        /* 未读小红点：absolute 定位在项右上角，避免挤压文本 */
-        .conv-item { position: relative; }
-        .unread-dot {
-            position: absolute;
-            top: 6px;
-            right: 8px;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--danger);
+        /* 这条会话里有人 @ 我：红点升级成 @ 胶囊，比普通未读更醒目 */
+        .unread-dot.mention {
+            width: auto;
+            height: 15px;
+            margin-top: -7.5px;
+            padding: 0 5px;
+            border-radius: 8px;
+            background: var(--accent);
+            color: var(--on-accent);
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 15px;
+            text-align: center;
         }
 
         /* 消息区 */
         .chat-area {
             flex: 1;
             overflow-y: auto;
-            padding: 16px;
+            padding: 16px 16px 20px;
             display: flex;
             flex-direction: column;
         }
-        .chat-area.chat-area > * + * { margin-top: 10px; }
+        .chat-area.chat-area > * + * { margin-top: 14px; }
+
+        /* 一条消息 = 头像 + 气泡，横向排列。
+           自己的消息用 row-reverse 让头像跑到右边（DOM 顺序不变，只是视觉镜像）。 */
         .message-box {
             position: relative;
+            display: flex;
+            align-items: flex-start;
             align-self: flex-start;
-            max-width: 72%;
-            padding: 8px 12px;
+            max-width: 78%;
+        }
+        /* 头像与气泡之间留 8px（Chrome<84 不支持 flex gap，用外边距兜底） */
+        .message-box.message-box > * + * { margin-left: 8px; }
+        .message-box.own { align-self: flex-end; flex-direction: row-reverse; }
+        /* 群聊不挂头像：气泡直接贴到行首，名字本来就在气泡头上，
+           再加个头像只是把正文往右挤，还让人误以为这是私聊 */
+        .message-box.no-avatar { max-width: 78%; }
+        /* row-reverse 下气泡排在视觉左侧，间距要改到它的右外边距 */
+        .message-box.own.own > * + * { margin-left: 0; margin-right: 8px; }
+
+        /* 头像：有自定义图片时是 <img>，否则是首字兜底 <div>。
+           两者共用尺寸与圆形裁剪，所以一条 .avatar 规则就够 */
+        .avatar {
+            flex: 0 0 auto;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            object-fit: cover;
+            overflow: hidden;
+        }
+        .avatar-text {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 700;
+            /* 字色由 JS 的 avatarInk() 按底色亮度算好内联设置（白/深二选一，
+               最差也 ≥4.5:1）。这里的 #fff 只是 JS 没跑起来时的兜底 */
+            color: #fff;
+            user-select: none;
+        }
+
+        /* 气泡本体 */
+        .bubble {
+            position: relative;      /* 撤回/回复按钮以气泡为定位祖先 */
+            max-width: 100%;         /* 竖排容器已经限宽，气泡不再溢出 */
+            min-width: 0;
+            padding: 8px 12px 9px;
             background: var(--card);
             border: 1px solid var(--border);
-            border-radius: 12px;
-            box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+            border-radius: 14px;
+            border-top-left-radius: 4px;   /* 靠头像那一角收窄，形成指向感 */
+            box-shadow: var(--shadow);
         }
-        .message-box.own {
-            align-self: flex-end;
-            background: var(--accent-soft);
-            border-color: var(--accent-soft-strong);
+        .message-box.own .bubble {
+            background: var(--bubble-own);
+            border-color: var(--bubble-own);
+            border-top-left-radius: 14px;
+            border-top-right-radius: 4px;
+            color: var(--bubble-own-ink);
         }
-        .sender { margin: 0; font-size: 12px; font-weight: 700; color: var(--accent); }
-        .message-box.own .sender { color: var(--muted); }
-        .time { margin: 1px 0 4px; font-size: 11px; color: var(--muted); }
+        .bubble-head { display: flex; align-items: baseline; }
+        .sender { margin: 0; font-size: 12px; font-weight: 700; color: var(--bubble-name); }
+        /* 自己发的消息不再重复标名字（谁发的一眼就知道）。
+           注意 display:none 会让 .sender 的 innerText 变成空串，所以撤回/删除
+           一律按 .message-box 的 data-name/data-time 匹配，不再读这里的文本 */
+        .message-box.own .sender { display: none; }
+
+        /* 气泡外面再包一层竖排容器：上面气泡、下面时间。
+           为什么要这一层：消息本身就是 row-reverse（自己发的头像在右），
+           时间若直接当 .message-box 的第三个子项，视觉上会跑到最左边 ——
+           离气泡十万八千里。放进竖排容器里就永远贴着气泡底边。 */
+        .msg-col {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            min-width: 0;            /* 允许收缩，超长串才能换行 */
+        }
+        .message-box.own .msg-col { align-items: flex-end; }
+
+        /* 时间戳：挂在气泡**下面**，不再挤在名字右边。
+           好处是正文第一行左边始终对齐，名字有没有都不影响排版。
+           要不要显示由设置页的「显示消息时间」控制（lib/chat-prefs.js），
+           关掉时 JS 根本不生成这个节点，不是用 CSS 藏起来。 */
+        .time {
+            margin: 3px 0 0;
+            padding: 0 2px;
+            font-size: 11px;
+            line-height: 1.4;
+            color: var(--bubble-time);
+            white-space: nowrap;
+        }
+
         /* pre-wrap 保留消息里的换行 */
         .content { margin: 0; font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+        /* 名字下面紧跟引用块或正文时留一点空隙 */
+        .bubble-head + .content,
+        .bubble-head + .reply-quote { margin-top: 3px; }
+        .reply-quote + .content { margin-top: 5px; }
+        /* 纯图片消息不需要内边距与行高，让缩略图自己撑满气泡 */
+        .bubble.has-image { padding: 4px; }
+        .bubble.has-image .content { line-height: 0; }
+        /* 图片 + 引用块同在一条消息里时，引用块要自己的内边距 */
+        .bubble.has-image .reply-quote { margin: 4px 4px 6px; }
 
-        /* 撤回按钮：只出现在自己消息上，悬停才显示 */
-        .revoke-btn {
+        /* 引用块：显示"回复的是哪条"。整块可点，点了滚到原消息并闪一下 */
+        .reply-quote {
+            display: block;
+            width: 100%;
+            text-align: left;
+            margin: 0;
+            padding: 5px 9px;
+            border: none;
+            border-left: 3px solid var(--accent);
+            border-radius: 0 8px 8px 0;
+            background: var(--reply-bg);
+            color: var(--reply-ink);
+            font-size: 12px;
+            line-height: 1.45;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .reply-quote:hover { filter: brightness(.97); }
+        .message-box.own .reply-quote {
+            border-left-color: var(--bubble-own-ink);
+            background: var(--reply-bg-own);
+            color: var(--reply-ink-own);
+        }
+        .reply-who { font-weight: 700; }
+        /* 引用摘要最多两行，超出省略 —— 它只是用来认路的 */
+        .reply-text {
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow: hidden;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* @某人 的高亮：消息正文里的 @名字 与输入框里的都走这个色 */
+        .mention {
+            padding: 0 2px;
+            border-radius: 4px;
+            background: var(--mention-bg);
+            color: var(--mention-ink);
+            font-weight: 600;
+        }
+        .message-box.own .mention { background: var(--mention-bg-own); color: var(--mention-ink-own); }
+        /* 消息里有 @ 我自己：气泡左上角挂一条竖线，一眼能从一屏消息里挑出来 */
+        .message-box.mentions-me .bubble {
+            box-shadow: var(--shadow), inset 3px 0 0 var(--accent);
+        }
+
+        /* 回复/撤回按钮条：悬停时浮在气泡上方。
+           触屏没有 hover，所以另有一个常驻的「⋯」按钮（.msg-more）：
+           点它给这条消息加 .actions-open，操作条就展开；点别处收起。 */
+        .msg-actions {
             position: absolute;
             top: -9px;
-            right: 10px;
+            right: 8px;
+            display: flex;
+            opacity: 0;
+            transition: opacity .15s;
+            z-index: 2;
+        }
+        .msg-actions.msg-actions > * + * { margin-left: 4px; }
+        /* 隐藏时不接收点击：否则触屏上会点到看不见的「撤回」 */
+        .msg-actions { pointer-events: none; }
+        .message-box:hover .msg-actions { opacity: 1; pointer-events: auto; }
+        /* 展开态：即使指针没悬停也保持可见 */
+        .message-box.actions-open .msg-actions { opacity: 1; pointer-events: auto; }
+        /* 「⋯」按钮：触屏唯一的入口。桌面端（能 hover）不显示，
+           触屏（hover: none）常驻。位置与操作条一致，展开后就地变成「回复/撤回」。 */
+        .msg-more {
+            position: absolute;
+            top: -10px;
+            right: 8px;
+            display: none;
+            padding: 2px 8px;
+            border: none;
+            border-radius: 999px;
+            font-size: 13px;
+            line-height: 16px;
+            cursor: pointer;
+            background: var(--fill-strong);
+            color: var(--text);
+            z-index: 3;
+        }
+        @media (hover: none), (pointer: coarse) {
+            .msg-more { display: block; }
+        }
+        /* 已经展开时「⋯」藏掉，免得和展开出来的按钮挤在一起 */
+        .message-box.actions-open .msg-more { display: none; }
+        .msg-actions button {
             padding: 2px 10px;
-            background: var(--danger);
-            color: var(--on-danger);
             border: none;
             border-radius: 999px;
             font-size: 11px;
+            line-height: 16px;
             cursor: pointer;
-            opacity: 0;
-            transition: opacity .15s;
+            background: var(--fill-strong);
+            color: var(--text);
         }
-        .message-box:hover .revoke-btn { opacity: 1; }
-        .revoke-btn:hover { background: var(--danger-hover, #e63535); }
+        .msg-actions button:hover { background: var(--accent-soft-strong); }
+        .msg-actions button.danger {
+            background: var(--danger);
+            color: var(--on-danger);
+        }
+        .msg-actions button.danger:hover { background: var(--danger-hover, #e63535); }
+
+        /* 「回复了某某」的输入框上方提示条：选中要回复的消息后出现 */
+        .reply-bar {
+            display: none;
+            align-items: center;
+            padding: 7px 16px;
+            background: var(--accent-soft);
+            border-top: 1px solid var(--border);
+            font-size: 12.5px;
+            color: var(--text-2);
+        }
+        .reply-bar.show { display: flex; }
+        .reply-bar .reply-bar-who { font-weight: 700; color: var(--accent); }
+        .reply-bar .reply-bar-text {
+            flex: 1;
+            min-width: 0;
+            margin-left: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--muted);
+        }
+        .reply-bar .reply-bar-close {
+            flex: 0 0 auto;
+            width: 22px; height: 22px;
+            padding: 0;
+            margin-left: 8px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+        }
+        .reply-bar .reply-bar-close:hover { background: var(--fill); color: var(--text); }
+
+        /* @ 选人浮层：挂在输入框上方，键盘上下选、回车确定 */
+        .mention-pop {
+            position: absolute;
+            bottom: 100%;
+            left: 12px;
+            max-width: 260px;
+            max-height: 190px;
+            margin-bottom: 6px;
+            z-index: 59;
+            display: none;
+            flex-direction: column;
+            overflow-y: auto;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+        }
+        .mention-pop.show { display: flex; }
+        .mention-pop button {
+            display: flex;
+            align-items: center;
+            padding: 6px 10px;
+            border: none;
+            background: transparent;
+            color: var(--text);
+            font-size: 13px;
+            text-align: left;
+            cursor: pointer;
+        }
+        .mention-pop button.active { background: var(--accent-soft-strong); color: var(--accent); font-weight: 600; }
+        .mention-pop button .avatar { width: 20px; height: 20px; }
+        .mention-pop button .avatar-text { font-size: 10px; }
+        .mention-pop button span.mn { margin-left: 8px; }
+
+        /* 跳到被回复的那条消息时闪一下，否则用户不知道滚到了哪里 */
+        @keyframes msgFlash {
+            0% { background: var(--accent-soft-strong); }
+            100% { background: transparent; }
+        }
+        .message-box.flash .bubble { animation: msgFlash 1.2s ease-out; }
 
         /* 错误提示浮层（服务端 err 消息，如私聊对象不存在） */
         .error-toast {
@@ -1418,9 +2707,9 @@
 
         /* 图片消息缩略图（配合 ImageB64: 前缀协议） */
         .img-message {
-            max-width: 200px;
-            max-height: 200px;
-            border-radius: 8px;
+            max-width: 220px;
+            max-height: 220px;
+            border-radius: 10px;
             display: block;
             cursor: zoom-in;
         }
@@ -1590,6 +2879,29 @@
             background: var(--danger-soft);
             color: var(--danger);
         }
+        .pick-panel .pick-actions button.ghost {
+            background: var(--fill);
+            color: var(--muted);
+        }
+        .pick-panel .pick-actions button.ghost:hover {
+            background: var(--fill-strong);
+            color: var(--text);
+            border-color: var(--border);
+        }
+
+        /* 面板两种用途（发图 / 换头像）靠 data-mode 切换按钮，
+           不用 JS 逐个改 display —— 少一半状态要同步 */
+        .pick-panel .pick-actions #pickResetAvatar { display: none; }
+        .pick-panel .pick-actions #pickSetAvatar { display: none; }
+        .pick-panel[data-mode="avatar"] .pick-actions #pickSend { display: none; }
+        .pick-panel[data-mode="avatar"] .pick-actions #pickDelete { display: none; }
+        .pick-panel[data-mode="avatar"] .pick-actions #pickSetAvatar { display: block; }
+        /* 「恢复默认」不依赖选中项，头像模式下常驻在操作条最左边 */
+        .pick-panel[data-mode="avatar"] .pick-actions #pickResetAvatar { display: block; }
+        /* 头像模式下没必要让用户先点一张图才能看到操作条：
+           操作条本身在选中时才 .show，这里让它在整个头像模式里都可见 */
+        .pick-panel[data-mode="avatar"] .pick-actions { display: flex; }
+        .pick-panel[data-mode="avatar"] .pick-actions #pickSetAvatar:disabled { opacity: .5; cursor: default; }
         .pick-hint {
             padding: 18px 8px;
             text-align: center;
@@ -1599,7 +2911,11 @@
 
         /* 小屏适配 */
         @media (max-width: 600px) {
-            .message-box { max-width: 88%; }
+            .message-box { max-width: 92%; }
+            .avatar { width: 28px; height: 28px; }
+            .message-box.message-box > * + * { margin-left: 6px; }
+            .message-box.own.own > * + * { margin-left: 0; margin-right: 6px; }
+            .avatar-text { font-size: 13px; }
             /* 换行后行首不该带左边距，间距改到子项右侧 */
             .inputbar { flex-wrap: wrap; }
             .inputbar > * + * { margin-left: 0; }
@@ -1615,6 +2931,11 @@
             <h1>Chat</h1>
         </div>
         <div class="meta">
+            <span id="connDot" class="conn-dot wait" title="正在连接…"></span>
+            <button id="avatarBtn" class="avatar-btn" title="更换头像" type="button">
+                <span id="meAvatar" class="avatar-slot"></span>
+                <span class="avatar-btn-text">换头像</span>
+            </button>
             <span id="meName" class="me"></span>
             <a href="/userList">查看用户列表</a>
             <a class="nav-setting" href="/setting" title="设置">⚙ 设置</a>
@@ -1637,7 +2958,18 @@
         <div class="right-col">
             <main id="MsgBox" class="chat-area"></main>
 
+            <!-- 回复提示条：选中某条消息的「回复」后出现，发送或点 ✕ 消失。
+                 放在消息区与输入栏之间，用 flex 自然撑开，不遮消息。 -->
+            <div id="replyBar" class="reply-bar">
+                <span id="replyBarWho" class="reply-bar-who"></span>
+                <span id="replyBarText" class="reply-bar-text"></span>
+                <button id="replyBarClose" class="reply-bar-close" type="button" title="取消回复">✕</button>
+            </div>
+
             <footer class="inputbar">
+                <!-- @ 补全候选面板：浮在输入栏上方（.inputbar 是 position:relative，
+                     所以 bottom:100% 正好贴着它上沿）。 -->
+                <div id="mentionPop" class="mention-pop"></div>
                 <input type="text" id="user" placeholder="私聊对象，留空发到群里；填日期(yyyy-MM-dd)浏览该日群聊">
                 <textarea id="content" rows="1" placeholder="输入消息，Enter 换行，Ctrl+Enter 发送"></textarea>
                 <button id="imgBtn" class="ghost" title="发送图片（本地选取或从缓存中选择）">🖼️</button>
@@ -1645,9 +2977,12 @@
                 <button id="sendBtn">发送</button>
                 <button id="refreshBtn" class="ghost">刷新</button>
 
-                <!-- 图片选择面板：🖼️ 触发，浮在输入栏上方（绝对定位，不占 flex 流） -->
+                <!-- 图片选择面板：🖼️ 触发（发图）或顶栏「换头像」触发（设头像），
+                     浮在输入栏上方（绝对定位，不占 flex 流）。
+                     两种用途共用同一个面板，靠 .pick-panel 上的 data-mode 区分：
+                     mode=send 显示「发送」，mode=avatar 显示「设为头像 / 恢复默认」。 -->
                 <div id="pickMask" class="pick-mask"></div>
-                <div id="pickPanel" class="pick-panel">
+                <div id="pickPanel" class="pick-panel" data-mode="send">
                     <div class="pick-head">
                         <div class="pick-tabs">
                             <button type="button" id="pickTabCache" class="active">缓存图片</button>
@@ -1665,12 +3000,14 @@
                             点击选择本地图片（≤10MB）
                         </button>
                     </div>
-                    <!-- 点中缩略图后浮出的操作条：查看 / 删除 / 发送 -->
+                    <!-- 点中缩略图后浮出的操作条：查看 / 删除 / 发送（头像模式下最后一个换成为头像） -->
                     <div id="pickActions" class="pick-actions">
                         <span id="pickSelName" class="pick-sel-name"></span>
+                        <button type="button" id="pickResetAvatar" class="ghost">恢复默认</button>
                         <button type="button" id="pickView">查看</button>
                         <button type="button" id="pickDelete" class="danger">删除</button>
                         <button type="button" id="pickSend" class="primary">发送</button>
+                        <button type="button" id="pickSetAvatar" class="primary">设为头像</button>
                     </div>
                 </div>
             </footer>

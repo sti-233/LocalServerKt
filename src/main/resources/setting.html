@@ -8,6 +8,7 @@
     <script src="/resources/lib/theme.js"></script>
     <link rel="stylesheet" href="/resources/lib/lightbox.css">
     <script src="/resources/lib/lightbox.js"></script>
+    <script src="/resources/lib/chat-prefs.js"></script>
     <script src="/resources/config.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -220,6 +221,20 @@
             </div>
         </section>
 
+        <!-- 聊天 -->
+        <section class="card">
+            <h2>聊天</h2>
+            <p class="hint">
+                聊天页的显示偏好。和图片查看一样存在 path=/ 的 Cookie 里，跨页面、跨标签页共享，
+                改了立即生效（聊天页开着也会同步）。
+            </p>
+            <div class="switch-row" id="chatRow">
+                <label class="switch-opt" data-key="showTime">
+                    <input type="checkbox" id="chatShowTime">显示消息时间
+                </label>
+            </div>
+        </section>
+
         <!-- 服务端配置 -->
         <section class="card">
             <h2>服务端保存的配置</h2>
@@ -277,7 +292,7 @@
 
         // ===== 图片查看（lightbox 顶部控件显隐） =====
         // 偏好存在 path=/ 的 Cookie ls_lightbox 里（由 lib/lightbox.js 维护），全站共享
-        var lbOpts = document.querySelectorAll('.switch-opt');
+        var lbOpts = document.querySelectorAll('#lbRow .switch-opt');
 
         function paintLightbox() {
             var p = Lightbox.prefs.get();
@@ -299,6 +314,28 @@
             paintLightbox();
         });
         paintLightbox();
+
+        // ===== 聊天（消息时间显隐） =====
+        // 偏好由 lib/chat-prefs.js 维护（path=/ Cookie + BroadcastChannel），
+        // 聊天页监听了同一个频道，所以在这里一改，开着的聊天页立刻跟着变
+        var chatOpts = document.querySelectorAll('#chatRow .switch-opt');
+
+        function paintChat() {
+            var p = ChatPrefs.get();
+            for (var i = 0; i < chatOpts.length; i++) {
+                var el = chatOpts[i];
+                var on = !!p[el.getAttribute('data-key')];
+                el.classList.toggle('active', on);
+                var cb = el.querySelector('input');
+                if (cb) cb.checked = on;
+            }
+        }
+
+        document.getElementById('chatShowTime').addEventListener('change', function () {
+            ChatPrefs.set({ showTime: this.checked });
+            paintChat();
+        });
+        paintChat();
 
         // ===== 服务端配置 =====
         function esc(s) {
