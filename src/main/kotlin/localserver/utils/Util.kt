@@ -194,7 +194,7 @@ object Util {
     // 用户名同时被当成「归档文件名的一部分」和「消息体里的发送者」，改名之后两头都对不上：
     //   - 私聊归档叫 history_旧名-对方.json，与新名字拼出来的 getTarget(新名, 对方) 不符，
     //     chat.html 的 `p.split('-').includes(me)` 直接跳过整条会话 → 侧边栏里会话消失，
-    //     手打旧名也读不出来（/history 会因 userExists(旧名) 为 false 回 400）；
+    //     手打旧名也读不出来（/history 会因 nameExists(旧名) 为 false 回 400）；
     //   - 消息体的 name 还是旧名，前端 `msg.name === me` 不成立，自己发的旧消息被当成
     //     别人发的（亮未读红点、没有撤回按钮）。
     // 所以改名必须连带迁移数据，且要做到「没改过名也跑不坏」（幂等）。
@@ -341,6 +341,23 @@ object Util {
         return Util.getUserList().firstOrNull { it.name.equals(name) }?.ip ?: throw Exception("User is null!")
     }
 
+    /**
+     * 用户列表里是否登记了这个**名字**。
+     *
+     * 校验「私聊对象」必须用它，不能用 [userExists]：那里连 IP 也算命中，于是把内网地址
+     * 填进输入框也能过校验、落一份 `history_192.168.3.32-我.json`，到 [getUserIp] 按名字
+     * 查时抛 `User is null!` —— 消息已经存档了，连接却被拆掉（用户看到的是「发一条就断线」）。
+     */
+    fun nameExists(name: String): Boolean {
+        return Util.getUserList().firstOrNull { it.name == name } != null
+    }
+
+    /**
+     * 这个键（IP 或名字）是否在用户列表里。
+     *
+     * **不要**拿它校验私聊对象（见 [nameExists]）：只有「IP 也算」的场合才用它，
+     * 例如改名时判断某个键是否还被占着。
+     */
     fun userExists(key: String): Boolean {
         return Util.getUserList().firstOrNull { (it.ip == key).or(it.name.equals(key)) } != null
     }

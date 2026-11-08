@@ -99,7 +99,9 @@ object Chat {
             val targetUser = call.parameters["targetuser"]
             val date = call.parameters["date"]?.takeIf { it.matches(Regex("\\d{4}-\\d{2}-\\d{2}")) }
             val current = Util.getUserName(call.request.local.remoteAddress)
-            if (!targetUser.isNullOrEmpty() && !Util.userExists(targetUser)) {
+            // 只认名字：userExists 连 IP 也算命中，填个内网地址就能过校验，
+            // 之后 getUserIp 按名字查不到才炸 —— 这是「User is null!」的来源之一
+            if (!targetUser.isNullOrEmpty() && !Util.nameExists(targetUser)) {
                 call.respondText(
                     "私聊对象 '$targetUser' 不存在于用户列表，请确认名字正确或先添加该用户",
                     status = HttpStatusCode.BadRequest
@@ -597,12 +599,21 @@ object Chat {
         sendTo: String? = null
     ) = deliver(listOf(to), Json.encodeToString(Content("err", current, Time.getCurrentTimeWithDate(), text, sendTo)))
 
-    /** 这条消息该发给谁：群聊是所有人；私聊是对方的全部连接 ∪ 自己的全部连接 */
+    /**
+     * 这条消息该发给谁：群聊是所有人；私聊是对方的全部连接 ∪ 自己的全部连接。
+     *
+     * 解析不出对方的 IP（名字不在名单里、或名单刚被改名/删掉）时**只影响发给谁**，
+     * 不能让异常冒到读循环把整条连接拆了 —— 那是「User is null!」把用户踢下线的老路径。
+     * 这种情况下至少把自己这条回执发回去，发送者的页面照常显示，不是静默失败。
+     */
     private fun targetsFor(me: Client, sendTo: String?): List<Client> =
         if (sendTo.isNullOrEmpty()) clients.values.toList()
         // 自己发给自己时两边是同一批 IP，按 id 去重后每部设备只收一次；
         // 多标签页时自己的另一个标签页也能同步看到。
-        else (clientsOf(Util.getUserIp(sendTo)) + clientsOf(me.ip)).distinctBy { it.id }
+        else {
+            val otherIp = runCatching { Util.getUserIp(sendTo) }.getOrNull()
+            (otherIp?.let { clientsOf(it) }.orEmpty() + clientsOf(me.ip)).distinctBy { it.id }
+        }
 
     /**
      * 一条 `send` 消息：校验私聊对象与图片引用，落历史并广播。
@@ -613,9 +624,12 @@ object Chat {
      */
     private fun handleSend(me: Client, json: Content, current: String) {
         val sendTo = json.sendTo
-        // 私聊对象不在用户列表时直接回 err，避免 getUserIp 抛异常导致整个连接被断开
-        if (!sendTo.isNullOrEmpty() && !Util.userExists(sendTo)) {
-            err(me, current, "私聊对象 '$sendTo' 不存在于用户列表，请确认名字正确或先添加该用户", sendTo)
+        // 私聊对象不在用户列表时直接回 err，避免 getUserIp 抛异常导致整个连接被断开。
+        // 必须按**名字**校验：userExists 连 IP 也算命中，往输入框里填个内网地址就能过这一关，
+        // 消息先落盘（archive 里多出一份 history_192.168.3.32-我.json），广播时 getUserIp
+        // 按名字查不到才抛 "User is null!" —— 连接被拆、消息却已经进存档。
+        if (!sendTo.isNullOrEmpty() && !Util.nameExists(sendTo)) {
+            err(me, current, "私聊对象 '$sendTo' 不是已登记的用户名（这里填名字，不是 IP），请用侧边栏或 @ 选择", sendTo)
             return
         }
 
@@ -672,8 +686,8 @@ object Chat {
      */
     private fun handleDel(me: Client, json: Content, current: String) {
         val sendTo = json.sendTo
-        if (!sendTo.isNullOrEmpty() && !Util.userExists(sendTo)) {
-            err(me, current, "私聊对象 '$sendTo' 不存在于用户列表，无法撤回", sendTo)
+        if (!sendTo.isNullOrEmpty() && !Util.nameExists(sendTo)) {
+            err(me, current, "私聊对象 '$sendTo' 不是已登记的用户名（这里填名字，不是 IP），无法撤回", sendTo)
             return
         }
         // 同样先改存档再广播：撤回后立刻刷新不该又看见那条消息。
