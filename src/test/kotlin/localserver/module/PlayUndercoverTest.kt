@@ -236,6 +236,27 @@ class PlayUndercoverTest {
     // ===== 出局只公布身份 =====
 
     @Test
+    fun `restarting a room rerolls the undercover seat`() {
+        // 同一个房间反复重开，卧底座位不能和上一局完全一样 ——
+        // 5 人局只有 5 种分法，纯随机时连撞两局有 20%，玩家会以为卧底是固定的。
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        val engine = engineOf(room)
+        var prev: Set<String>? = null
+        repeat(20) { round ->
+            assertNull(engine.start(room), "第 $round 局没开起来")
+            val w = words(room)
+            val majority = w.values.groupingBy { it }.eachCount().maxByOrNull { it.value }!!.key
+            val u = w.filterValues { it != majority }.keys
+            assertEquals(1, u.size)
+            if (prev != null) {
+                assertNotEquals(prev, u, "第 $round 局卧底座位和上一局完全一样")
+            }
+            prev = u
+            engine.endGame(room)
+        }
+    }
+
+    @Test
     fun `elimination publishes identity but never the word`() {
         val room = newRoom("甲", "乙", "丙", "丁", "戊")
         room.customGroup = listOf("柠檬水", "橘子水")

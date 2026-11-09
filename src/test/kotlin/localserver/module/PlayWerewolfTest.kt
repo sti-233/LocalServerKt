@@ -4,6 +4,7 @@ import kotlinx.serialization.json.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -896,6 +897,24 @@ class PlayWerewolfTest {
         assertTrue(gs["myRole"] is JsonNull)
         assertEquals(0, gs["seerChecks"]!!.jsonObject.size)
         assertEquals(0, gs["deaths"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `restarting a room rerolls every seat`() {
+        // 同一个房间反复重开，每次的身份分配都必须和上一局不同 ——
+        // 5 人局只有 5 种分法，纯随机时「连撞两局」有 20%，玩家会以为身份是固定的。
+        val room = newRoom(5)
+        val engine = engineOf(room)
+        var prev: Map<String, String>? = null
+        repeat(20) { round ->
+            engine.start(room)
+            val deal = room.seats.keys.associateWith { roleOf(room, it) }
+            if (prev != null) {
+                assertNotEquals(prev, deal, "第 $round 局的角色分配和上一局完全一样")
+            }
+            prev = deal
+            engine.endGame(room)
+        }
     }
 
     // ===== 测试辅助（依赖上面那些动作） =====

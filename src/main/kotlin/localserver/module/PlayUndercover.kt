@@ -31,6 +31,12 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
     /** 本次实际使用的词组快照，用于结束后公布两个词。 */
     private var groupSnapshot: List<String> = emptyList()
 
+    /**
+     * 上一局的卧底座位。重开时避开它 —— 5 人局只有 5 种分法，
+     * 连撞两局（20%）足够让人以为卧底是固定的。
+     */
+    private var lastUndercoverSeats: Set<String> = emptySet()
+
     private val random = SecureRandom()
 
     override fun start(room: Play.Room): String? {
@@ -56,10 +62,16 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         val pair = group.toMutableList().also { Collections.shuffle(it, random) }
         val civilianWord = pair[0]
         val undercoverWord = pair[1]
-        val undercoverSeats = seats.toMutableList()
-            .also { Collections.shuffle(it, random) }
-            .take(k)
-            .toSet()
+        // 卧底座位每局重抽，但避开上一局：连撞两局会让人以为卧底是固定的。
+        // 重试有上限，凑不出新分配就接受结果 —— 不能因为撞车开不了局。
+        var picked = pickUndercover(seats, k)
+        var attempt = 1
+        while (attempt < DEAL_ATTEMPTS && picked == lastUndercoverSeats) {
+            picked = pickUndercover(seats, k)
+            attempt++
+        }
+        lastUndercoverSeats = picked
+        val undercoverSeats = picked
 
         words.clear()
         roles.clear()
@@ -183,6 +195,13 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         put("result", if (result == null) JsonNull else JsonPrimitive(result!!))
     }
 
+    /** 随机抽 [k] 个座位当卧底。抽出来是为了「重开避开上一局」能重试。 */
+    private fun pickUndercover(seats: List<String>, k: Int): Set<String> =
+        seats.toMutableList()
+            .also { Collections.shuffle(it, random) }
+            .take(k)
+            .toSet()
+
     override fun onEndGame(room: Play.Room) {
         words.clear()
         roles.clear()
@@ -193,6 +212,9 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         this[key]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
 
     companion object {
+
+        /** 重开时避开上一局的尝试次数。5 人局只有 5 种分法，几次就能撞开。 */
+        private const val DEAL_ATTEMPTS = 24
         /**
          * 内置词库。**只放在服务端**：放进 `resources/` 的话会被 `/resources` 直接下载，
          * 等于把答案贴出来。

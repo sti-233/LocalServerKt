@@ -56,6 +56,15 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
 
     private var lastDeaths: List<String> = emptyList()
 
+    /**
+     * 上一局的角色分配，用来保证「重开一局」不会原样照搬。
+     *
+     * 身份每局都重新洗牌，但 5 人 1 狼只有 5 种可能，撞上「狼还是他」的概率有 20% ——
+     * 玩家撞见一次就会认定身份是固定的。这里最多试 [DEAL_ATTEMPTS] 次，
+     * 只要求结果与上一局不同（不强求「每个人都不一样」，那在 4 人局里做不到）。
+     */
+    private var lastDeal: Map<String, String> = emptyMap()
+
     private val random = SecureRandom()
 
     // ===== 开局 =====
@@ -65,14 +74,17 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         if (seats.size < 4) return "至少需要 4 名玩家"
         val config = roster(seats.size) ?: return "人数超出支持范围（4-12 人）"
 
-        val shuffled = seats.toMutableList().also { Collections.shuffle(it, random) }
+        // 洗牌重发，但避开上一局的分配：连着两局身份一模一样会让人以为身份是固定的。
+        // 重试仍有上限，凑不出新分配（例如所有玩家都退过房）就接受结果，不能因为撞车开不了局。
+        var deal = dealRoles(seats, config)
+        var attempt = 1
+        while (attempt < DEAL_ATTEMPTS && deal == lastDeal) {
+            deal = dealRoles(seats, config)
+            attempt++
+        }
+        lastDeal = deal
         roles.clear()
-        var i = 0
-        repeat(config.wolves) { roles[shuffled[i++]] = "wolf" }
-        roles[shuffled[i++]] = "seer"
-        roles[shuffled[i++]] = "witch"
-        if (config.guard > 0) roles[shuffled[i++]] = "guard"
-        while (i < shuffled.size) roles[shuffled[i++]] = "villager"
+        roles.putAll(deal)
 
         seerChecks.clear()
         antidoteLeft = 1
@@ -88,6 +100,19 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     }
 
     // ===== 夜间流程 =====
+
+    /** 洗一次牌并按座位发角色。抽出来是为了「重开避开上一局」能重试。 */
+    private fun dealRoles(seats: List<String>, config: Roster): Map<String, String> {
+        val shuffled = seats.toMutableList().also { Collections.shuffle(it, random) }
+        val deal = LinkedHashMap<String, String>()
+        var i = 0
+        repeat(config.wolves) { deal[shuffled[i++]] = "wolf" }
+        deal[shuffled[i++]] = "seer"
+        deal[shuffled[i++]] = "witch"
+        if (config.guard > 0) deal[shuffled[i++]] = "guard"
+        while (i < shuffled.size) deal[shuffled[i++]] = "villager"
+        return deal
+    }
 
     private fun livingWithRole(role: String): List<String> = alive.filter { roles[it] == role }
 
@@ -539,6 +564,9 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
 
         /** 每个角色 1 分钟不操作就自动替他决定并跳过。 */
         private const val NIGHT_STEP_MS = 60_000L
+
+        /** 重开时避开上一局的尝试次数。5 人局只有 5 种分配，几次就能撞开。 */
+        private const val DEAL_ATTEMPTS = 24
 
         internal fun roster(n: Int): Roster? = when (n) {
             4 -> Roster(wolves = 1, guard = 0)
