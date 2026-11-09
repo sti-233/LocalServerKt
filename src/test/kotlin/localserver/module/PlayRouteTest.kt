@@ -205,7 +205,7 @@ class PlayRouteTest {
             sendJson(frame("action").let {
                 buildJsonObject {
                     put("type", JsonPrimitive("action"))
-                    put("action", JsonPrimitive("startVote"))
+                    put("action", JsonPrimitive("vote"))
                     put("data", JsonObject(emptyMap()))
                 }
             })

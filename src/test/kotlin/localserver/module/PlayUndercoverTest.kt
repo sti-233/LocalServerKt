@@ -4,6 +4,7 @@ import kotlinx.serialization.json.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -13,6 +14,10 @@ import kotlin.test.assertTrue
  *
  * 这里刻意不通过 HTTP/WS 打进来，而是直接驱动 [PlayUndercover] + [Play.Room] ——
  * 要验证的是规则本身（谁赢、词怎么分、身份什么时候公开），房间与协议由 PlayRouteTest 覆盖。
+ *
+ * 流程已经全自动了：讨论阶段人人发一次言 ⇒ 自动进投票；全员表态（投票或弃票）⇒ 5 秒后
+ * 自动结算。测试里把 [GameEngine.voteSettleDelayMs] 压成 0 再调 [GameEngine.tick]，
+ * 免得单测真的睡 5 秒。
  */
 class PlayUndercoverTest {
 
@@ -26,6 +31,7 @@ class PlayUndercoverTest {
             }
         }
         room.hostSeat = "s0"
+        room.engine.voteSettleDelayMs = 0
         return room
     }
 
@@ -33,6 +39,9 @@ class PlayUndercoverTest {
 
     private fun JsonObject.str(key: String): String? =
         this[key]?.jsonPrimitive?.contentOrNull
+
+    private fun JsonObject.bool(key: String): Boolean =
+        this[key]!!.jsonPrimitive.boolean
 
     /** 每个座位看到的自己的词。 */
     private fun words(room: Play.Room): Map<String, String> =
@@ -47,17 +56,50 @@ class PlayUndercoverTest {
         return w.entries.first { it.value != majority }.key
     }
 
-    private fun act(room: Play.Room, seat: String, action: String, data: JsonObject = JsonObject(emptyMap())): List<String> =
-        engineOf(room).action(room, seat, action, data)
-
-    /** 直接拿动作返回的日志行（比翻 room.log 稳，不会被前面的历史干扰）。 */
-    private fun actLines(room: Play.Room, seat: String, action: String, data: JsonObject = JsonObject(emptyMap())): String =
-        act(room, seat, action, data).joinToString("\n")
+    /**
+     * 动作返回的日志行本来由 [Play.doAction] 写进房间日志，测试直接驱动引擎，
+     * 得自己补上，否则「身份：平民」这类断言永远看不到（tick 内部的结算会自己写）。
+     */
+    private fun act(
+        room: Play.Room,
+        seat: String,
+        action: String,
+        data: JsonObject = JsonObject(emptyMap())
+    ): List<String> = engineOf(room).action(room, seat, action, data)
+        .also { lines -> lines.forEach { room.addLog(it) } }
 
     private fun vote(room: Play.Room, seat: String, target: String) =
         act(room, seat, "vote", buildJsonObject { put("target", target) })
 
-    /** 当前房主（房主可能因出局而转移）。 */
+    private fun abstain(room: Play.Room, seat: String) = act(room, seat, "abstain")
+
+    /** 全员发言：发言就是发一条公共聊天，由框架转成 [GameEngine.noteSpoken]。 */
+    private fun speakAll(room: Play.Room) {
+        room.engine.alive.forEach { room.engine.noteSpoken(room, it).forEach { l -> room.addLog(l) } }
+    }
+
+    /** 除了 [except] 之外所有存活的人都投给 [target]。 */
+    private fun voteAllExcept(room: Play.Room, target: String, except: Set<String> = emptySet()) {
+        room.engine.alive.filter { it != target && it !in except }.forEach { vote(room, it, target) }
+    }
+
+    /** 全员表态后让心跳把票结算掉。 */
+    private fun settle(room: Play.Room): Boolean = room.engine.tick(room)
+
+    /**
+     * 一轮完整投票：全员发言 → 除 target 外都投他 → target 自己弃票 → 结算。
+     *
+     * [target] 必须表态：投票阶段等的是「人人表态」，被投的那个人既不投也不弃，
+     * 这一步就永远收不齐，结算截止时刻也不会被压到 5 秒后。
+     */
+    private fun round(room: Play.Room, target: String, voters: List<String>? = null) {
+        speakAll(room)
+        val v = voters ?: room.engine.alive.filter { it != target }
+        v.forEach { vote(room, it, target) }
+        abstain(room, target)
+        settle(room)
+    }
+
     private fun hostOf(room: Play.Room): String = room.hostSeat
 
     // ===== 开局 =====
@@ -79,14 +121,21 @@ class PlayUndercoverTest {
     }
 
     @Test
+    fun `start enters the discussion phase`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        assertNull(engineOf(room).start(room))
+        // 不给房主「发起投票」的按钮了：开局直接进讨论，发言齐了才投票
+        assertEquals("playing", room.engine.phase)
+    }
+
+    @Test
     fun `civilians share one word and undercover gets another`() {
         val room = newRoom("甲", "乙", "丙", "丁", "戊")
         assertNull(engineOf(room).start(room))
 
         val w = words(room)
         assertEquals(5, w.size)
-        val distinct = w.values.toSet()
-        assertEquals(2, distinct.size, "只该有两种词：平民词与卧底词")
+        assertEquals(2, w.values.toSet().size, "只该有两种词：平民词与卧底词")
 
         val counts = w.values.groupingBy { it }.eachCount().values.sorted()
         assertEquals(listOf(1, 4), counts, "5 人 1 卧底 = 4 平民 + 1 卧底")
@@ -123,10 +172,7 @@ class PlayUndercoverTest {
 
             val state = engine.view(room, viewer)
             state["players"]!!.jsonArray.forEach { p ->
-                assertTrue(
-                    p.jsonObject["role"] is JsonNull,
-                    "进行中任何人的身份都不能下发：$p"
-                )
+                assertTrue(p.jsonObject["role"] is JsonNull, "进行中任何人的身份都不能下发：$p")
             }
         }
     }
@@ -139,7 +185,6 @@ class PlayUndercoverTest {
 
         room.seats.keys.forEach { viewer ->
             val state = engine.view(room, viewer)
-            // 顶层只有 myWord（自己的），且 players 里不许出现 word 字段
             assertTrue(state.containsKey("myWord"))
             state["players"]!!.jsonArray.forEach { p ->
                 assertNull(p.jsonObject["word"], "players[] 里不允许有 word 字段")
@@ -151,21 +196,24 @@ class PlayUndercoverTest {
     fun `eliminated player learns their own role`() {
         val room = newRoom("甲", "乙", "丙", "丁", "戊")
         engineOf(room).start(room)
-        val target = "s4"
+        // 必须挑一个平民放逐：放逐卧底会直接结束对局，身份就全部公开了，测不到「只有出局者知道」。
+        val u = undercoverSeat(room)
+        val target = room.seats.keys.first { it != u }
+        val onlooker = room.seats.keys.first { it != target }
 
-        act(room, "s0", "startVote")
-        vote(room, "s0", target)
-        vote(room, "s1", target)
-        vote(room, "s2", target)
-        act(room, "s0", "resolveVote")
+        round(room, target)
 
         val engine = engineOf(room)
-        assertNotNull(
-            engine.gameState(room, target)["myRole"]?.takeIf { it !is JsonNull },
+        assertNotEquals("finished", room.engine.phase)
+        assertEquals(
+            "civilian",
+            engine.gameState(room, target)["myRole"]?.jsonPrimitive?.content,
             "出局后应该知道自己是什么身份"
         )
-        // 其他人依旧看不到
-        assertNull(engine.gameState(room, "s0")["myRole"]?.takeIf { it !is JsonNull })
+        assertNull(
+            engine.gameState(room, onlooker)["myRole"]?.takeIf { it !is JsonNull },
+            "还活着的玩家不应该知道自己的身份"
+        )
     }
 
     @Test
@@ -175,16 +223,11 @@ class PlayUndercoverTest {
         val engine = engineOf(room)
         val u = undercoverSeat(room)
 
-        act(room, "s0", "startVote")
-        val voters = room.seats.keys.filter { it != u }
-        voters.forEach { vote(room, it, u) }
-        if (room.seats.size > voters.size) vote(room, voters[0], u) // 补一票凑够
-        act(room, "s0", "resolveVote")
+        round(room, u)
 
         assertEquals("finished", room.engine.phase)
         room.seats.keys.forEach { viewer ->
-            val state = engine.view(room, viewer)
-            state["players"]!!.jsonArray.forEach { p ->
+            engine.view(room, viewer)["players"]!!.jsonArray.forEach { p ->
                 assertTrue(p.jsonObject["role"] !is JsonNull, "结束后身份应全部公开")
             }
         }
@@ -200,77 +243,150 @@ class PlayUndercoverTest {
         val u = undercoverSeat(room)
         val civilian = room.seats.keys.first { it != u }
 
-        act(room, "s0", "startVote")
-        // 放逐一个平民：局还没结束，此时绝不能出现任何词
-        room.seats.keys.filter { it != civilian }.forEach { vote(room, it, civilian) }
-        val lines = actLines(room, "s0", "resolveVote")
+        speakAll(room)
+        voteAllExcept(room, civilian)
+        abstain(room, civilian)
+        settle(room)
 
-        assertTrue(lines.contains("身份：平民"), "应公布身份：$lines")
-        assertTrue(!lines.contains("柠檬水") && !lines.contains("橘子水"), "不该公布词：$lines")
+        val text = room.log.joinToString("\n") { it["text"]!!.jsonPrimitive.content }
+        assertTrue(text.contains("身份：平民"), "应公布身份：$text")
+        assertTrue(!text.contains("柠檬水") && !text.contains("橘子水"), "不该公布词：$text")
         assertEquals("playing", room.engine.phase, "5 人局放逐 1 个平民后还要继续")
     }
 
-    // ===== 投票流程 =====
+    // ===== 讨论 → 投票（全自动） =====
+
+    @Test
+    fun `voting starts only after everyone has spoken`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        engineOf(room).start(room)
+
+        // 只让 4 个人说话，还差 1 个
+        room.engine.alive.take(4).forEach { room.engine.noteSpoken(room, it) }
+        assertEquals("playing", room.engine.phase, "没发完言不能开投票")
+
+        // 发起投票这类动作已经不存在了
+        assertFailsWith<PlayError> { act(room, hostOf(room), "startVote") }
+
+        room.engine.noteSpoken(room, room.engine.alive.last())
+        assertEquals("voting", room.engine.phase, "全员发言后自动进投票")
+    }
+
+    @Test
+    fun `speaking twice does not double count`() {
+        val room = newRoom("甲", "乙", "丙")
+        engineOf(room).start(room)
+        val s0 = room.engine.alive.first()
+
+        room.engine.noteSpoken(room, s0)
+        room.engine.noteSpoken(room, s0)
+        assertEquals(1, room.engine.spoken.count { it == s0 })
+        assertEquals("playing", room.engine.phase)
+    }
+
+    @Test
+    fun `vote settles automatically a few seconds after everyone has voted`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        engineOf(room).start(room)
+        val target = room.engine.alive.first()
+
+        speakAll(room)
+        room.engine.voteSettleDelayMs = 0
+        room.engine.alive.filter { it != target }.forEach { vote(room, it, target) }
+
+        // 还有人在表态，不能立刻结算
+        assertEquals("voting", room.engine.phase)
+        // 最后一个人弃票 ⇒ 全员表态，延迟 0 ⇒ 一次心跳就结算
+        abstain(room, target)
+        settle(room)
+        assertTrue(target !in room.engine.alive)
+    }
+
+    @Test
+    fun `abstaining counts as taking a stance`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        engineOf(room).start(room)
+        speakAll(room)
+
+        val alive = room.engine.alive.toList()
+        // 前 4 个人弃票，最后一个人照常弃票 —— 全员表态完就该结算
+        alive.forEach { abstain(room, it) }
+        settle(room)
+
+        val text = room.log.joinToString("\n") { it["text"]!!.jsonPrimitive.content }
+        assertTrue(text.contains("无人出局"), "全员弃票应判无人出局：$text")
+        assertEquals(alive.size, room.engine.alive.size, "没有人该被放逐")
+    }
+
+    @Test
+    fun `a tie means nobody is eliminated`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        engineOf(room).start(room)
+        speakAll(room)
+
+        val alive = room.engine.alive.toList()
+        // 4 个人分两派打成 2:2，第 5 个人弃票
+        vote(room, alive[0], alive[2])
+        vote(room, alive[1], alive[2])
+        vote(room, alive[2], alive[0])
+        vote(room, alive[3], alive[0])
+        abstain(room, alive[4])
+        settle(room)
+
+        assertEquals(alive.size, room.engine.alive.size, "平票时本轮无人出局")
+        assertEquals("playing", room.engine.phase, "平票后回到讨论，开下一轮")
+
+        // 房主裁决那套已经下线
+        assertFailsWith<PlayError> {
+            act(room, hostOf(room), "breakTie", buildJsonObject { put("target", alive[0]) })
+        }
+    }
 
     @Test
     fun `cannot vote for self or for a nonexistent seat`() {
         val room = newRoom("甲", "乙", "丙", "丁", "戊")
         engineOf(room).start(room)
+        speakAll(room)
 
-        act(room, "s0", "startVote")
         assertFailsWith<PlayError> { vote(room, "s0", "s0") }
         assertFailsWith<PlayError> { vote(room, "s0", "nobody") }
-    }
-
-    @Test
-    fun `only host can start and resolve`() {
-        val room = newRoom("甲", "乙", "丙")
-        engineOf(room).start(room)
-
-        assertFailsWith<PlayError> { act(room, "s1", "startVote") }
-        act(room, "s0", "startVote")
-        vote(room, "s0", "s1")
-        assertFailsWith<PlayError> { act(room, "s1", "resolveVote") }
-    }
-
-    @Test
-    fun `tie waits for host decision`() {
-        val room = newRoom("甲", "乙", "丙", "丁", "戊")
-        engineOf(room).start(room)
-        val engine = engineOf(room)
-
-        act(room, "s0", "startVote")
-        vote(room, "s0", "s1")
-        vote(room, "s1", "s0") // 1:1 平票
-        act(room, "s0", "resolveVote")
-
-        assertTrue(room.engine.awaitingTie)
-        assertEquals(setOf("s0", "s1"), room.engine.tieCandidates.toSet())
-        assertEquals("voting", room.engine.phase, "平票时停在投票阶段")
-
-        // 只能从候选人里选
-        assertFailsWith<PlayError> {
-            act(room, "s0", "breakTie", buildJsonObject { put("target", "s4") })
-        }
-        act(room, "s0", "breakTie", buildJsonObject { put("target", "s1") })
-        assertTrue(!room.engine.awaitingTie)
-        assertTrue("s1" !in room.engine.alive)
-        assertEquals(4, engine.alive.size)
     }
 
     @Test
     fun `dead players cannot vote`() {
         val room = newRoom("甲", "乙", "丙", "丁", "戊")
         engineOf(room).start(room)
-
-        act(room, "s0", "startVote")
-        room.seats.keys.filter { it != "s4" }.forEach { vote(room, it, "s4") }
-        act(room, "s0", "resolveVote")
+        round(room, "s4")
         assertTrue("s4" !in room.engine.alive)
 
-        // 放逐后回到 playing，要再发起一轮才能投票
-        if (room.engine.phase == "playing") act(room, hostOf(room), "startVote")
+        // 新的一轮讨论里出局者不能再投票
+        speakAll(room)
         assertFailsWith<PlayError> { vote(room, "s4", "s0") }
+    }
+
+    @Test
+    fun `discussion times out into voting`() {
+        val room = newRoom("甲", "乙", "丙")
+        engineOf(room).start(room)
+
+        // 一直没人说话：讨论超时后必须自己进投票，否则整局吊死在讨论
+        room.engine.forceDiscussDeadline()
+        settle(room)
+        assertEquals("voting", room.engine.phase)
+    }
+
+    @Test
+    fun `voting times out and treats silent players as abstaining`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        engineOf(room).start(room)
+        speakAll(room)
+
+        // 只有一个人投了票，其余人挂机
+        vote(room, "s0", "s1")
+        room.engine.forceVoteDeadline()
+        settle(room)
+
+        assertTrue("s1" !in room.engine.alive, "唯一的票仍应生效")
     }
 
     // ===== 胜负 =====
@@ -281,12 +397,10 @@ class PlayUndercoverTest {
         engineOf(room).start(room)
         val u = undercoverSeat(room)
 
-        act(room, "s0", "startVote")
-        room.seats.keys.filter { it != u }.forEach { vote(room, it, u) }
-        act(room, "s0", "resolveVote")
+        round(room, u)
 
         assertEquals("finished", room.engine.phase)
-        assertEquals("civilian", engineOf(room).gameState(room, "s0")["result"]!!.jsonPrimitive.content)
+        assertEquals("civilian", engineOf(room).gameState(room, "s0").str("result"))
     }
 
     @Test
@@ -296,19 +410,14 @@ class PlayUndercoverTest {
         val u = undercoverSeat(room)
         val civilians = room.seats.keys.filter { it != u }
 
-        // 连续放逐平民，直到存活卧底 ≥ 存活平民
-        var round = 0
-        while (room.engine.phase != "finished" && round < 6) {
-            act(room, hostOf(room), "startVote")
-            val victim = civilians.first { it in room.engine.alive }
-            // 投票人不能是自己，所以要把被投的那个人排除掉
-            room.seats.keys.filter { it in room.engine.alive && it != victim }.forEach { vote(room, it, victim) }
-            act(room, hostOf(room), "resolveVote")
-            round++
+        var guard = 0
+        while (room.engine.phase != "finished" && guard++ < 6) {
+            val victim = civilians.firstOrNull { it in room.engine.alive } ?: break
+            round(room, victim)
         }
 
         assertEquals("finished", room.engine.phase)
-        assertEquals("undercover", engineOf(room).gameState(room, u)["result"]!!.jsonPrimitive.content)
+        assertEquals("undercover", engineOf(room).gameState(room, u).str("result"))
     }
 
     @Test
@@ -325,28 +434,25 @@ class PlayUndercoverTest {
         )
     }
 
-    // ===== canStart / canVote 提示 =====
+    // ===== canStart / canVote =====
 
     @Test
     fun `canStart reflects host and player count`() {
         val room = newRoom("甲", "乙")
         val engine = engineOf(room)
-        assertEquals(false, engine.gameState(room, "s0")["canStart"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(false, engine.gameState(room, "s0").bool("canStart"))
 
         room.seats["s2"] = Play.Seat("s2").also { it.name = "丙" }
-        assertEquals(true, engine.gameState(room, "s0")["canStart"]!!.jsonPrimitive.content.toBoolean())
-        // 非房主永远是 false
-        assertEquals(false, engine.gameState(room, "s1")["canStart"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(true, engine.gameState(room, "s0").bool("canStart"))
+        assertEquals(false, engine.gameState(room, "s1").bool("canStart"))
     }
 
     @Test
-    fun `custom group is echoed back only to the host`() {
+    fun `custom group is echoed back`() {
         val room = newRoom("甲", "乙", "丙")
         room.customGroup = listOf("红", "蓝")
         val engine = engineOf(room)
 
-        // gameState 里 customGroup 是公共字段（协议如此），但 UI 只在 isHost 时显示；
-        // 这里确认它确实带着词组，方便房主回显
         val g = engine.gameState(room, "s0")["customGroup"]
         assertNotNull(g)
         assertEquals("红", g.jsonArray[0].jsonPrimitive.content)

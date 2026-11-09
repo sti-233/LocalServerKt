@@ -227,10 +227,10 @@
 
     var PHASE_NAMES = {
         waiting: '等待中',
-        playing: '进行中',
+        playing: '讨论中',
         voting: '投票中',
         night: '夜晚',
-        day: '白天',
+        day: '白天讨论',
         vote: '投票中',
         finished: '已结束'
     };
@@ -246,12 +246,94 @@
         seer: '预言家',
         witch: '女巫',
         guard: '守卫',
-        villager: '平民'
+        villager: '平民',
+        // 预言家查验结果现在只下发 good / bad，不再是具体角色名
+        good: '好人',
+        bad: '坏人'
     };
 
     function roleName(role) {
         if (!role) return '';
         return ROLE_NAMES[role] || role;
+    }
+
+    /* ================= 发言 / 投票提示（两个页面共用，别各写一份） ================= */
+
+    /** 我是否还活着：服务端只在 players[].me 上标自己，找不到就按活着算 */
+    function iAmAlive(state) {
+        var ps = (state && state.players) || [];
+        for (var i = 0; i < ps.length; i++) {
+            if (ps[i] && ps[i].me) return ps[i].alive !== false;
+        }
+        return true;
+    }
+
+    /** 我的座位 id（找不到返回 ''） */
+    function myId(state) {
+        var ps = (state && state.players) || [];
+        for (var i = 0; i < ps.length; i++) {
+            if (ps[i] && ps[i].me) return ps[i].id || '';
+        }
+        return '';
+    }
+
+    /**
+     * 本轮讨论还差几个人发言。
+     * 优先用服务端下发的 state.speakNeeded；没给就按
+     * 「在线 + 存活 + 不在 state.spoken 里」自己数一遍。
+     */
+    function remainSpeak(state) {
+        if (!state) return 0;
+        var need = state.speakNeeded;
+        if (need && typeof need.length === 'number') return need.length;
+        var spoken = {};
+        var list = state.spoken || [];
+        for (var i = 0; i < list.length; i++) spoken[list[i]] = true;
+        var ps = state.players || [];
+        var n = 0;
+        for (var j = 0; j < ps.length; j++) {
+            var p = ps[j];
+            if (!p || p.alive === false || p.online === false) continue;
+            if (!spoken[p.id]) n++;
+        }
+        return n;
+    }
+
+    /** 我此刻是否还需要发言：优先 state.canSpeak，没给就按 speakNeeded 里有没有我 */
+    function needSpeak(state) {
+        if (!state) return false;
+        if (typeof state.canSpeak === 'boolean') return state.canSpeak;
+        var need = state.speakNeeded;
+        if (!need || typeof need.length !== 'number') return false;
+        var me = state.seat || myId(state);
+        for (var i = 0; i < need.length; i++) {
+            if (need[i] === me) return true;
+        }
+        return false;
+    }
+
+    /** 讨论阶段的发言提示（卧底 playing / 狼人杀 day）；其他阶段返回 '' */
+    function speakHint(state) {
+        if (!state) return '';
+        if (state.phase !== 'playing' && state.phase !== 'day') return '';
+        if (needSpeak(state)) return '请先在下方发言，全员发言后自动开始投票。';
+        if (!iAmAlive(state)) return '你已出局，观战中，等待其他玩家发言。';
+        var n = remainSpeak(state);
+        if (n > 0) return '已发言，等待其他玩家（还差 ' + n + ' 人）。';
+        return '已发言，等待其他玩家发言结束…';
+    }
+
+    /** 已投票 / 已弃票后的等待提示；还没表态返回 '' */
+    function voteWaitHint(state) {
+        if (!state || !state.myVoted) return '';
+        return '已提交（投票 / 弃票），等待其他玩家…';
+    }
+
+    /** 自动结算倒计时文案；秒数不是正数时返回 '' */
+    function secsText(sec) {
+        var n = Number(sec);
+        if (!(n > 0)) return '';
+        return Math.floor(n) + ' 秒后自动结算';
     }
 
     /* ================= 房间列表 ================= */
@@ -319,7 +401,7 @@
             if (item.by) {
                 row.appendChild(el('span', 'log-by', String(item.by) + '：'));
             }
-            // 日志内容可能含用户输入（聊天），一律 textContent，绝不 innerHTML
+            // 日志内容可能含用户输入（聊天），一律走 textContent，绝不拼 HTML
             row.appendChild(document.createTextNode(String(item.text === null || item.text === undefined ? '' : item.text)));
             node.appendChild(row);
         });
@@ -403,6 +485,10 @@
         roleName: roleName,
         renderRooms: renderRooms,
         renderPlayers: renderPlayers,
+        remainSpeak: remainSpeak,
+        speakHint: speakHint,
+        voteWaitHint: voteWaitHint,
+        secsText: secsText,
         renderLog: renderLog,
         copyText: copyText,
         toast: toast

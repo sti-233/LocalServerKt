@@ -10,12 +10,17 @@ import java.util.Collections
  * 规则：每人拿到一个词，多数人拿到同一个（平民词），少数人（卧底）拿到另一个相近的词。
  * 轮流描述后投票放逐，直到卧底全出局（平民胜）或存活卧底数 ≥ 存活平民数（卧底胜）。
  *
- * 两个刻意的设计：
+ * 三个刻意的设计：
  * 1. **进行中不告诉玩家自己是卧底**。玩家只知道自己拿到一个词，是不是卧底要靠听别人描述来猜 ——
  *    这是这个游戏的核心乐趣。所以 [visibleRole] 在自己存活且未结束时一律返回 null。
  * 2. **出局也不公布词**。只公布身份（卧底/平民），否则死掉的人一说话就把答案泄了。
+ * 3. **讨论必须人人发言**。基类的 [GameEngine.beginDiscuss] 记发言、全员发完自动进投票 ——
+ *    没有这个约束，沉默的人会被别人的节奏直接带进投票。
  */
 class PlayUndercover : GameEngine(Play.UNDERCOVER) {
+
+    override val discussPhase: String = "playing"
+    override val votePhase: String = "voting"
 
     /** 座位 -> 词。这个词**只**会出现在本人的 `myWord` 里。 */
     private val words = LinkedHashMap<String, String>()
@@ -23,7 +28,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
     /** 座位 -> `civilian` / `undercover`。 */
     private val roles = LinkedHashMap<String, String>()
 
-    /** 本次实际使用的词组快照，用于「出局公布身份」时区分两个词（见 [resolveVote] 的日志）。 */
+    /** 本次实际使用的词组快照，用于结束后公布两个词。 */
     private var groupSnapshot: List<String> = emptyList()
 
     private val random = SecureRandom()
@@ -67,10 +72,10 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         groupSnapshot = group
         alive.clear()
         alive.addAll(seats)
-        phase = "playing"
         round = 1
-        resetVote()
         result = null
+        // 开局直接进讨论：人人发言之后才自动开投票
+        beginDiscuss(room)
         return null
     }
 
@@ -79,77 +84,28 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         if (seatId !in alive && phase != "finished") throw PlayError("你已出局，只能旁观")
 
         return when (action) {
-            "startVote" -> {
-                requireHost(room, seatId)
-                if (phase != "playing") throw PlayError("当前不能发起投票")
-                resetVote()
-                phase = "voting"
-                listOf("第 $round 轮投票开始")
-            }
-
             "vote" -> {
-                if (phase != "voting") throw PlayError("现在不是投票时间")
-                if (seatId !in alive) throw PlayError("出局的人不能投票")
                 val target = data.string("target") ?: throw PlayError("缺少投票目标")
-                if (target !in alive) throw PlayError("目标不在场上")
-                if (target == seatId) throw PlayError("不能投给自己")
-                val prev = votes.put(seatId, target)
-                // 投票是匿名的，日志里不写投给谁 —— 否则票型等于公开
-                if (prev == null) listOf("${room.nameOf(seatId)} 已投票") else emptyList()
+                castVote(room, seatId, target)
+                listOf("${room.nameOf(seatId)} 已投票")
             }
 
-            "resolveVote" -> {
-                requireHost(room, seatId)
-                if (phase != "voting") throw PlayError("当前没有进行中的投票")
-                resolveVote(room)
-            }
-
-            "breakTie" -> {
-                requireHost(room, seatId)
-                if (!awaitingTie) throw PlayError("当前没有平票需要裁决")
-                val target = data.string("target") ?: throw PlayError("缺少裁决目标")
-                if (target !in tieCandidates) throw PlayError("只能从平票候选人中选择")
-                awaitingTie = false
-                tieCandidates = emptyList()
-                eliminate(room, target)
+            // 弃票也是态度：不是每个人都能在每个局里都看出谁是卧底
+            "abstain" -> {
+                castVote(room, seatId, null)
+                listOf("${room.nameOf(seatId)} 弃票")
             }
 
             else -> throw PlayError("未知动作：$action")
         }
     }
 
-    private fun requireHost(room: Play.Room, seatId: String) {
-        if (room.hostSeat != seatId) throw PlayError("只有房主可以执行这个操作")
-    }
-
-    /** 结算本轮投票。返回要写进日志的文本行。 */
-    private fun resolveVote(room: Play.Room): List<String> {
-        val t = tally()
-        if (t.isEmpty()) throw PlayError("还没有人投票")
-
-        val lines = ArrayList<String>()
-        val maxVotes = t.values.max()
-        val top = t.entries.filter { it.value == maxVotes }.map { it.key }
-
-        snapshotVote(t)
-
-        if (top.size > 1) {
-            awaitingTie = true
-            tieCandidates = top
-            lines.add("票数相同：" + top.joinToString("、") { room.nameOf(it) } + "，等待房主裁决")
-            // 平票时停在 voting 阶段，房主裁决后才继续
-            return lines
-        }
-
-        lines.addAll(eliminate(room, top[0]))
-        return lines
-    }
-
-    /** 放逐某人、公布身份、判胜负、进下一轮。 */
-    private fun eliminate(room: Play.Room, target: String): List<String> {
+    /** 放逐某人、公布身份、判胜负。票型由基类的 [settleVote] 结算后调进来。 */
+    override fun eliminate(room: Play.Room, target: String): List<String> {
         val lines = ArrayList<String>()
         alive.remove(target)
         votes.clear()
+        abstained.clear()
 
         val role = roles[target] ?: "civilian"
         val roleName = if (role == "undercover") "卧底" else "平民"
@@ -173,11 +129,22 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
                 lines.add("本局词组：" + groupSnapshot.joinToString("、") + "（卧底词：${undercoverWord()}）")
             }
             else -> {
-                phase = "playing"
                 round += 1
                 ensureHost(room)
+                lines.add("进入第 $round 轮讨论")
+                beginDiscuss(room)
             }
         }
+        return lines
+    }
+
+    /** 平票或全员弃票：本轮不淘汰，直接开下一轮讨论。 */
+    override fun skipVote(room: Play.Room, reason: String): List<String> {
+        round += 1
+        val lines = ArrayList<String>()
+        lines.add(reason)
+        lines.add("进入第 $round 轮讨论")
+        beginDiscuss(room)
         return lines
     }
 
@@ -212,7 +179,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         val canStart = host && phase == "waiting" &&
             room.seats.size >= 3 && room.undercoverCount < room.seats.size - room.undercoverCount
         put("canStart", JsonPrimitive(canStart))
-        put("canVote", JsonPrimitive(phase == "voting" && seatId in alive))
+        put("canVote", JsonPrimitive(phase == votePhase && seatId in alive))
         put("result", if (result == null) JsonNull else JsonPrimitive(result!!))
     }
 

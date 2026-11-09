@@ -263,12 +263,46 @@
             Play.clear(actsEl);
             if (!state) return;
 
-            if ((state.phase === 'voting' || state.phase === 'vote') && state.canVote) {
-                actsEl.appendChild(voteCard('投票：选出你认为是卧底的人',
+            var phase = state.phase;
+
+            // 讨论：每人必须发一次言，全员发完服务端自动开投票，这里只报进度
+            if (phase === 'playing' || phase === 'day') {
+                var hint = Play.speakHint(state);
+                if (hint) actsEl.appendChild(Play.el('div', 'note', hint));
+                return;
+            }
+
+            if (phase !== 'voting' && phase !== 'vote') return;
+
+            if (state.myVoted) {
+                // 已投 / 已弃票：按钮收起来，只报进度与自动结算倒计时
+                actsEl.appendChild(Play.el('div', 'note', Play.voteWaitHint(state)));
+            } else if (state.canVote) {
+                var card = voteCard('投票：选出你认为是卧底的人',
                     state.players, state.myVote, state.tally, function (p) {
                         Play.action('vote', { target: p.id });
                         Play.toast('已投给 ' + (p.name || '该玩家'));
-                    }));
+                    });
+
+                // 可以弃票：不投任何人也是表态
+                var row = Play.el('div', 'btn-row');
+                var skip = Play.el('button', 'btn', '弃票');
+                skip.type = 'button';
+                skip.onclick = function () {
+                    Play.action('abstain');
+                    Play.toast('已弃票');
+                };
+                row.appendChild(skip);
+                card.appendChild(row);
+                actsEl.appendChild(card);
+            } else {
+                actsEl.appendChild(Play.el('div', 'note', '投票进行中，等待其他玩家…'));
+            }
+
+            if (state.voteIn > 0) {
+                var progress = (state.votedCount || 0) + '/' + (state.voteTotal || 0);
+                actsEl.appendChild(Play.el('div', 'note',
+                    '已表态 ' + progress + ' · ' + Play.secsText(state.voteIn)));
             }
         }
 
@@ -304,18 +338,6 @@
                 if (state.undercoverCount && document.activeElement !== ucSelect) {
                     ucSelect.value = String(state.undercoverCount);
                 }
-            } else if (phase === 'playing' || phase === 'day') {
-                hostBody.appendChild(hostButton('发起投票', 'primary', function () {
-                    Play.action('startVote');
-                }));
-                show(groupField, false);
-                show(ucField, false);
-            } else if (phase === 'voting' || phase === 'vote') {
-                hostBody.appendChild(hostButton('结算投票', 'primary', function () {
-                    Play.action('resolveVote');
-                }));
-                show(groupField, false);
-                show(ucField, false);
             } else if (phase === 'finished') {
                 hostBody.appendChild(hostButton('再开一局', 'primary', function () {
                     Play.action('endGame');
@@ -323,26 +345,10 @@
                 show(groupField, false);
                 show(ucField, false);
             } else {
+                // 讨论 / 投票不再由房主操作：全员发言后自动开投票，全员投完自动结算
                 show(groupField, false);
                 show(ucField, false);
             }
-
-            // 平票裁决
-            if (state.awaitingTie && state.tieCandidates && state.tieCandidates.length) {
-                var card = voteCard('平票裁决：选一个人出局', idsToPlayers(state.tieCandidates),
-                    null, null, function (p) {
-                        Play.action('breakTie', { target: p.id });
-                    }, '裁决：');
-                hostBody.appendChild(card);
-            }
-        }
-
-        function idsToPlayers(ids) {
-            var map = {};
-            (state.players || []).forEach(function (p) { map[p.id] = p; });
-            return (ids || []).map(function (id) {
-                return map[id] || { id: id, name: id, alive: true };
-            });
         }
 
         function render() {

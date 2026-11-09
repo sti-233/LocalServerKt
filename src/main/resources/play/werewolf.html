@@ -382,6 +382,14 @@
             } else if (kind === 'witch') {
                 card.appendChild(Play.el('div', 'act-title', '女巫行动：今晚要用什么药？'));
 
+                // 解药与毒药各只有一瓶，可以都不用。服务端只对女巫下发剩余数。
+                var antidoteLeft = state.antidoteLeft === undefined ? 1 : Number(state.antidoteLeft);
+                var poisonLeft = state.poisonLeft === undefined ? 1 : Number(state.poisonLeft);
+                var hasAntidote = antidoteLeft > 0;
+                var hasPoison = poisonLeft > 0;
+                card.appendChild(Play.el('div', 'act-hint',
+                    '解药 ×' + (hasAntidote ? 1 : 0) + '　毒药 ×' + (hasPoison ? 1 : 0)));
+
                 // 女巫必须知道今晚谁被刀了，否则「要不要用解药」根本无从判断。
                 // 服务端只在夜间、且只对女巫下发 wolfVictim。
                 var victim = state.wolfVictim;
@@ -397,8 +405,9 @@
 
                 row = Play.el('div', 'btn-row');
                 if (witchMode !== 'poison') {
-                    // 没人被刀时解药没有意义，直接不给按钮（服务端也会拒）
-                    if (victim && victim !== mySeat) {
+                    // 没人被刀时解药没有意义，直接不给按钮（服务端也会拒）；
+                    // 解药用完（antidoteLeft === 0）同样不显示
+                    if (hasAntidote && victim && victim !== mySeat) {
                         var save = Play.el('button', 'btn primary', '用解药救 ' + nameOf(victim));
                         save.type = 'button';
                         save.onclick = function () {
@@ -408,13 +417,16 @@
                         row.appendChild(save);
                     }
 
-                    var poison = Play.el('button', 'btn', '用毒药');
-                    poison.type = 'button';
-                    poison.onclick = function () {
-                        witchMode = 'poison';
-                        renderActs();
-                    };
-                    row.appendChild(poison);
+                    // 毒药用完（poisonLeft === 0）就不显示这个按钮
+                    if (hasPoison) {
+                        var poison = Play.el('button', 'btn', '用毒药');
+                        poison.type = 'button';
+                        poison.onclick = function () {
+                            witchMode = 'poison';
+                            renderActs();
+                        };
+                        row.appendChild(poison);
+                    }
 
                     var none = Play.el('button', 'btn', '本夜不用药');
                     none.type = 'button';
@@ -474,13 +486,44 @@
                 actsEl.appendChild(nightCard(kind));
             });
 
-            // 白天/投票：投票按钮
-            if ((state.phase === 'voting' || state.phase === 'vote') && state.canVote) {
-                actsEl.appendChild(voteCard('投票：选出你要放逐的人',
-                    alivePlayers(), state.myVote, state.tally, function (p) {
-                        Play.action('vote', { target: p.id });
-                        Play.toast('已投给 ' + (p.name || '该玩家'));
-                    }));
+            // 白天讨论：每人必须发一次言，全员发完服务端自动开投票
+            if (state.phase === 'day') {
+                var hint = Play.speakHint(state);
+                if (hint) actsEl.appendChild(Play.el('div', 'note', hint));
+            }
+
+            // 投票：投票卡片 + 弃票；已表态后只等自动结算
+            if (state.phase === 'voting' || state.phase === 'vote') {
+                if (state.myVoted) {
+                    actsEl.appendChild(Play.el('div', 'note', Play.voteWaitHint(state)));
+                } else if (state.canVote) {
+                    // 目标是存活玩家，排除自己
+                    var list = alivePlayers().filter(function (p) { return !p.me; });
+                    var card = voteCard('投票：选出你要放逐的人',
+                        list, state.myVote, state.tally, function (p) {
+                            Play.action('vote', { target: p.id });
+                            Play.toast('已投给 ' + (p.name || '该玩家'));
+                        });
+
+                    var row = Play.el('div', 'btn-row');
+                    var skip = Play.el('button', 'btn', '弃票');
+                    skip.type = 'button';
+                    skip.onclick = function () {
+                        Play.action('abstain');
+                        Play.toast('已弃票');
+                    };
+                    row.appendChild(skip);
+                    card.appendChild(row);
+                    actsEl.appendChild(card);
+                } else {
+                    actsEl.appendChild(Play.el('div', 'note', '投票进行中，等待其他玩家…'));
+                }
+
+                if (state.voteIn > 0) {
+                    var progress = (state.votedCount || 0) + '/' + (state.voteTotal || 0);
+                    actsEl.appendChild(Play.el('div', 'note',
+                        '已表态 ' + progress + ' · ' + Play.secsText(state.voteIn)));
+                }
             }
 
             // 夜间不是并发提交的：守卫→狼人→女巫→预言家挨个来。
@@ -517,33 +560,13 @@
                         Play.action('start');
                     }));
                 }
-            } else if (phase === 'playing' || phase === 'day') {
-                hostBody.appendChild(hostButton('发起投票', 'primary', function () {
-                    Play.action('startVote');
-                }));
-            } else if (phase === 'night') {
-                hostBody.appendChild(hostButton('强制结算夜晚', 'primary', function () {
-                    Play.action('resolveNight');
-                }));
-            } else if (phase === 'voting' || phase === 'vote') {
-                hostBody.appendChild(hostButton('结算投票', 'primary', function () {
-                    Play.action('resolveVote');
-                }));
             } else if (phase === 'finished') {
                 hostBody.appendChild(hostButton('再开一局', 'primary', function () {
                     Play.action('endGame');
                 }));
             }
-
-            // 平票裁决
-            if (state.awaitingTie && state.tieCandidates && state.tieCandidates.length) {
-                var map = playerMap();
-                var list = state.tieCandidates.map(function (id) {
-                    return map[id] || { id: id, name: id, alive: true };
-                });
-                hostBody.appendChild(voteCard('平票裁决：选一个人出局', list, null, null,
-                    function (p) { Play.action('breakTie', { target: p.id }); }, '裁决：'));
-            }
+            // 讨论 / 夜晚 / 投票全部自动推进（全员发言自动开投票、全员投完自动结算、
+            // 夜间收齐行动自动进下一步），房主没有可点的操作了
         }
 
         /* ---------- 渲染：聊天频道 ---------- */
