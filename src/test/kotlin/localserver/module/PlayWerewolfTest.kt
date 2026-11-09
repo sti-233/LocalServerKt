@@ -498,6 +498,29 @@ class PlayWerewolfTest {
     }
 
     @Test
+    fun `guard and witch healing the same player kills them`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        val witch = seatsWithRole(room, "witch").first()
+        val victim = nightVictimOf(room)
+
+        // 守卫守的人和女巫救的人是同一个：两个保护叠在一起反而把人送走
+        doGuard(room, target = victim)
+        doWolves(room, victim)
+        doWitch(room, "save")
+        doSeer(room)
+
+        assertTrue(victim !in room.engine.alive, "同守同救的人要出局")
+        assertEquals("day", room.engine.phase)
+        // 药照样扣：女巫事先无从知道守卫守了谁
+        assertEquals(
+            0,
+            engineOf(room).gameState(room, witch)["antidoteLeft"]!!.jsonPrimitive.int,
+            "同守同救也要扣解药"
+        )
+    }
+
+    @Test
     fun `each potion can be used only once`() {
         val room = newRoom(5)
         engineOf(room).start(room)

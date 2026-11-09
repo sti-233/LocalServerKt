@@ -190,15 +190,25 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         val guarded = guardTarget
         // 守卫挡刀：守护目标就是狼刀目标时，这一刀无效
         var killed: String? = if (victim != null && victim != guarded) victim else null
-        if (victim != null && victim == guarded) lines.add("守卫挡下了今晚的袭击")
 
         // 女巫解药：救回被刀的人（但不能救自己）
-        if (killed != null && witchAction == "save") {
-            val witch = livingWithRole("witch").firstOrNull()
-            if (witch != null && killed != witch && antidoteLeft > 0) {
-                lines.add("女巫用解药救回了 ${room.nameOf(killed)}")
-                antidoteLeft -= 1
-                killed = null
+        val witchSaves = witchAction == "save" && antidoteLeft > 0 && witchTarget != null
+
+        // 同守同救 = 奶死：守卫守的人和女巫救的人是同一个，两个保护叠在一起反而把人送走。
+        // 狼刀本身已经被守卫挡掉了，但药还是照扣 —— 女巫事先无从知道守卫守了谁。
+        if (victim != null && victim == guarded && witchSaves && witchTarget == victim) {
+            lines.add("守卫与女巫同时护住了 ${room.nameOf(victim)}，反被救死")
+            killed = victim
+            antidoteLeft -= 1
+        } else {
+            if (victim != null && victim == guarded) lines.add("守卫挡下了今晚的袭击")
+            if (killed != null && witchSaves) {
+                val witch = livingWithRole("witch").firstOrNull()
+                if (witch != null && killed != witch) {
+                    lines.add("女巫用解药救回了 ${room.nameOf(killed)}")
+                    antidoteLeft -= 1
+                    killed = null
+                }
             }
         }
 
