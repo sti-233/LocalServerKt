@@ -147,9 +147,18 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     /** 本步是否已交齐。 */
     private fun stepDone(step: String): Boolean = when (step) {
         "guard" -> guardTarget != null
-        // 狼人必须全员表态，且都指向同一个人
-        "wolf" -> livingWithRole("wolf").all { it in wolfVotes }
+        // 狼人不只是"都投了"，还必须指向同一个人：意见不一时停在这一步等他们商量，
+        // 不能替他们决定（也不能当成空刀直接跳过，那样女巫看到的就是"没人被袭击"）
+        "wolf" -> wolvesAgreed()
         else -> step in submitted
+    }
+
+    /** 全体存活狼人都已表态，且都指向同一个人。 */
+    private fun wolvesAgreed(): Boolean {
+        val wolves = livingWithRole("wolf")
+        if (wolves.isEmpty()) return true
+        if (wolves.any { it !in wolfVotes }) return false
+        return wolves.map { wolfVotes[it] }.distinct().size == 1
     }
 
     /** 本步交齐就往下拨；最后一步交完直接结算。返回值要写进日志。 */
@@ -334,6 +343,9 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         if (target !in alive) throw PlayError("目标不在场上")
         if (roles[target] == "wolf") throw PlayError("不能袭击狼人队友")
         wolfVotes[seatId] = target
+        // 狼人在商量期间改票算「有操作」，60 秒的自动跳过从最后一次操作重新计时，
+        // 否则他们正讨论到一半就被系统替他们决定了
+        nightDeadlineAt = System.currentTimeMillis() + NIGHT_STEP_MS
         return listOf("${room.nameOf(seatId)} 选择了袭击目标") + advanceNight(room)
     }
 

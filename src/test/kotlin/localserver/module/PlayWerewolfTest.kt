@@ -424,7 +424,7 @@ class PlayWerewolfTest {
     }
 
     @Test
-    fun `all wolves must agree on the same target`() {
+    fun `wolves must agree before the night moves on`() {
         val room = newRoom(8)
         engineOf(room).start(room)
         val wolves = seatsWithRole(room, "wolf")
@@ -437,14 +437,21 @@ class PlayWerewolfTest {
         skipToWolfStep(room)
         act(room, wolves[0], "wolfVote", obj("target" to a))
         act(room, wolves[1], "wolfVote", obj("target" to b))
+
+        // 意见不一就停在这一步等他们商量：不能前进，也不能替他们决定
+        assertEquals("wolf", stepOf(room), "狼人没统一目标时不该进入女巫那一步")
+        assertEquals("night", room.engine.phase)
+        assertTrue(a in room.engine.alive)
+        assertTrue(b in room.engine.alive)
+
+        // 改成同一个目标后才继续
+        act(room, wolves[1], "wolfVote", obj("target" to a))
+        assertEquals("witch", stepOf(room))
+
         doWitch(room, "none")
         doSeer(room)
-
-        // 意见不一 = 当夜空刀，不能「分票也照样杀人」
-        assertTrue(a in room.engine.alive, "狼人目标不一致时不该有人被袭击")
-        assertTrue(b in room.engine.alive)
-        // 结算日志是引擎"返回"给框架写的，测试里攒在 logs 里，不在 room.log 上
-        assertTrue(logText().contains("平安夜"), "应公告平安夜：${logText()}")
+        assertTrue(a !in room.engine.alive, "统一目标后该刀生效")
+        assertEquals("day", room.engine.phase)
     }
 
     @Test

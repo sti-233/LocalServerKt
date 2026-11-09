@@ -343,6 +343,28 @@
             return set;
         }
 
+        /**
+         * 狼人们当前各投了谁。多个狼人必须指向同一个人才能进入下一步，
+         * 所以这行是给他们商量用的，不是给外人看的（服务端只对狼下发 wolfVotes）。
+         */
+        function wolfVoteSummary() {
+            var votes = (state && state.wolfVotes) || {};
+            var ids = Object.keys(votes);
+            if (!ids.length) return '还没有狼人表态。';
+            var targets = {};
+            ids.forEach(function (id) { targets[votes[id]] = true; });
+            var parts = ids.map(function (id) {
+                return nameOf(id) + ' → ' + nameOf(votes[id]);
+            });
+            var text = '当前刀口：' + parts.join('　');
+            if (Object.keys(targets).length > 1) {
+                text += '（意见不一致，统一目标后才能进入下一步）';
+            } else {
+                text += '（一致）';
+            }
+            return text;
+        }
+
         function nightCard(kind) {
             var card = Play.el('div', 'act-card');
             var row;
@@ -350,6 +372,8 @@
 
             if (kind === 'wolf') {
                 card.appendChild(Play.el('div', 'act-title', '狼人行动：选择今晚要刀的人'));
+                // 多个狼人必须统一目标才能进入下一步，各自看到别人投了谁才好商量
+                card.appendChild(Play.el('div', 'act-hint', wolfVoteSummary()));
                 row = Play.el('div', 'btn-row');
                 wolves = wolfSet();
                 alivePlayers().forEach(function (p) {
@@ -369,6 +393,8 @@
                 card.appendChild(Play.el('div', 'act-title', '预言家行动：查验一个人'));
                 row = Play.el('div', 'btn-row');
                 alivePlayers().forEach(function (p) {
+                    // 验自己没有意义，服务端也会拒，干脆不给这个选项
+                    if (p.me) return;
                     var b = Play.el('button', 'btn', '查验：' + (p.name || '玩家'));
                     b.type = 'button';
                     b.onclick = function () {
@@ -439,6 +465,8 @@
                 } else {
                     card.appendChild(Play.el('div', 'act-hint', '选一个要毒死的人：'));
                     alivePlayers().forEach(function (p) {
+                        // 毒自己没有意义，服务端也会拒
+                        if (p.me) return;
                         var b = Play.el('button', 'btn on', '毒 ' + (p.name || '玩家'));
                         b.type = 'button';
                         b.onclick = function () {
