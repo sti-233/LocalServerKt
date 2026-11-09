@@ -159,21 +159,40 @@ object Chat {
     // 久了就是每次重连都解析几十上百个文件。按 (长度, mtime) 命中即可复用。
     private val lastMsgCache = ConcurrentHashMap<String, Pair<Pair<Long, Long>, JsonObject?>>()
 
+    // 群聊归档名就是日期（yyyy-MM-dd）；私聊归档名是 getTarget 排序后拼的「名A-名B」
+    private val dateArchive = Regex("\\d{4}-\\d{2}-\\d{2}")
+
     // 会话列表：扫描 message/ 下的 history_*.json，返回 {today, names, last}：
     // names 为文件名（不含前缀与扩展名），供 chat.html 侧边栏区分群聊（yyyy-MM-dd）与私聊
     // （"名A-名B"，getTarget 排序后命名）；today 为服务端今天（Asia/Shanghai）；
-    // last 为各会话最后一条消息的 {time, by}，供前端按"最后消息晚于已读时间且非自己/系统发送"点亮未读小红点
+    // last 为各会话最后一条消息的 {time, by, at}，供前端按"最后消息晚于已读时间且非自己/系统发送"点亮未读小红点
+    //
+    // 只回**与当前用户相关**的归档：日期群聊人人可见，私聊只回文件名含自己的。
+    // 不过滤会同时坏两件事：① 把所有人私聊的档案名、最后活动时间、发送者与被 @ 名单
+    // 摊给每个登录用户（正文读不到，但谁和谁在聊、几点聊的一清二楚）；② 前端 partnerOf
+    // 取「第一个不等于我的段」，aa 收到 bb-cc 的 last 就会把 bb 那一项顶起来并亮红点，
+    // 点进去却只有历史消息 —— 红点怎么点都消不干净。
     private fun Route.conversations() = authenticate("auth") {
         get("/conversations") {
-            val files = File("message")
+            val all = File("message")
                 .listFiles { f -> f.isFile && f.name.startsWith("history_") && f.name.endsWith(".json") }
                 .orEmpty()
+            // 解析不出当前用户时（走 ?p= 或 control 白名单进来的 IP 未必登记在 userList
+            // 里，getUserName 会抛）只给群聊日期归档：宁缺勿漏，私聊一条都不放。
+            // 用户名可以含 `-`（旧档遗留），所以用 partnerIn 回验，不能 split('-')。
+            val me = runCatching { Util.getUserName(call.request.local.remoteAddress) }.getOrNull()
+            val files = all.filter { f ->
+                val base = f.historyName()
+                dateArchive.matches(base) || (me != null && Util.partnerIn(base, me) != null)
+            }
             val names = files.map { it.historyName() }.sorted()
             val last = buildMap {
                 for (f in files) put(f.historyName(), f.lastMessageCached())
             }
-            // 归档被删（deleteEmptyHistory）后别让缓存一直留着
-            lastMsgCache.keys.retainAll(files.map { it.path }.toSet())
+            // 归档被删（deleteEmptyHistory）后别让缓存一直留着。
+            // 按**全部**归档清而不是按过滤后的：这份缓存是进程级、按文件路径存的，
+            // 若按当前用户的可见集清，别人那些文件每次请求都会把刚读到的条目挤掉。
+            lastMsgCache.keys.retainAll(all.map { it.path }.toSet())
             call.respondText(
                 buildJsonObject {
                     put("today", JsonPrimitive(Time.getCurrentDate()))

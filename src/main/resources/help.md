@@ -8,7 +8,7 @@
 | `/chat` | auth | 跳转 `chat.html` 聊天页 |
 | `/whoami` | auth | 当前客户端 IP 对应的用户名 |
 | `/history` | auth | 群聊记录；`?targetuser=<user>` 私聊记录，`&date=yyyy-MM-dd` 指定日期 |
-| `/conversations` | auth | `{today, names, last}`：侧边栏会话列表与各会话最后一条消息；`last` 每条为 `{time, by, at}`，`at` 是该条 @ 到的用户名数组（只回名字、不回正文），供侧边栏把红点升级成「@」胶囊 |
+| `/conversations` | auth | `{today, names, last}`：侧边栏会话列表与各会话最后一条消息；**只回与当前用户相关的归档**（群聊日期档全部 + 私聊档只回自己参与的，别人的私聊连同 `last` 一起不返回 —— 否则会同时泄漏谁和谁在聊、又让前端给无关的人点亮红点）；`last` 每条为 `{time, by, at}`，`at` 是该条 @ 到的用户名数组（只回名字、不回正文），供侧边栏把红点升级成「@」胶囊 |
 | `/message` | auth | WebSocket：聊天/私聊（`sendTo` 参数），图片 `ImageB64:` 前缀，2 分钟内可撤回；带 `reply:{name,time,text}` 表示回复某条消息（服务端把引用摘要截到 200 字后随消息落盘并广播） |
 | `/clients` | — | 当前在线 WS 客户端列表 |
 | `/wsSever` | — | 纯文本服务信息（typo 路由，沿用） |
