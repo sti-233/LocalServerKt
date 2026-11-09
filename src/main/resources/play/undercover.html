@@ -39,7 +39,7 @@
                     <input id="nameInput" class="text-input" placeholder="房间别名（可留空）" maxlength="20">
                     <button id="createBtn" class="btn primary" type="button">创建房间</button>
                 </div>
-                <p class="card-hint">别名只是给房间起个名字，方便在列表里认出来。房间里不显示玩家昵称，按座位叫「玩家1」「玩家2」。</p>
+                <p class="card-hint">别名只是给房间起个名字，方便在列表里认出来。房间里玩家的名字取自服务器用户列表（未登记的显示为「玩家1」「玩家2」）。</p>
             </div>
             <div class="card">
                 <h3 class="card-title">加入房间</h3>
@@ -184,7 +184,7 @@
         function pickRoom() {
             var v = (roomInput.value || '').replace(/\s+/g, '').toUpperCase();
             if (!v) { Play.toast('先输入房号'); roomInput.focus(); return; }
-            // 房间里已经没有昵称了：座位名由服务端按顺序给（玩家1、玩家2…）
+            // 玩家名由服务端给：有 userList.json 账号的用账号名，没有的退化成「玩家N」
             Play.send({ type: 'join', room: v });
         }
 

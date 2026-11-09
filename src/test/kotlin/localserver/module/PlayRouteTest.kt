@@ -114,9 +114,9 @@ class PlayRouteTest {
 
             val joined = readUntil("joined")
             assertEquals("undercover", joined["game"]!!.jsonPrimitive.content)
-            // 建房时填的是**房间别名**，玩家名由座位顺序生成
+            // 建房时填的是**房间别名**，玩家名取自 userList.json（localhost 登记为 tester）
             assertEquals("房主", joined["title"]!!.jsonPrimitive.content)
-            assertEquals("玩家1", joined["name"]!!.jsonPrimitive.content)
+            assertEquals("tester", joined["name"]!!.jsonPrimitive.content)
             assertEquals(true, joined["isHost"]!!.jsonPrimitive.content.toBoolean())
             val room = joined["room"]!!.jsonPrimitive.content
             assertEquals(4, room.length, "房号是 4 位")
@@ -146,13 +146,14 @@ class PlayRouteTest {
         client.webSocket("/play/ws") {
             sendJson(frame("join", "room" to roomId))
             val joined = readUntil("joined")
-            assertEquals("玩家2", joined["name"]!!.jsonPrimitive.content)
+            // 同一个账号再开一个座位：名字撞了就加序号，否则「谁是谁」认不出来
+            assertEquals("tester2", joined["name"]!!.jsonPrimitive.content)
             assertEquals(false, joined["isHost"]!!.jsonPrimitive.content.toBoolean())
 
             val state = readUntil("state")["state"]!!.jsonObject
             assertEquals(2, state["players"]!!.jsonArray.size)
             val names = state["players"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
-            assertTrue(names.containsAll(listOf("玩家1", "玩家2")), "两个座位都该在：$names")
+            assertTrue(names.containsAll(listOf("tester", "tester2")), "两个座位都该在：$names")
         }
     }
 
@@ -281,7 +282,7 @@ class PlayRouteTest {
             val by = state["log"]!!.jsonArray
                 .first { it.jsonObject["text"]!!.jsonPrimitive.content == "大家好" }
                 .jsonObject["by"]!!.jsonPrimitive.content
-            assertEquals("玩家1", by, "发言者是座位名（房间里不再有昵称）")
+            assertEquals("tester", by, "发言者是 userList.json 里的账号名")
         }
     }
 
@@ -438,6 +439,75 @@ class PlayRouteTest {
             assertTrue(err["text"]!!.jsonPrimitive.content.contains("只有房主"))
         }
         assertNotNull(Play.rooms["FFFF"], "非房主不该解散成功")
+    }
+
+    @Test
+    fun `host can kick an offline player before the game starts`() = withApp { client ->
+        var roomId = ""
+        var hostSeat = ""
+        client.webSocket("/play/ws") {
+            sendJson(frame("create", "game" to "undercover", "name" to "甲"))
+            val joined = readUntil("joined")
+            roomId = joined["room"]!!.jsonPrimitive.content
+            hostSeat = joined["seat"]!!.jsonPrimitive.content
+            readUntil("state")
+        }
+        // 塞一个掉线的座位：开局要求全员在线，留着他就永远开不了局
+        Play.rooms[roomId]!!.seats["gone"] = Play.Seat("gone").also {
+            it.name = "掉线的人"
+            it.owner = "user:gone"
+            it.online = false
+        }
+
+        client.webSocket("/play/ws") {
+            sendJson(frame("resume", "room" to roomId, "seat" to hostSeat))
+            readUntil("joined")
+            readUntil("state")
+
+            sendJson(buildJsonObject {
+                put("type", JsonPrimitive("action"))
+                put("action", JsonPrimitive("kick"))
+                put("data", buildJsonObject { put("seat", JsonPrimitive("gone")) })
+            })
+            val state = readUntil("state")["state"]!!.jsonObject
+            val names = state["players"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+            assertTrue(names.none { it == "掉线的人" }, "离线座位应被移出：$names")
+        }
+        assertNull(Play.rooms[roomId]!!.seats["gone"])
+    }
+
+    @Test
+    fun `kick refuses online players and yourself`() = withApp { client ->
+        var roomId = ""
+        var hostSeat = ""
+        client.webSocket("/play/ws") {
+            sendJson(frame("create", "game" to "undercover", "name" to "甲"))
+            val joined = readUntil("joined")
+            roomId = joined["room"]!!.jsonPrimitive.content
+            hostSeat = joined["seat"]!!.jsonPrimitive.content
+            readUntil("state")
+
+            // 在线的玩家不能被踢：让人家自己走，房主随手一点就赶人太危险
+            Play.rooms[roomId]!!.seats["on"] = Play.Seat("on").also {
+                it.name = "在线的人"
+                it.owner = "user:on"
+                it.online = true
+            }
+            sendJson(buildJsonObject {
+                put("type", JsonPrimitive("action"))
+                put("action", JsonPrimitive("kick"))
+                put("data", buildJsonObject { put("seat", JsonPrimitive("on")) })
+            })
+            assertTrue(readUntil("err")["text"]!!.jsonPrimitive.content.contains("离线"))
+
+            sendJson(buildJsonObject {
+                put("type", JsonPrimitive("action"))
+                put("action", JsonPrimitive("kick"))
+                put("data", buildJsonObject { put("seat", JsonPrimitive(hostSeat)) })
+            })
+            assertTrue(readUntil("err")["text"]!!.jsonPrimitive.content.contains("自己"))
+        }
+        assertNotNull(Play.rooms[roomId]!!.seats["on"])
     }
 
     @Test

@@ -225,6 +225,14 @@ button { font-family: inherit; }
 .tag-alive { color: var(--text-2); }
 .tag-dead { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-border); }
 .tag-wolf { color: var(--pink); background: var(--pink-soft); border-color: var(--pink-border); }
+/* 房主在开局前移出离线玩家：贴着「离线」标签，做得像标签但可点 */
+.tag.kick {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: var(--danger-border);
+    cursor: pointer;
+}
+.tag.kick:hover { border-color: var(--danger); }
 
 /* ---- 我的信息 ---- */
 .info-row { display: flex; align-items: baseline; margin-top: 6px; }

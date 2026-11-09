@@ -416,15 +416,15 @@ object Play {
 
     class Seat(val id: String) {
         /**
-         * 房间里的显示名，**由座位顺序自动生成**（玩家1、玩家2…）。
-         * 房间内已经没有昵称了：昵称那栏现在填的是房间别名，见 [Room.title]。
+         * 房间里的显示名：优先用 `userList.json` 里登记的名字，没有才退化成
+         * 「玩家N」。房间里不再有玩家自己起的昵称 —— 名字归账号所有，换台设备
+         * 进来还是同一个名字，也不会有人冒充别人。
          */
         @Volatile var name: String = ""
 
         /**
          * 座位归属：`userList.json` 里的账号名，未登记则退化成 `ip:<地址>`。
-         * **从不发给前端**，只用来判断「同一个人掉线回来该坐哪个位置」——
-         * 房间内取消昵称之后，光靠显示名已经认不出人了。
+         * **从不发给前端**，只用来判断「同一个人掉线回来该坐哪个位置」。
          */
         @Volatile var owner: String = ""
 
@@ -434,8 +434,8 @@ object Play {
     class Room(val id: String, val game: String) {
 
         /**
-         * 房间别名。创建时填的那个「昵称」现在指的是它 —— 房间里不再有玩家昵称，
-         * 每个人就叫「玩家1」「玩家2」，靠座位顺序区分。
+         * 房间别名。创建时填的那个「昵称」现在指的是它 —— 玩家名一律来自
+         * `userList.json`（见 [Seat.name]），房间本身只是挂个名字方便在列表里认。
          */
         var title: String = ""
 
@@ -473,12 +473,26 @@ object Play {
         fun seatByOwner(owner: String): Seat? =
             if (owner.isEmpty()) null else seats.values.firstOrNull { it.owner == owner }
 
-        /** 下一个可用的显示名：玩家N，跳过已占用的。 */
-        fun nextSeatName(): String {
-            var i = 1
+        /** 下一个可用的显示名。`preferred` 是账号名，空则退化成「玩家N」。 */
+        fun nextSeatName(preferred: String = ""): String {
             val used = seats.values.map { it.name }.toSet()
+            if (preferred.isNotEmpty()) {
+                // 同一个人开多个标签页时会出现同名座位；加序号区分，否则「谁是谁」认不出来
+                if (preferred !in used) return preferred
+                var i = 2
+                while ("$preferred$i" in used) i++
+                return "$preferred$i"
+            }
+            var i = 1
             while (("玩家$i") in used) i++
             return "玩家$i"
+        }
+
+        /** 账号在 `userList.json` 里改过名时同步显示名；撞名（同名多座位）则不覆盖。 */
+        fun syncSeatName(seat: Seat, preferred: String) {
+            if (preferred.isEmpty() || seat.name == preferred) return
+            if (seats.values.any { it !== seat && it.name == preferred }) return
+            seat.name = preferred
         }
 
         fun addLog(text: String, by: String = "", scope: String = "public") {
@@ -554,13 +568,15 @@ object Play {
     private fun Route.playWs() = authenticate("auth") {
         webSocket("/play/ws") {
             val ip = call.request.local.remoteAddress
-            // 账号标识：房间内已经没有昵称了，只剩它来认「同一个人掉线回来该坐哪」。
-            // 未登记的 IP 退化成 ip:<地址>，仍然稳定（同一台设备一直是同一个座位）。
-            val ownerKey = runCatching { Util.getUserName(ip) }
+            // 账号标识：房间里的显示名就取 userList.json 里登记的名字，
+            // 未登记的 IP 才退化成按座位顺序的「玩家N」。
+            // ownerKey 仍然带上前缀（user:/ip:），只用于认「同一个人掉线回来该坐哪」，
+            // 不发给前端。
+            val userName = runCatching { Util.getUserName(ip) }
                 .getOrNull()
                 ?.takeIf { it.isNotBlank() }
-                ?.let { "user:$it" }
-                ?: "ip:$ip"
+            val ownerKey = userName?.let { "user:$it" } ?: "ip:$ip"
+            val displayName = userName ?: ""
 
             val session = this
             val outbox = Channel<String>(capacity = 64)
@@ -639,7 +655,7 @@ object Play {
                                 synchronized(room) {
                                     room.title = title
                                     room.seats[seatId] = Seat(seatId).also {
-                                        it.name = room.nextSeatName()
+                                        it.name = room.nextSeatName(displayName)
                                         it.owner = ownerKey
                                         it.online = true
                                     }
@@ -665,6 +681,7 @@ object Play {
                                     val mine = room.seatByOwner(ownerKey)?.takeIf { !it.online }
                                     if (mine != null) {
                                         mine.online = true
+                                        room.syncSeatName(mine, displayName)
                                         bind(roomId, mine.id)
                                         sendJoined(room, mine.id)
                                         room.addLog("${mine.name} 回到了房间")
@@ -675,7 +692,7 @@ object Play {
                                     if (room.seats.size >= MAX_SEATS) throw PlayError("房间已满")
                                     val seatId = newSeatId()
                                     room.seats[seatId] = Seat(seatId).also {
-                                        it.name = room.nextSeatName()
+                                        it.name = room.nextSeatName(displayName)
                                         it.owner = ownerKey
                                         it.online = true
                                     }
@@ -694,6 +711,7 @@ object Play {
                                 synchronized(room) {
                                     val seat = room.seats[seatId] ?: throw PlayError("座位已失效，请重新加入")
                                     seat.owner = ownerKey
+                                    room.syncSeatName(seat, displayName)
                                     seat.online = true
                                     bind(roomId, seatId)
                                     sendJoined(room, seatId)
@@ -856,6 +874,22 @@ object Play {
                     room.blankCount = n
                     room.addLog(if (n == 0) "不设空白玩家" else "空白玩家设为 $n 个")
                 }
+            }
+
+            // 房主在开局前把离线的人清出去：座位一直挂着，人数校验（尤其是
+            // 「开局要求全员在线」）就永远过不去，等一个不会再回来的人没有意义。
+            "kick" -> {
+                if (!isHost) throw PlayError("只有房主可以移出玩家")
+                if (engine.phase != "waiting") throw PlayError("游戏开始后不能移出玩家")
+                val target = data["seat"]?.jsonPrimitive?.contentOrNull ?: throw PlayError("缺少 seat")
+                if (target == seatId) throw PlayError("不能把自己移出房间")
+                val seat = room.seats[target] ?: throw PlayError("该玩家不在房间里")
+                // 只踢离线的：在线的让人家自己走，房主随手一点就把活人赶出去太危险
+                if (seat.online) throw PlayError("只能移出已经离线的玩家")
+                room.seats.remove(target)
+                room.spectators.remove(target)
+                conns.remove("${room.id}|$target")
+                room.addLog("${seat.name} 被房主移出了房间")
             }
 
             "endGame" -> {

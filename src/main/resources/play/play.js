@@ -377,6 +377,9 @@
             node.appendChild(el('div', 'empty', '还没有玩家'));
             return;
         }
+        // 只在开局前给房主「移出」按钮：对局中踢人会让存活名单与人数校验错位，
+        // 服务端也拒（只能移出已经离线的玩家）
+        var canKick = state && state.isHost && state.phase === 'waiting';
         players.forEach(function (p) {
             var row = el('div', 'player' + (p.me ? ' me' : '') + (p.alive === false ? ' dead' : ''));
             row.appendChild(el('span', 'p-name', p.name || '玩家'));
@@ -391,6 +394,19 @@
                     p.alive === false ? '出局' : '存活'));
             }
             if (p.online === false) row.appendChild(el('span', 'tag', '离线'));
+            if (canKick && p.online === false && !p.me) {
+                var kick = el('button', 'tag kick', '移出');
+                kick.type = 'button';
+                kick.onclick = function () {
+                    if (!window.confirm('把 ' + (p.name || '该玩家') + ' 移出房间？')) return;
+                    send({
+                        type: 'action',
+                        action: 'kick',
+                        data: { seat: p.id }
+                    });
+                };
+                row.appendChild(kick);
+            }
 
             node.appendChild(row);
         });
