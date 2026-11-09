@@ -175,6 +175,15 @@
             return (nameInput.value || '').trim();
         }
 
+        /* 还离线着的人名。开局要求全员在线，列出来房主才知道在等谁。 */
+        function offlineNames() {
+            var out = [];
+            ((state && state.players) || []).forEach(function (p) {
+                if (p.online === false) out.push(p.name || '玩家');
+            });
+            return out;
+        }
+
         /* ---------- A. 大厅 ---------- */
 
         function enterLobby() {
@@ -326,6 +335,12 @@
                     hostBody.appendChild(hostButton('开始游戏', 'primary', function () {
                         Play.action('start');
                     }));
+                } else {
+                    var off = offlineNames();
+                    if (off.length) {
+                        hostBody.appendChild(Play.el('div', 'act-hint',
+                            '等待上线：' + off.join('、')));
+                    }
                 }
                 show(groupField, true);
                 show(ucField, true);

@@ -463,9 +463,27 @@ class PlayUndercoverTest {
         val engine = engineOf(room)
         assertEquals(false, engine.gameState(room, "s0").bool("canStart"))
 
-        room.seats["s2"] = Play.Seat("s2").also { it.name = "丙" }
+        room.seats["s2"] = Play.Seat("s2").also {
+            it.name = "丙"
+            it.online = true
+        }
         assertEquals(true, engine.gameState(room, "s0").bool("canStart"))
         assertEquals(false, engine.gameState(room, "s1").bool("canStart"))
+    }
+
+    @Test
+    fun `all players must be online to start`() {
+        val room = newRoom("甲", "乙", "丙")
+        val engine = engineOf(room)
+        assertNull(engine.start(room))
+
+        engine.endGame(room)
+        room.seats["s2"]!!.online = false
+        assertEquals(false, engine.gameState(room, "s0").bool("canStart"))
+        val problem = engine.start(room)
+        assertNotNull(problem)
+        assertTrue(problem.contains("不在线"))
+        assertTrue(problem.contains("丙"))
     }
 
     @Test

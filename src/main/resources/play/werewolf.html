@@ -194,6 +194,15 @@
             return p && p.alive !== false;
         }
 
+        /* 还离线着的人名。开局要求全员在线，列出来房主才知道在等谁。 */
+        function offlineNames() {
+            var out = [];
+            ((state && state.players) || []).forEach(function (p) {
+                if (p.online === false) out.push(p.name || '玩家');
+            });
+            return out;
+        }
+
         /* ---------- A. 大厅 ---------- */
 
         function enterLobby() {
@@ -350,19 +359,40 @@
         function wolfVoteSummary() {
             var votes = (state && state.wolfVotes) || {};
             var ids = Object.keys(votes);
-            if (!ids.length) return '还没有狼人表态。';
+            var off = offlineWolves();
+            var warn = off.length
+                ? '离线的狼人不参与这一刀：' + off.join('、') + '。'
+                : '';
+            if (!ids.length) return warn + '还没有狼人表态。';
             var targets = {};
             ids.forEach(function (id) { targets[votes[id]] = true; });
             var parts = ids.map(function (id) {
                 return nameOf(id) + ' → ' + nameOf(votes[id]);
             });
-            var text = '当前刀口：' + parts.join('　');
+            var text = warn + '当前刀口：' + parts.join('　');
             if (Object.keys(targets).length > 1) {
                 text += '（意见不一致，统一目标后才能进入下一步）';
             } else {
                 text += '（一致）';
             }
             return text;
+        }
+
+        /**
+         * 已经离线、因而不需要表态的狼人。
+         *
+         * 服务端只等在线狼人（否则一个人关了手机，剩下的狼永远凑不出一致），
+         * 所以这里也得把离线的人摘掉 —— 不然在场的人会以为还差他一票。
+         */
+        function offlineWolves() {
+            var out = [];
+            var known = wolfSet();
+            ((state && state.players) || []).forEach(function (p) {
+                if (known[p.id] && isAlive(p) && p.online === false) {
+                    out.push(p.name || '玩家');
+                }
+            });
+            return out;
         }
 
         function nightCard(kind) {
@@ -558,9 +588,15 @@
             // 没轮到自己（或已经交过）时明确告诉他们现在等谁，别让人对着空面板干等。
             if (state.phase === 'night' && !pending.length) {
                 var step = state.nightStep || '';
-                var text = step
-                    ? '现在轮到' + Play.roleName(step) + '行动，请等待。'
-                    : '夜间行动已全部提交，正在结算。';
+                var text;
+                if (!step) {
+                    text = '夜间行动已全部提交，正在结算。';
+                } else if (state.nightStepOffline) {
+                    // 行动者全离线，服务端几秒后替他决定；说清楚就不会有人以为还要等满一分钟
+                    text = Play.roleName(step) + '离线，即将自动行动。';
+                } else {
+                    text = '现在轮到' + Play.roleName(step) + '行动，请等待。';
+                }
                 actsEl.appendChild(Play.el('div', 'note', text));
             }
         }
@@ -587,6 +623,13 @@
                     hostBody.appendChild(hostButton('开始游戏', 'primary', function () {
                         Play.action('start');
                     }));
+                } else {
+                    // 人数够了但还有人离线时按钮会消失，不给提示就成了「按钮怎么没了」
+                    var off = offlineNames();
+                    if (off.length) {
+                        hostBody.appendChild(Play.el('div', 'act-hint',
+                            '等待上线：' + off.join('、')));
+                    }
                 }
             } else if (phase === 'finished') {
                 hostBody.appendChild(hostButton('再开一局', 'primary', function () {

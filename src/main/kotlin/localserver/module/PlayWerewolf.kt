@@ -54,6 +54,12 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     /** 本夜当前步骤的截止时刻（epoch ms），0 表示没在计时。 */
     private var nightDeadlineAt: Long = 0L
 
+    /**
+     * 当前步骤的行动者「是什么时候全部离线的」，0 = 不是全离线状态。
+     * 用来区分「刚刷新了一下」和「真的关了页面」。
+     */
+    private var allOfflineSince: Long = 0L
+
     private var lastDeaths: List<String> = emptyList()
 
     /**
@@ -72,6 +78,13 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     override fun start(room: Play.Room): String? {
         val seats = room.seats.keys.toList()
         if (seats.size < 4) return "至少需要 4 名玩家"
+        // 开局必须全员在线：离线的人看不见自己的身份，也轮不到他行动，
+        // 一开局就少一个活人的局还不如不开
+        val offline = seats.filter { room.seats[it]?.online != true }
+        if (offline.isNotEmpty()) {
+            return "还有 ${offline.size} 名玩家不在线（" +
+                offline.joinToString("、") { room.nameOf(it) } + "），请等他们回来再开始"
+        }
         val config = roster(seats.size) ?: return "人数超出支持范围（4-12 人）"
 
         // 洗牌重发，但避开上一局的分配：连着两局身份一模一样会让人以为身份是固定的。
@@ -132,6 +145,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         // 所有人都有活人可动手时才有下一步；没有就直接结算（残局里守卫/预言家可能全军覆没）
         if (nightStep.isEmpty()) return resolveNight(room)
         nightDeadlineAt = System.currentTimeMillis() + NIGHT_STEP_MS
+        allOfflineSince = 0L
         return emptyList()
     }
 
@@ -144,18 +158,32 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         return ""
     }
 
+    /**
+     * 本步必须表态的座位。
+     *
+     * 狼人是唯一有多个行动者的步骤，规则也不一样：**只要还有在线的狼人，
+     * 离线的狼就不参与这一刀**。否则一个人关了手机，剩下的狼就永远凑不出「一致」，
+     * 整夜卡死在狼人这一步。全狼都离线时才退化成「全体狼人」，交给服务端代打。
+     */
+    private fun stepActors(room: Play.Room, step: String): List<String> {
+        if (step != "wolf") return livingWithRole(step)
+        val wolves = livingWithRole("wolf")
+        val online = wolves.filter { room.seats[it]?.online == true }
+        return if (online.isEmpty()) wolves else online
+    }
+
     /** 本步是否已交齐。 */
-    private fun stepDone(step: String): Boolean = when (step) {
+    private fun stepDone(room: Play.Room, step: String): Boolean = when (step) {
         "guard" -> guardTarget != null
         // 狼人不只是"都投了"，还必须指向同一个人：意见不一时停在这一步等他们商量，
         // 不能替他们决定（也不能当成空刀直接跳过，那样女巫看到的就是"没人被袭击"）
-        "wolf" -> wolvesAgreed()
+        "wolf" -> wolvesAgreed(room)
         else -> step in submitted
     }
 
-    /** 全体存活狼人都已表态，且都指向同一个人。 */
-    private fun wolvesAgreed(): Boolean {
-        val wolves = livingWithRole("wolf")
+    /** 本步的行动者都已表态，且（对狼人）都指向同一个人。 */
+    private fun wolvesAgreed(room: Play.Room): Boolean {
+        val wolves = stepActors(room, "wolf")
         if (wolves.isEmpty()) return true
         if (wolves.any { it !in wolfVotes }) return false
         return wolves.map { wolfVotes[it] }.distinct().size == 1
@@ -163,20 +191,21 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
 
     /** 本步交齐就往下拨；最后一步交完直接结算。返回值要写进日志。 */
     private fun advanceNight(room: Play.Room): List<String> {
-        if (nightStep.isEmpty() || !stepDone(nightStep)) return emptyList()
-        if (nightStep == "wolf") nightVictim = agreedWolfVictim()
+        if (nightStep.isEmpty() || !stepDone(room, nightStep)) return emptyList()
+        if (nightStep == "wolf") nightVictim = agreedWolfVictim(room)
         nightStep = nextStepAfter(nightStep)
         if (nightStep.isEmpty()) return resolveNight(room)
         nightDeadlineAt = System.currentTimeMillis() + NIGHT_STEP_MS
+        allOfflineSince = 0L
         return emptyList()
     }
 
     /**
-     * 狼人当夜的刀口：**全体存活狼人必须指向同一个人**。
+     * 狼人当夜的刀口：**本步的行动者（在线狼人）必须指向同一个人**。
      * 意见不一就没人死 —— 否则「分票也照样杀人」会让狼人毫无配合压力。
      */
-    private fun agreedWolfVictim(): String? {
-        val wolves = livingWithRole("wolf")
+    private fun agreedWolfVictim(room: Play.Room): String? {
+        val wolves = stepActors(room, "wolf")
         if (wolves.isEmpty()) return null
         val targets = wolves.map { wolfVotes[it] }.distinct()
         return if (targets.size == 1) targets[0] else null
@@ -253,12 +282,43 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         return lines
     }
 
-    /** 超过一步的时间没人动手就自动替他做决定，然后跳过。 */
+    /**
+     * 夜间推进。两条路：
+     * 1. **轮到的人全部离线** → 服务端替他行动，不让全房间干等 60 秒；
+     * 2. 有人在线但就是不操作 → 满 60 秒才替他行动。
+     *
+     * 离线判定留了 [OFFLINE_GRACE_MS] 的缓冲：玩家刷新页面时座位会短暂
+     * `online == false`，一断就替他做决定等于刷新一次就丢一次夜间行动。
+     */
     override fun tickOwn(room: Play.Room): Boolean {
-        if (phase != "night" || nightStep.isEmpty()) return false
-        if (nightDeadlineAt <= 0L || System.currentTimeMillis() < nightDeadlineAt) return false
+        if (phase != "night" || nightStep.isEmpty()) {
+            allOfflineSince = 0L
+            return false
+        }
 
+        val waiting = stepActors(room, nightStep)
+        val allOffline = waiting.isNotEmpty() && waiting.all { room.seats[it]?.online != true }
+        val now = System.currentTimeMillis()
+        val timedOut = nightDeadlineAt > 0L && now >= nightDeadlineAt
+
+        if (allOffline) {
+            if (allOfflineSince == 0L) allOfflineSince = now
+            // 缓冲期内不替人做决定，但也不等到 60 秒
+            if (now - allOfflineSince < OFFLINE_GRACE_MS) return false
+        } else {
+            allOfflineSince = 0L
+            if (!timedOut) return false
+        }
+
+        autoAct(room, allOffline)
+        return true
+    }
+
+    /** 服务端替当前步骤做决定。[offline] 只影响日志措辞。 */
+    private fun autoAct(room: Play.Room, offline: Boolean) {
         val lines = ArrayList<String>()
+        val why = if (offline) "离线" else "超时未行动"
+
         when (nightStep) {
             "guard" -> {
                 val guard = livingWithRole("guard").firstOrNull()
@@ -266,17 +326,17 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
                 val legal = alive.filter { it != guard && it != lastGuardTarget }
                 val pick = legal.randomOrNull(random)
                 guardTarget = pick ?: guard
-                lines.add("守卫超时未行动，自动守护 ${pick?.let { room.nameOf(it) } ?: "自己"}")
+                lines.add("守卫$why，自动守护 ${pick?.let { room.nameOf(it) } ?: "自己"}")
             }
 
             "wolf" -> {
-                val wolves = livingWithRole("wolf")
+                val wolves = stepActors(room, "wolf")
                 val candidates = alive.filter { roles[it] != "wolf" }
                 val pick = candidates.randomOrNull(random)
                 if (pick != null) {
                     // 自动时全体狼人统一指向同一个目标，避免「意见不一 = 空刀」
                     wolves.forEach { wolfVotes[it] = pick }
-                    lines.add("狼人超时未行动，自动袭击 ${room.nameOf(pick)}")
+                    lines.add("狼人$why，自动袭击 ${room.nameOf(pick)}")
                 }
             }
 
@@ -284,7 +344,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
                 // 默认不用药：药只有一瓶，自动替人挥霍比"这夜空过"糟糕得多
                 witchAction = "none"
                 submitted.add("witch")
-                lines.add("女巫超时未行动，本夜不用药")
+                lines.add("女巫$why，本夜不用药")
             }
 
             "seer" -> {
@@ -293,13 +353,13 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
                 if (seer != null && pick != null) {
                     seerChecks[pick] = if (roles[pick] == "wolf") "bad" else "good"
                     submitted.add("seer")
-                    lines.add("预言家超时未行动，自动完成查验")
+                    lines.add("预言家$why，自动完成查验")
                 }
             }
         }
+        allOfflineSince = 0L
         lines.forEach { room.addLog(it) }
         advanceNight(room).forEach { room.addLog(it) }
-        return true
     }
 
     override val ownCountdownActive: Boolean
@@ -308,6 +368,11 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     /** 测试用：把当前步骤的截止时刻拉到过去，逼心跳走「超时自动跳过」分支。 */
     internal fun forceNightDeadline() {
         nightDeadlineAt = System.currentTimeMillis() - 1
+    }
+
+    /** 测试用：把「全员离线」的缓冲期拉过去，免得单测真的等 5 秒。 */
+    internal fun forceOfflineGraceElapsed() {
+        allOfflineSince = System.currentTimeMillis() - OFFLINE_GRACE_MS - 1
     }
 
     // ===== 动作分发 =====
@@ -533,6 +598,11 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         // 当前该谁行动 + 我还欠什么没交
         val myTurn = phase == "night" && seatId in alive && nightStep == myRole
         put("nightStep", JsonPrimitive(if (phase == "night") nightStep else ""))
+        // 当前步骤的行动者是否全部离线：离线就由服务端代打（缓冲几秒），
+        // 前端据此改口「即将自动行动」，否则其他人会以为还要等满一分钟
+        val stepOffline = phase == "night" && nightStep.isNotEmpty() &&
+            stepActors(room, nightStep).let { it.isNotEmpty() && it.all { s -> room.seats[s]?.online != true } }
+        put("nightStepOffline", JsonPrimitive(stepOffline))
         put(
             "pendingFor", if (myTurn) Json.encodeToJsonElement(listOf(myRole!!)) else Json.encodeToJsonElement(emptyList<String>())
         )
@@ -543,7 +613,11 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         put("deaths", Json.encodeToJsonElement(if (phase == "night") emptyList<String>() else lastDeaths))
 
         val host = room.hostSeat == seatId
-        put("canStart", JsonPrimitive(host && phase == "waiting" && room.seats.size >= 4))
+        val allOnline = room.seats.values.all { it.online }
+        put(
+            "canStart",
+            JsonPrimitive(host && phase == "waiting" && room.seats.size >= 4 && allOnline)
+        )
         put("canVote", JsonPrimitive(phase == votePhase && seatId in alive))
         put("result", if (result == null) JsonNull else JsonPrimitive(result!!))
     }
@@ -586,6 +660,14 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
 
         /** 每个角色 1 分钟不操作就自动替他决定并跳过。 */
         private const val NIGHT_STEP_MS = 60_000L
+
+        /**
+         * 行动角色全部离线后，先等这么久再替他行动。
+         *
+         * 刷新页面时旧连接先断、新连接后连，座位会短暂 `online == false`；
+         * 没有这段缓冲，按一下 F5 就等于放弃本夜行动。
+         */
+        private const val OFFLINE_GRACE_MS = 5_000L
 
         /** 重开时避开上一局的尝试次数。5 人局只有 5 种分配，几次就能撞开。 */
         private const val DEAL_ATTEMPTS = 24

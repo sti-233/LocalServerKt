@@ -42,6 +42,12 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
     override fun start(room: Play.Room): String? {
         val seats = room.seats.keys.toList()
         if (seats.size < 3) return "至少需要 3 名玩家"
+        // 开局必须全员在线：离线的座位收不到自己的词，也发不了言，留着只会卡住流程
+        val offline = seats.filter { room.seats[it]?.online != true }
+        if (offline.isNotEmpty()) {
+            return "还有 ${offline.size} 名玩家不在线（" +
+                offline.joinToString("、") { room.nameOf(it) } + "），请等他们回来再开始"
+        }
 
         val k = room.undercoverCount.coerceIn(1, 2)
         // 卧底必须严格少于平民，否则开局就满足「卧底胜」的条件，一局都玩不下去
@@ -188,7 +194,8 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         put("customGroup", if (room.customGroup == null) JsonNull else Json.encodeToJsonElement(room.customGroup))
 
         val host = room.hostSeat == seatId
-        val canStart = host && phase == "waiting" &&
+        val allOnline = room.seats.values.all { it.online }
+        val canStart = host && phase == "waiting" && allOnline &&
             room.seats.size >= 3 && room.undercoverCount < room.seats.size - room.undercoverCount
         put("canStart", JsonPrimitive(canStart))
         put("canVote", JsonPrimitive(phase == votePhase && seatId in alive))

@@ -947,6 +947,70 @@ class PlayWerewolfTest {
         }
     }
 
+    // ===== 离线处理 =====
+
+    @Test
+    fun `starting requires every player online`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        engineOf(room).endGame(room)
+
+        room.seats["s3"]!!.online = false
+        assertEquals(false, engineOf(room).gameState(room, "s0")["canStart"]!!.jsonPrimitive.boolean)
+
+        val problem = engineOf(room).start(room)
+        assertNotNull(problem)
+        assertTrue(problem.contains("不在线"), problem)
+        assertTrue(problem.contains("玩家3"), problem)
+    }
+
+    @Test
+    fun `an offline role is played by the server`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        val engine = engineOf(room)
+
+        // 守卫离线：不等 60 秒，缓冲期一过就自动守护
+        val guard = seatsWithRole(room, "guard").first()
+        room.seats[guard]!!.online = false
+        engine.forceOfflineGraceElapsed()
+        assertTrue(engine.tick(room))
+        assertEquals("wolf", stepOf(room))
+        val roomLog = room.log.joinToString("\n") { it["text"]!!.jsonPrimitive.content }
+        assertTrue(roomLog.contains("守卫离线"), roomLog)
+    }
+
+    @Test
+    fun `offline wolves do not hold up the pack`() {
+        val room = newRoom(8)
+        engineOf(room).start(room)
+        val engine = engineOf(room)
+        val wolves = seatsWithRole(room, "wolf")
+        assertEquals(2, wolves.size)
+
+        doGuard(room)
+        // 一只狼离线、一只在线：在线的那个单独决定就行，不能卡在「凑不出一致」
+        room.seats[wolves[1]]!!.online = false
+        act(room, wolves[0], "wolfVote", obj("target" to nightVictimOf(room)))
+        assertEquals("witch", stepOf(room))
+    }
+
+    @Test
+    fun `the server decides for a pack that is entirely offline`() {
+        val room = newRoom(8)
+        engineOf(room).start(room)
+        val engine = engineOf(room)
+
+        doGuard(room)
+        val wolves = seatsWithRole(room, "wolf")
+        wolves.forEach { room.seats[it]!!.online = false }
+        engine.forceOfflineGraceElapsed()
+        assertTrue(engine.tick(room))
+        assertEquals("witch", stepOf(room))
+        val roomLog = room.log.joinToString("\n") { it["text"]!!.jsonPrimitive.content }
+        assertTrue(roomLog.contains("狼人离线"), roomLog)
+    }
+
     // ===== 测试辅助（依赖上面那些动作） =====
 
     /** 把夜间推进到狼人那一步，前面的守卫步骤用无争议的动作交掉。 */
