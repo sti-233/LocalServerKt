@@ -106,6 +106,10 @@
             fire('onState', msg);
         } else if (msg.type === 'roomList') {
             fire('onRoomList', msg.rooms || []);
+        } else if (msg.type === 'closed') {
+            // 房主解散了房间：先清掉本页存的座位，再让页面决定回哪
+            if (msg.room) clearSeat(msg.room);
+            fire('onClosed', msg);
         } else if (msg.type === 'err') {
             fire('onError', msg.text || '出错了');
         }
@@ -113,7 +117,7 @@
 
     /**
      * 建立（或复用）连接。
-     * opts = { game, onOpen, onState, onJoined, onRoomList, onError, onStatus }
+     * opts = { game, onOpen, onState, onJoined, onRoomList, onError, onClosed, onStatus }
      */
     function connect(o) {
         opts = o || {};
@@ -351,6 +355,8 @@
             var b = el('button', 'room-item');
             b.type = 'button';
             b.appendChild(el('span', 'ri-id', r.id || ''));
+            // 房间别名（创建时填的那一栏）：没有就用游戏名，别留一个空位
+            if (r.title) b.appendChild(el('span', 'ri-title', r.title));
             b.appendChild(el('span', 'ri-game', gameName(r.game)));
             var meta = (r.players || 0) + ' 人 · ' + phaseName(r.phase);
             b.appendChild(el('span', 'ri-meta', meta));
@@ -377,8 +383,13 @@
 
             if (p.me) row.appendChild(el('span', 'tag tag-me', '我'));
             if (p.role) row.appendChild(el('span', 'tag tag-role', roleName(p.role)));
-            row.appendChild(el('span', 'tag ' + (p.alive === false ? 'tag-dead' : 'tag-alive'),
-                p.alive === false ? '出局' : '存活'));
+            if (p.spectating) {
+                // 观战者不是「出局」—— 他本来就没进场，标成出局会让人以为他被投掉了
+                row.appendChild(el('span', 'tag', '观战'));
+            } else {
+                row.appendChild(el('span', 'tag ' + (p.alive === false ? 'tag-dead' : 'tag-alive'),
+                    p.alive === false ? '出局' : '存活'));
+            }
             if (p.online === false) row.appendChild(el('span', 'tag', '离线'));
 
             node.appendChild(row);

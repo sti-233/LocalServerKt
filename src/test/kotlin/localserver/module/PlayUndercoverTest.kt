@@ -3,6 +3,7 @@ package localserver.module
 import kotlinx.serialization.json.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
@@ -43,11 +44,15 @@ class PlayUndercoverTest {
     private fun JsonObject.bool(key: String): Boolean =
         this[key]!!.jsonPrimitive.boolean
 
-    /** 每个座位看到的自己的词。 */
+    /**
+     * 每个座位看到的自己的词。**只收真正拿到词的人**：观战者与空白玩家的 myWord 是 null，
+     * 强行 `.content` 会抛异常（而他们本来就不该有词）。
+     */
     private fun words(room: Play.Room): Map<String, String> =
-        room.seats.keys.associateWith {
-            engineOf(room).gameState(room, it)["myWord"]!!.jsonPrimitive.content
-        }
+        room.seats.keys.mapNotNull { s ->
+            val w = engineOf(room).gameState(room, s)["myWord"]
+            if (w == null || w is JsonNull) null else s to w.jsonPrimitive.content
+        }.toMap()
 
     /** 从「词」反推谁是卧底：与多数人不同的那个。 */
     private fun undercoverSeat(room: Play.Room): String {
@@ -149,6 +154,76 @@ class PlayUndercoverTest {
 
         val w = words(room)
         assertTrue(w.values.all { it == "苹果派" || it == "香蕉派" }, "词必须来自自定义词组：$w")
+        // 词组是房主定的，他握着答案，这一局必须下场观战
+        assertTrue("s0" in room.spectators, "设了自定义词组的房主应当观战")
+        assertEquals(4, w.size, "观战的房主不该拿到词")
+    }
+
+    @Test
+    fun `custom group must be exactly two words`() {
+        // 一个词凑不出「平民词 / 卧底词」，三个词则是房主也说不清这局用哪两个
+        val one = newRoom("甲", "乙", "丙", "丁")
+        one.customGroup = listOf("只有一个")
+        assertNotNull(engineOf(one).start(one))
+
+        val three = newRoom("甲", "乙", "丙", "丁")
+        three.customGroup = listOf("红", "蓝", "绿")
+        assertNotNull(engineOf(three).start(three))
+    }
+
+    @Test
+    fun `host spectates while a custom group is set`() {
+        val room = newRoom("甲", "乙", "丙", "丁")
+        room.customGroup = listOf("苹果派", "香蕉派")
+        assertNull(engineOf(room).start(room))
+
+        assertTrue("s0" in room.spectators)
+        assertFalse("s0" in room.engine.alive, "观战者不进存活名单")
+        assertEquals(true, engineOf(room).gameState(room, "s0").bool("spectating"))
+        // 观战者不能投票，也不能假装发言推进流程
+        assertFailsWith<PlayError> { act(room, "s0", "abstain") }
+        assertEquals(0, room.engine.speakNeeded(room).count { it == "s0" })
+    }
+
+    @Test
+    fun `clearing the custom group puts the host back in`() {
+        val room = newRoom("甲", "乙", "丙", "丁")
+        room.customGroup = listOf("苹果派", "香蕉派")
+        assertNull(engineOf(room).start(room))
+        assertTrue("s0" in room.spectators)
+
+        // 恢复内置词库之后再开的局，房主照常参与
+        engineOf(room).endGame(room)
+        room.customGroup = null
+        assertNull(engineOf(room).start(room))
+        assertTrue(room.spectators.isEmpty())
+        assertTrue("s0" in room.engine.alive)
+    }
+
+    @Test
+    fun `blank players get no word and count as civilians`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        room.blankCount = 1
+        assertNull(engineOf(room).start(room))
+
+        val w = words(room)
+        assertEquals(4, w.size, "5 人里有 1 个空白，只有 4 个人拿到词")
+        // 空白自己知道自己是空白（否则他会一直等发词），但身份牌依旧不公开
+        val blank = room.seats.keys.first { it !in w.keys }
+        assertEquals(true, engineOf(room).gameState(room, blank).bool("myBlank"))
+        assertNull(engineOf(room).gameState(room, blank)["myRole"]?.takeIf { it !is JsonNull })
+        // 空白算平民阵营：他不知道自己词（没有词），但也不该被当成卧底
+        assertNull(engineOf(room).gameState(room, blank)["myWord"]?.takeIf { it !is JsonNull })
+    }
+
+    @Test
+    fun `blank count is clamped to leave at least one civilian`() {
+        val room = newRoom("甲", "乙", "丙")
+        room.blankCount = 5
+        // 3 人 1 卧底 → 只剩 2 个好人位，最多 1 个空白；要求 4 个空白必须被夹到合法值
+        assertNull(engineOf(room).start(room))
+        assertEquals(1, room.blankCount)
+        assertEquals(3, engineOf(room).alive.size)
     }
 
     @Test
@@ -262,7 +337,8 @@ class PlayUndercoverTest {
         room.customGroup = listOf("柠檬水", "橘子水")
         engineOf(room).start(room)
         val u = undercoverSeat(room)
-        val civilian = room.seats.keys.first { it != u }
+        // 用 alive 取人：设了自定义词组后房主在观战，不在存活名单里，投他会报「目标不在场」
+        val civilian = room.engine.alive.first { it != u }
 
         speakAll(room)
         voteAllExcept(room, civilian)

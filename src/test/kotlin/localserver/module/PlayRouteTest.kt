@@ -24,6 +24,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -113,7 +114,9 @@ class PlayRouteTest {
 
             val joined = readUntil("joined")
             assertEquals("undercover", joined["game"]!!.jsonPrimitive.content)
-            assertEquals("房主", joined["name"]!!.jsonPrimitive.content)
+            // 建房时填的是**房间别名**，玩家名由座位顺序生成
+            assertEquals("房主", joined["title"]!!.jsonPrimitive.content)
+            assertEquals("玩家1", joined["name"]!!.jsonPrimitive.content)
             assertEquals(true, joined["isHost"]!!.jsonPrimitive.content.toBoolean())
             val room = joined["room"]!!.jsonPrimitive.content
             assertEquals(4, room.length, "房号是 4 位")
@@ -135,18 +138,21 @@ class PlayRouteTest {
             readUntil("state")
         }
 
-        // 第二条连着进来（同一 client，两个 webSocket 块顺序执行，
-        // 第一个块结束时连接已关闭，但房间与座位表还在内存里）
+        // 第二条连接来自同一个账号（测试里 remoteAddress 恒为 localhost），
+        // 默认会接管上面那个离线座位 —— 这里先把 owner 改掉，假装是另一个人，
+        // 才能验证「新玩家入座」这条路径（接管逻辑另有测试覆盖）。
+        Play.rooms[roomId]!!.seats.values.first().owner = "user:someone-else"
+
         client.webSocket("/play/ws") {
-            sendJson(frame("join", "room" to roomId, "name" to "乙"))
+            sendJson(frame("join", "room" to roomId))
             val joined = readUntil("joined")
-            assertEquals("乙", joined["name"]!!.jsonPrimitive.content)
+            assertEquals("玩家2", joined["name"]!!.jsonPrimitive.content)
             assertEquals(false, joined["isHost"]!!.jsonPrimitive.content.toBoolean())
 
             val state = readUntil("state")["state"]!!.jsonObject
             assertEquals(2, state["players"]!!.jsonArray.size)
             val names = state["players"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
-            assertTrue(names.containsAll(listOf("甲", "乙")), "两个座位都该在：$names")
+            assertTrue(names.containsAll(listOf("玩家1", "玩家2")), "两个座位都该在：$names")
         }
     }
 
@@ -275,7 +281,7 @@ class PlayRouteTest {
             val by = state["log"]!!.jsonArray
                 .first { it.jsonObject["text"]!!.jsonPrimitive.content == "大家好" }
                 .jsonObject["by"]!!.jsonPrimitive.content
-            assertEquals("甲", by)
+            assertEquals("玩家1", by, "发言者是座位名（房间里不再有昵称）")
         }
     }
 
@@ -392,8 +398,46 @@ class PlayRouteTest {
                 put("data", buildJsonObject { put("group", JsonPrimitive("孤单")) })
             })
             val err = readUntil("err")
-            assertTrue(err["text"]!!.jsonPrimitive.content.contains("至少需要 2 个"))
+            assertTrue(err["text"]!!.jsonPrimitive.content.contains("恰好两个"))
         }
+    }
+
+    @Test
+    fun `host can disband the room and everyone gets a closed frame`() = withApp { client ->
+        var roomId = ""
+        client.webSocket("/play/ws") {
+            sendJson(frame("create", "game" to "undercover", "name" to "临时房"))
+            val joined = readUntil("joined")
+            roomId = joined["room"]!!.jsonPrimitive.content
+            assertEquals("临时房", joined["title"]!!.jsonPrimitive.content)
+            readUntil("state")
+
+            sendJson(buildJsonObject { put("type", JsonPrimitive("disband")) })
+            val closed = readUntil("closed")
+            assertEquals(roomId, closed["room"]!!.jsonPrimitive.content)
+            assertTrue(closed["text"]!!.jsonPrimitive.content.contains("解散"))
+        }
+        // 房间该从内存与大厅里一起消失
+        assertNull(Play.rooms[roomId])
+    }
+
+    @Test
+    fun `only the host can disband`() = withApp { client ->
+        val room = Play.Room("FFFF", Play.UNDERCOVER)
+        room.seats["h"] = Play.Seat("h").also { it.name = "玩家1"; it.online = true }
+        room.seats["g"] = Play.Seat("g").also { it.name = "玩家2"; it.online = true }
+        room.hostSeat = "h"
+        Play.rooms["FFFF"] = room
+
+        client.webSocket("/play/ws") {
+            sendJson(frame("resume", "room" to "FFFF", "seat" to "g"))
+            readUntil("joined")
+            readUntil("state")
+            sendJson(buildJsonObject { put("type", JsonPrimitive("disband")) })
+            val err = readUntil("err")
+            assertTrue(err["text"]!!.jsonPrimitive.content.contains("只有房主"))
+        }
+        assertNotNull(Play.rooms["FFFF"], "非房主不该解散成功")
     }
 
     @Test
@@ -407,11 +451,11 @@ class PlayRouteTest {
             sendJson(buildJsonObject {
                 put("type", JsonPrimitive("action"))
                 put("action", JsonPrimitive("config"))
-                put("data", buildJsonObject { put("group", JsonPrimitive("苹果,梨、草莓")) })
+                put("data", buildJsonObject { put("group", JsonPrimitive("苹果、梨")) })
             })
             val state = readUntil("state")["state"]!!.jsonObject
             val g = state["customGroup"]!!.jsonArray.map { it.jsonPrimitive.content }
-            assertEquals(listOf("苹果", "梨", "草莓"), g, "三种分隔符都要支持")
+            assertEquals(listOf("苹果", "梨"), g, "顿号也要能当分隔符")
 
             sendJson(buildJsonObject {
                 put("type", JsonPrimitive("action"))

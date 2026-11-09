@@ -69,6 +69,15 @@ button { font-family: inherit; }
 .room-chip.room-chip > * + * { margin-left: 8px; }
 .room-chip-label { font-size: 12px; color: var(--muted); }
 .room-id { font-size: 16px; letter-spacing: 2px; }
+/* 房间别名：房号旁边的浅色小字，超长省略 */
+.room-title {
+    font-size: 13px;
+    color: var(--muted);
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 /* ================= 外层布局 ================= */
 .wrap { padding: 18px; max-width: 1180px; margin: 0 auto; }
@@ -146,6 +155,15 @@ button { font-family: inherit; }
 .room-item:hover { background: var(--accent-soft); border-color: var(--accent); }
 .room-item.room-item > * + * { margin-left: 10px; }
 .ri-id { font-weight: 700; letter-spacing: 1px; }
+/* 房间别名：房号之后、游戏名之前，超长用省略号（房主可填 12 字） */
+.ri-title {
+    font-size: 13px;
+    color: var(--text);
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .ri-game { font-size: 12px; color: var(--accent); }
 .room-item .ri-meta { margin-left: auto; font-size: 12px; color: var(--muted); }
 

@@ -17,6 +17,7 @@
         <div class="room-chip hidden" id="roomChip">
             <span class="room-chip-label">房号</span>
             <strong class="room-id" id="roomId">----</strong>
+            <span class="room-title hidden" id="roomTitle"></span>
             <button class="btn tiny" id="copyBtn" type="button">复制</button>
         </div>
         <span class="conn-text" id="phaseHint"></span>
@@ -35,7 +36,7 @@
             <div class="card">
                 <h3 class="card-title">创建房间</h3>
                 <div class="join-row">
-                    <input id="nameInput" class="text-input" placeholder="昵称（可留空）" maxlength="20">
+                    <input id="nameInput" class="text-input" placeholder="房间别名（可留空）" maxlength="20">
                     <button id="createBtn" class="btn primary" type="button">创建房间</button>
                 </div>
                 <p class="card-hint">创建后把房号发给朋友，他们用「加入」进来。</p>
@@ -129,6 +130,7 @@
         var phaseHint = Play.$('phaseHint');
         var roomChip = Play.$('roomChip');
         var roomIdEl = Play.$('roomId');
+        var roomTitleEl = Play.$('roomTitle');
         var lobbyEl = Play.$('lobby');
         var roomEl = Play.$('room');
         var bannerEl = Play.$('banner');
@@ -172,10 +174,12 @@
         function pickRoom() {
             var v = (roomInput.value || '').replace(/\s+/g, '').toUpperCase();
             if (!v) { Play.toast('先输入房号'); roomInput.focus(); return; }
-            Play.send({ type: 'join', room: v, name: myName() });
+            // 房间里已经没有昵称了：座位名由服务端按顺序给（玩家1、玩家2…）
+            Play.send({ type: 'join', room: v });
         }
 
-        function myName() {
+        /* 创建时填的是房间别名，不是玩家昵称 */
+        function roomTitleOf() {
             return (nameInput.value || '').trim();
         }
 
@@ -629,6 +633,12 @@
                     if (off.length) {
                         hostBody.appendChild(Play.el('div', 'act-hint',
                             '等待上线：' + off.join('、')));
+                    } else {
+                        var n = 0;
+                        (state.players || []).forEach(function (p) { if (!p.spectating) n++; });
+                        if (n < 4) {
+                            hostBody.appendChild(Play.el('div', 'act-hint', '还需要 ' + (4 - n) + ' 名玩家'));
+                        }
                     }
                 }
             } else if (phase === 'finished') {
@@ -638,6 +648,17 @@
             }
             // 讨论 / 夜晚 / 投票全部自动推进（全员发言自动开投票、全员投完自动结算、
             // 夜间收齐行动自动进下一步），房主没有可点的操作了
+
+            // 解散房间：任何时候都能做（包括对局中），所以放在分支外面
+            var row = Play.el('div', 'btn-row');
+            var dis = Play.el('button', 'btn', '解散房间');
+            dis.type = 'button';
+            dis.onclick = function () {
+                if (!window.confirm('解散后房间会立刻消失，其他人会被踢回大厅。确定吗？')) return;
+                Play.send({ type: 'disband' });
+            };
+            row.appendChild(dis);
+            hostBody.appendChild(row);
         }
 
         /* ---------- 渲染：聊天频道 ---------- */
@@ -658,6 +679,12 @@
         function render() {
             if (!state) return;
             roomIdEl.textContent = room || state.room || '----';
+            if (state.title) {
+                roomTitleEl.textContent = state.title;
+                show(roomTitleEl, true);
+            } else {
+                show(roomTitleEl, false);
+            }
             phaseHint.textContent = Play.phaseName(state.phase) +
                 (state.round ? ' · 第 ' + state.round + ' 轮' : '');
             renderMe();
@@ -739,6 +766,12 @@
             onRoomList: function (rooms) {
                 Play.renderRooms(roomsEl, rooms, goRoom);
             },
+            onClosed: function (msg) {
+                showErr('');
+                Play.toast((msg && msg.text) || '房间已解散');
+                Play.clearSeat(room);
+                enterLobby();
+            },
             onError: function (text) {
                 showErr(text);
                 Play.toast(text);
@@ -749,7 +782,7 @@
         /* ---------- 交互绑定 ---------- */
 
         Play.$('createBtn').onclick = function () {
-            if (!Play.send({ type: 'create', game: GAME, name: myName() })) {
+            if (!Play.send({ type: 'create', game: GAME, name: roomTitleOf() })) {
                 Play.toast('还没连上服务器，稍等一下');
             }
         };

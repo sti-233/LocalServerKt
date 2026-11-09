@@ -265,6 +265,9 @@ abstract class GameEngine(val game: String) {
      */
     fun ensureHost(room: Play.Room) {
         if (phase == "waiting" || phase == "finished") return
+        // 观战中的房主（卧底局自设词组）依旧是房主：他只是不参与对局，
+        // 改词组、解散房间、下一局还得由他来，转给别人等于把房间的控制权弄丢
+        if (room.hostSeat in room.spectators) return
         if (room.hostSeat in alive) return
         val next = alive.firstOrNull() ?: return
         val oldName = room.nameOf(room.hostSeat)
@@ -319,6 +322,8 @@ abstract class GameEngine(val game: String) {
                     put("me", JsonPrimitive(s.id == seatId))
                     put("online", JsonPrimitive(s.online))
                     put("spoken", JsonPrimitive(s.id in spoken))
+                    // 观战者不进 alive、不发词、不投票，只留在列表里让大家知道他在
+                    put("spectating", JsonPrimitive(s.id in room.spectators))
                     val r = visibleRole(room, seatId, s.id)
                     put("role", if (r == null) JsonNull else JsonPrimitive(r))
                 })
@@ -337,6 +342,7 @@ abstract class GameEngine(val game: String) {
         val needVote = voteNeeded(room)
         val base = buildJsonObject {
             put("room", JsonPrimitive(room.id))
+            put("title", JsonPrimitive(room.title))
             put("game", JsonPrimitive(game))
             put("seat", JsonPrimitive(seatId))
             put("phase", JsonPrimitive(phase))
@@ -409,14 +415,39 @@ object Play {
     private val random = SecureRandom()
 
     class Seat(val id: String) {
+        /**
+         * 房间里的显示名，**由座位顺序自动生成**（玩家1、玩家2…）。
+         * 房间内已经没有昵称了：昵称那栏现在填的是房间别名，见 [Room.title]。
+         */
         @Volatile var name: String = ""
+
+        /**
+         * 座位归属：`userList.json` 里的账号名，未登记则退化成 `ip:<地址>`。
+         * **从不发给前端**，只用来判断「同一个人掉线回来该坐哪个位置」——
+         * 房间内取消昵称之后，光靠显示名已经认不出人了。
+         */
+        @Volatile var owner: String = ""
+
         @Volatile var online: Boolean = false
     }
 
     class Room(val id: String, val game: String) {
+
+        /**
+         * 房间别名。创建时填的那个「昵称」现在指的是它 —— 房间里不再有玩家昵称，
+         * 每个人就叫「玩家1」「玩家2」，靠座位顺序区分。
+         */
+        var title: String = ""
+
         val seats = LinkedHashMap<String, Seat>()
 
         var hostSeat: String = ""
+
+        /**
+         * 观战者座位：在房间里但**不参与对局**（不进 `alive`、不发词、不投票）。
+         * 目前只有一种来由 —— 卧底局房主自设词组时他等于握着答案，必须出局观战。
+         */
+        val spectators = HashSet<String>()
 
         val engine: GameEngine = when (game) {
             UNDERCOVER -> PlayUndercover()
@@ -425,7 +456,12 @@ object Play {
 
         /** 卧底的房主配置，跨局保留（房主改一次就不必每局重设）。 */
         var undercoverCount: Int = 1
+
+        /** 自定义词组：`[平民词, 卧底词]`，恰好两个。null 表示用内置随机词库。 */
         var customGroup: List<String>? = null
+
+        /** 拿到空白词的人数，0 表示不设空白。 */
+        var blankCount: Int = 0
 
         val log = ArrayList<JsonObject>()
 
@@ -433,9 +469,17 @@ object Play {
 
         fun nameOf(seatId: String): String = seats[seatId]?.name ?: "?"
 
-        /** 同名座位（用于「同一个人掉线后用同一昵称回来」的座位恢复）。 */
-        fun seatByName(name: String): Seat? =
-            seats.values.firstOrNull { it.name == name }
+        /** 同一个账号的座位（掉线回来该坐回原位，而不是在旁边多站一个人）。 */
+        fun seatByOwner(owner: String): Seat? =
+            if (owner.isEmpty()) null else seats.values.firstOrNull { it.owner == owner }
+
+        /** 下一个可用的显示名：玩家N，跳过已占用的。 */
+        fun nextSeatName(): String {
+            var i = 1
+            val used = seats.values.map { it.name }.toSet()
+            while (("玩家$i") in used) i++
+            return "玩家$i"
+        }
 
         fun addLog(text: String, by: String = "", scope: String = "public") {
             log.add(buildJsonObject {
@@ -510,10 +554,13 @@ object Play {
     private fun Route.playWs() = authenticate("auth") {
         webSocket("/play/ws") {
             val ip = call.request.local.remoteAddress
-            val defaultName = runCatching { Util.getUserName(ip) }
+            // 账号标识：房间内已经没有昵称了，只剩它来认「同一个人掉线回来该坐哪」。
+            // 未登记的 IP 退化成 ip:<地址>，仍然稳定（同一台设备一直是同一个座位）。
+            val ownerKey = runCatching { Util.getUserName(ip) }
                 .getOrNull()
                 ?.takeIf { it.isNotBlank() }
-                ?: "玩家"
+                ?.let { "user:$it" }
+                ?: "ip:$ip"
 
             val session = this
             val outbox = Channel<String>(capacity = 64)
@@ -560,6 +607,7 @@ object Play {
                     put("room", JsonPrimitive(room.id))
                     put("seat", JsonPrimitive(seatId))
                     put("name", JsonPrimitive(room.nameOf(seatId)))
+                    put("title", JsonPrimitive(room.title))
                     put("game", JsonPrimitive(room.game))
                     put("isHost", JsonPrimitive(room.hostSeat == seatId))
                 })
@@ -581,19 +629,23 @@ object Play {
                             "create" -> {
                                 val game = obj["game"]?.jsonPrimitive?.contentOrNull ?: ""
                                 if (game != UNDERCOVER && game != WEREWOLF) throw PlayError("未知的游戏")
-                                val name = cleanName(obj["name"]?.jsonPrimitive?.contentOrNull, defaultName)
+                                // 这一栏现在填的是**房间别名**，不是玩家昵称
+                                val title = cleanName(obj["name"]?.jsonPrimitive?.contentOrNull, "")
                                 sweep()
                                 ensureTicker()
                                 val roomId = newRoomId()
                                 val seatId = newSeatId()
                                 val room = Room(roomId, game)
                                 synchronized(room) {
+                                    room.title = title
                                     room.seats[seatId] = Seat(seatId).also {
-                                        it.name = name
+                                        it.name = room.nextSeatName()
+                                        it.owner = ownerKey
                                         it.online = true
                                     }
                                     room.hostSeat = seatId
-                                    room.addLog("$name 创建了房间")
+                                    room.addLog("${room.nameOf(seatId)} 创建了房间" +
+                                        if (title.isNotEmpty()) "「$title」" else "")
                                 }
                                 rooms[roomId] = room
                                 bind(roomId, seatId)
@@ -604,17 +656,18 @@ object Play {
                             "join" -> {
                                 val roomId = (obj["room"]?.jsonPrimitive?.contentOrNull ?: "").uppercase()
                                 val room = rooms[roomId] ?: throw PlayError("房间不存在")
-                                val name = cleanName(obj["name"]?.jsonPrimitive?.contentOrNull, defaultName)
                                 ensureTicker()
                                 synchronized(room) {
-                                    // 同名且已掉线的座位直接接管：刷新页面/换标签页/手机熄屏回来，
-                                    // 都该回到自己原来那个座位，而不是在旁边多站一个人
-                                    val stale = room.seatByName(name)?.takeIf { !it.online }
-                                    if (stale != null) {
-                                        stale.online = true
-                                        bind(roomId, stale.id)
-                                        sendJoined(room, stale.id)
-                                        room.addLog("$name 回到了房间")
+                                    // 同一个账号的**离线**座位直接接管：刷新页面/手机熄屏回来，
+                                    // 都该回到自己原来那个座位，而不是在旁边多站一个人。
+                                    // 只认离线座位是刻意的 —— 同一个人开四个标签页假装四个人是
+                                    // 单人测试的常用手法，把在线座位也合并掉就没法测了。
+                                    val mine = room.seatByOwner(ownerKey)?.takeIf { !it.online }
+                                    if (mine != null) {
+                                        mine.online = true
+                                        bind(roomId, mine.id)
+                                        sendJoined(room, mine.id)
+                                        room.addLog("${mine.name} 回到了房间")
                                         broadcast(room)
                                         return@synchronized
                                     }
@@ -622,10 +675,11 @@ object Play {
                                     if (room.seats.size >= MAX_SEATS) throw PlayError("房间已满")
                                     val seatId = newSeatId()
                                     room.seats[seatId] = Seat(seatId).also {
-                                        it.name = name
+                                        it.name = room.nextSeatName()
+                                        it.owner = ownerKey
                                         it.online = true
                                     }
-                                    room.addLog("$name 加入了房间")
+                                    room.addLog("${room.nameOf(seatId)} 加入了房间")
                                     bind(roomId, seatId)
                                     sendJoined(room, seatId)
                                     broadcast(room)
@@ -639,11 +693,40 @@ object Play {
                                 ensureTicker()
                                 synchronized(room) {
                                     val seat = room.seats[seatId] ?: throw PlayError("座位已失效，请重新加入")
+                                    seat.owner = ownerKey
                                     seat.online = true
                                     bind(roomId, seatId)
                                     sendJoined(room, seatId)
                                     broadcast(room)
                                 }
+                            }
+
+                            // 房主解散房间：所有人被踢回大厅，房间立刻从列表里消失。
+                            // 不做事后恢复 —— 房间本来就是内存里的临时物，散了就散了。
+                            "disband" -> {
+                                val room = boundRoom?.let { rooms[it] } ?: throw PlayError("尚未加入房间")
+                                val seatId = boundSeat ?: throw PlayError("尚未加入房间")
+                                if (room.hostSeat != seatId) throw PlayError("只有房主可以解散房间")
+                                val id = room.id
+                                val notice = buildJsonObject {
+                                    put("type", JsonPrimitive("closed"))
+                                    put("room", JsonPrimitive(id))
+                                    put("text", JsonPrimitive("房主解散了房间"))
+                                }.toString()
+                                synchronized(room) {
+                                    room.seats.keys.forEach { sid ->
+                                        conns["$id|$sid"]?.let {
+                                            it.trySend(notice)
+                                            it.close()
+                                        }
+                                        conns.remove("$id|$sid")
+                                    }
+                                    room.seats.values.forEach { it.online = false }
+                                    room.engine.endGame(room)
+                                }
+                                rooms.remove(id)
+                                boundRoom = null
+                                boundSeat = null
                             }
 
                             "lobby" -> {
@@ -735,7 +818,9 @@ object Play {
                 if (engine.phase != "waiting") throw PlayError("游戏已经开始了")
                 val problem = engine.start(room)
                 if (problem != null) throw PlayError(problem)
-                room.addLog("游戏开始，共 ${room.seats.size} 名玩家")
+                val playing = room.seats.size - room.spectators.size
+                room.addLog("游戏开始，共 $playing 名玩家参与" +
+                    if (room.spectators.isEmpty()) "" else "（${room.spectators.size} 人观战）")
             }
 
             "config" -> {
@@ -750,18 +835,26 @@ object Play {
                 data["group"]?.jsonPrimitive?.contentOrNull?.let { raw ->
                     if (raw.isBlank()) {
                         room.customGroup = null
-                        room.addLog("已恢复使用内置随机词组")
+                        room.addLog("已恢复使用内置随机词组，房主回到游戏")
                     } else {
-                        val words = raw.split(Regex("[,，、\\\\s]+"))
+                        val words = raw.split(Regex("[,，、\\s]+"))
                             .map { it.trim() }
                             .filter { it.isNotEmpty() }
                             .distinct()
-                        if (words.size < 2) throw PlayError("词组至少需要 2 个不同的词")
-                        if (words.size > 6) throw PlayError("词组最多 6 个词")
+                        // 自定义词组就是「平民词,卧底词」这一对，不再从中随机挑：
+                        // 房主设了三个词也不知道这局到底用哪两个，而且房主会下场观战
+                        if (words.size != 2) throw PlayError("自定义词组必须恰好两个：平民词,卧底词")
                         if (words.any { it.length > 16 }) throw PlayError("每个词最长 16 个字符")
                         room.customGroup = words
-                        room.addLog("房主设置了自定义词组：" + words.joinToString("、"))
+                        room.addLog("房主设置了自定义词组：" + words.joinToString("、") +
+                            "（接下来的对局由房主观战）")
                     }
+                }
+                data["blank"]?.jsonPrimitive?.intOrNull?.let { n ->
+                    if (n < 0) throw PlayError("空白人数不能为负")
+                    if (n > 4) throw PlayError("空白人数最多 4 个")
+                    room.blankCount = n
+                    room.addLog(if (n == 0) "不设空白玩家" else "空白玩家设为 $n 个")
                 }
             }
 
@@ -805,6 +898,7 @@ object Play {
             .forEach { r ->
                 add(buildJsonObject {
                     put("id", JsonPrimitive(r.id))
+                    put("title", JsonPrimitive(r.title))
                     put("game", JsonPrimitive(r.game))
                     put("players", JsonPrimitive(r.seats.size))
                     put("phase", JsonPrimitive(r.engine.phase))

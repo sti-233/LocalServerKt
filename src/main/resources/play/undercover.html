@@ -17,6 +17,7 @@
         <div class="room-chip hidden" id="roomChip">
             <span class="room-chip-label">房号</span>
             <strong class="room-id" id="roomId">----</strong>
+            <span class="room-title hidden" id="roomTitle"></span>
             <button class="btn tiny" id="copyBtn" type="button">复制</button>
         </div>
         <span class="conn-text" id="phaseHint"></span>
@@ -35,10 +36,10 @@
             <div class="card">
                 <h3 class="card-title">创建房间</h3>
                 <div class="join-row">
-                    <input id="nameInput" class="text-input" placeholder="昵称（可留空）" maxlength="20">
+                    <input id="nameInput" class="text-input" placeholder="房间别名（可留空）" maxlength="20">
                     <button id="createBtn" class="btn primary" type="button">创建房间</button>
                 </div>
-                <p class="card-hint">创建后把房号发给朋友，他们用「加入」进来。</p>
+                <p class="card-hint">别名只是给房间起个名字，方便在列表里认出来。房间里不显示玩家昵称，按座位叫「玩家1」「玩家2」。</p>
             </div>
             <div class="card">
                 <h3 class="card-title">加入房间</h3>
@@ -81,12 +82,13 @@
                     <div id="hostBody" class="host-body"></div>
 
                     <div class="field hidden" id="groupField">
-                        <span class="field-label">自定义词组（英文逗号分隔）</span>
-                        <input id="groupInput" class="text-input" placeholder="苹果,梨,草莓" maxlength="200">
+                        <span class="field-label">自定义词组（平民词,卧底词）</span>
+                        <input id="groupInput" class="text-input" placeholder="苹果,梨" maxlength="200">
                         <div class="btn-row">
                             <button id="groupApply" class="btn tiny" type="button">应用词组</button>
                             <button id="groupReset" class="btn tiny" type="button">恢复随机</button>
                         </div>
+                        <p class="card-hint">用自定义词组时房主本人下场观战 —— 词是房主定的，留在场上等于开了天眼。</p>
                     </div>
 
                     <div class="field hidden" id="ucField">
@@ -94,6 +96,17 @@
                         <select id="ucSelect" class="text-input">
                             <option value="1">1</option>
                             <option value="2">2</option>
+                        </select>
+                    </div>
+
+                    <div class="field hidden" id="blankField">
+                        <span class="field-label">空白玩家（拿到空白词，算平民阵营）</span>
+                        <select id="blankSelect" class="text-input">
+                            <option value="0">0（不设）</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                            <option value="4">4</option>
                         </select>
                     </div>
                 </div>
@@ -128,6 +141,9 @@
         var phaseHint = Play.$('phaseHint');
         var roomChip = Play.$('roomChip');
         var roomIdEl = Play.$('roomId');
+        var roomTitleEl = Play.$('roomTitle');
+        var blankField = Play.$('blankField');
+        var blankSelect = Play.$('blankSelect');
         var lobbyEl = Play.$('lobby');
         var roomEl = Play.$('room');
         var bannerEl = Play.$('banner');
@@ -168,10 +184,12 @@
         function pickRoom() {
             var v = (roomInput.value || '').replace(/\s+/g, '').toUpperCase();
             if (!v) { Play.toast('先输入房号'); roomInput.focus(); return; }
-            Play.send({ type: 'join', room: v, name: (nameInput.value || '').trim() });
+            // 房间里已经没有昵称了：座位名由服务端按顺序给（玩家1、玩家2…）
+            Play.send({ type: 'join', room: v });
         }
 
-        function myName() {
+        /* 创建时填的是房间别名，不是玩家昵称 */
+        function roomTitleOf() {
             return (nameInput.value || '').trim();
         }
 
@@ -221,8 +239,16 @@
         function renderMe() {
             Play.clear(mePanel);
             if (!state) return;
+            if (state.spectating) {
+                addInfoRow(mePanel, '状态：', '观战中（房主设了自定义词组）', 'dim');
+            }
             var word = state.myWord;
-            addInfoRow(mePanel, '我拿到的词：', word ? word : '等待发词…', word ? '' : 'dim');
+            if (state.myBlank) {
+                // 空白是规则的一部分，不是没发到词 —— 说成"等待发词"会让人一直等
+                addInfoRow(mePanel, '我拿到的词：', '（空白）', 'dim');
+            } else {
+                addInfoRow(mePanel, '我拿到的词：', word ? word : '等待发词…', word ? '' : 'dim');
+            }
             // 游戏中服务端把 myRole 置 null，前端不猜身份
             if (state.myRole) {
                 addInfoRow(mePanel, '我的身份：', Play.roleName(state.myRole),
@@ -230,6 +256,9 @@
             }
             if (state.undercoverCount) {
                 addInfoRow(mePanel, '卧底人数：', state.undercoverCount + ' 位');
+            }
+            if (state.blankCount) {
+                addInfoRow(mePanel, '空白玩家：', state.blankCount + ' 位');
             }
         }
 
@@ -340,10 +369,13 @@
                     if (off.length) {
                         hostBody.appendChild(Play.el('div', 'act-hint',
                             '等待上线：' + off.join('、')));
+                    } else if (roomTitleOfHint()) {
+                        hostBody.appendChild(Play.el('div', 'act-hint', roomTitleOfHint()));
                     }
                 }
                 show(groupField, true);
                 show(ucField, true);
+                show(blankField, true);
 
                 // 词组只在没聚焦时回显，避免打断正在输入的文字
                 var g = (state.customGroup && state.customGroup.length) ? state.customGroup.join(',') : '';
@@ -353,22 +385,66 @@
                 if (state.undercoverCount && document.activeElement !== ucSelect) {
                     ucSelect.value = String(state.undercoverCount);
                 }
+                if (document.activeElement !== blankSelect) {
+                    blankSelect.value = String(state.blankCount || 0);
+                }
             } else if (phase === 'finished') {
                 hostBody.appendChild(hostButton('再开一局', 'primary', function () {
                     Play.action('endGame');
                 }));
                 show(groupField, false);
                 show(ucField, false);
+                show(blankField, false);
             } else {
                 // 讨论 / 投票不再由房主操作：全员发言后自动开投票，全员投完自动结算
                 show(groupField, false);
                 show(ucField, false);
+                show(blankField, false);
             }
+
+            // 解散房间：任何时候都能做（包括对局中），所以放在分支外面
+            var row = Play.el('div', 'btn-row');
+            var dis = Play.el('button', 'btn', '解散房间');
+            dis.type = 'button';
+            dis.onclick = function () {
+                if (!window.confirm('解散后房间会立刻消失，其他人会被踢回大厅。确定吗？')) return;
+                Play.send({ type: 'disband' });
+            };
+            row.appendChild(dis);
+            hostBody.appendChild(row);
+        }
+
+        /* 人数不够时给一句人话，而不是让按钮凭空消失 */
+        function roomTitleOfHint() {
+            if (!state) return '';
+            var players = 0;
+            var mine = 0;
+            (state.players || []).forEach(function (p) {
+                if (p.spectating) return;
+                players++;
+                if (p.me) mine++;
+            });
+            if (state.spectating) {
+                return '你正在观战，等其他人点开始。至少需要 3 名玩家';
+            }
+            if (players < 3) return '还需要 ' + (3 - players) + ' 名玩家';
+            if (mine === 0) return '';
+            if (state.undercoverCount * 2 + 1 > players) {
+                return '卧底 ' + state.undercoverCount + ' 人需要至少 ' +
+                    (state.undercoverCount * 2 + 1) + ' 名玩家';
+            }
+            return '';
         }
 
         function render() {
             if (!state) return;
             roomIdEl.textContent = room || state.room || '----';
+            if (state.title) {
+                roomTitleEl.textContent = state.title;
+                show(roomTitleEl, true);
+            } else {
+                show(roomTitleEl, false);
+            }
             phaseHint.textContent = Play.phaseName(state.phase) +
                 (state.round ? ' · 第 ' + state.round + ' 轮' : '');
             renderMe();
@@ -443,6 +519,12 @@
             onRoomList: function (rooms) {
                 Play.renderRooms(roomsEl, rooms, goRoom);
             },
+            onClosed: function (msg) {
+                showErr('');
+                Play.toast((msg && msg.text) || '房间已解散');
+                Play.clearSeat(room);
+                enterLobby();
+            },
             onError: function (text) {
                 showErr(text);
                 Play.toast(text);
@@ -453,7 +535,7 @@
         /* ---------- 交互绑定 ---------- */
 
         Play.$('createBtn').onclick = function () {
-            if (!Play.send({ type: 'create', game: GAME, name: myName() })) {
+            if (!Play.send({ type: 'create', game: GAME, name: roomTitleOf() })) {
                 Play.toast('还没连上服务器，稍等一下');
             }
         };
@@ -477,6 +559,12 @@
         Play.$('groupApply').onclick = function () {
             var v = (groupInput.value || '').trim();
             if (!v) { Play.toast('先输入词组'); return; }
+            var parts = v.split(/[,，、\s]+/).filter(function (s) { return s; });
+            if (parts.length !== 2) {
+                Play.toast('请填「平民词,卧底词」两个词');
+                return;
+            }
+            if (!window.confirm('用自定义词组时你会下场观战，确定吗？')) return;
             Play.action('config', { group: v });
             Play.toast('词组已应用');
         };
@@ -489,6 +577,10 @@
 
         ucSelect.onchange = function () {
             Play.action('config', { undercover: Number(ucSelect.value) });
+        };
+
+        blankSelect.onchange = function () {
+            Play.action('config', { blank: Number(blankSelect.value) });
         };
 
         function sendChat() {

@@ -10,26 +10,28 @@ import java.util.Collections
  * 规则：每人拿到一个词，多数人拿到同一个（平民词），少数人（卧底）拿到另一个相近的词。
  * 轮流描述后投票放逐，直到卧底全出局（平民胜）或存活卧底数 ≥ 存活平民数（卧底胜）。
  *
- * 三个刻意的设计：
+ * 四个刻意的设计：
  * 1. **进行中不告诉玩家自己是卧底**。玩家只知道自己拿到一个词，是不是卧底要靠听别人描述来猜 ——
  *    这是这个游戏的核心乐趣。所以 [visibleRole] 在自己存活且未结束时一律返回 null。
- * 2. **出局也不公布词**。只公布身份（卧底/平民），否则死掉的人一说话就把答案泄了。
+ * 2. **出局也不公布词**。只公布身份（卧底/平民/空白），否则死掉的人一说话就把答案泄了。
  * 3. **讨论必须人人发言**。基类的 [GameEngine.beginDiscuss] 记发言、全员发完自动进投票 ——
  *    没有这个约束，沉默的人会被别人的节奏直接带进投票。
+ * 4. **房主设了自定义词组就下场观战**。词组是「平民词 / 卧底词」成对给的，房主握着答案，
+ *    留着玩等于开了天眼；干脆让他看戏，也省得大家怀疑他偷看。
  */
 class PlayUndercover : GameEngine(Play.UNDERCOVER) {
 
     override val discussPhase: String = "playing"
     override val votePhase: String = "voting"
 
-    /** 座位 -> 词。这个词**只**会出现在本人的 `myWord` 里。 */
+    /** 座位 -> 词。这个词**只**会出现在本人的 `myWord` 里。空白玩家不在这个表里。 */
     private val words = LinkedHashMap<String, String>()
 
-    /** 座位 -> `civilian` / `undercover`。 */
+    /** 座位 -> `civilian` / `undercover` / `blank`。 */
     private val roles = LinkedHashMap<String, String>()
 
-    /** 本次实际使用的词组快照，用于结束后公布两个词。 */
-    private var groupSnapshot: List<String> = emptyList()
+    /** 本次实际使用的两个词（平民词、卧底词），用于结束后公布。 */
+    private var pairUsed: List<String> = emptyList()
 
     /**
      * 上一局的卧底座位。重开时避开它 —— 5 人局只有 5 种分法，
@@ -40,8 +42,24 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
     private val random = SecureRandom()
 
     override fun start(room: Play.Room): String? {
-        val seats = room.seats.keys.toList()
-        if (seats.size < 3) return "至少需要 3 名玩家"
+        room.spectators.clear()
+
+        val custom = room.customGroup
+        // 自定义词组就是「平民词,卧底词」，多一个字都不收 —— 早先允许 3~6 个词再随机挑两个，
+        // 房主设了「苹果,梨,草莓」到底会出哪一对根本不可控
+        if (custom != null && custom.size != 2) {
+            return "自定义词组必须恰好是「平民词,卧底词」两个词"
+        }
+
+        // 房主自设词组时他握着答案，直接下场观战
+        val hostWatches = custom != null
+        if (hostWatches && room.hostSeat.isNotEmpty()) room.spectators.add(room.hostSeat)
+
+        val seats = room.seats.keys.filter { it !in room.spectators }
+        val need = if (hostWatches) "房主观战时还需要 3 名玩家" else "至少需要 3 名玩家"
+        if (seats.size < 3) {
+            return if (hostWatches) "$need，现在只有 ${seats.size} 名" else "至少需要 3 名玩家"
+        }
         // 开局必须全员在线：离线的座位收不到自己的词，也发不了言，留着只会卡住流程
         val offline = seats.filter { room.seats[it]?.online != true }
         if (offline.isNotEmpty()) {
@@ -53,14 +71,11 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         // 卧底必须严格少于平民，否则开局就满足「卧底胜」的条件，一局都玩不下去
         if (k >= seats.size - k) return "玩家太少，${k} 个卧底需要至少 ${k * 2 + 1} 人"
 
-        // 房主设了词组就必须用它 —— 悄悄退回内置词库会让「我明明设了词」变成灵异事件
-        val custom = room.customGroup
-        if (custom != null && custom.size < 2) {
-            return "自定义词组至少需要 2 个词"
-        }
-        val group = custom ?: BUILTIN_GROUPS[random.nextInt(BUILTIN_GROUPS.size)]
+        // 空白算平民阵营，但也得留至少一个拿到词的平民，否则全场没人知道该描述什么
+        val blank = room.blankCount.coerceIn(0, seats.size - k - 1)
+        room.blankCount = blank
 
-        if (group.size < 2) return "这个词组只有 ${group.size} 个词，至少需要 2 个"
+        val group = custom ?: BUILTIN_GROUPS[random.nextInt(BUILTIN_GROUPS.size)]
 
         // 从词组里挑两个不同的词：一个给平民，一个给卧底。
         // 全部卧底共用一个卧底词、全部平民共用一个平民词 —— 这是原版玩法；
@@ -68,6 +83,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         val pair = group.toMutableList().also { Collections.shuffle(it, random) }
         val civilianWord = pair[0]
         val undercoverWord = pair[1]
+
         // 卧底座位每局重抽，但避开上一局：连撞两局会让人以为卧底是固定的。
         // 重试有上限，凑不出新分配就接受结果 —— 不能因为撞车开不了局。
         var picked = pickUndercover(seats, k)
@@ -78,16 +94,28 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         }
         lastUndercoverSeats = picked
         val undercoverSeats = picked
+        // 空白从剩下的好人里抽，不跟卧底重叠
+        val blankSeats = seats.filter { it !in undercoverSeats }
+            .toMutableList()
+            .also { Collections.shuffle(it, random) }
+            .take(blank)
+            .toSet()
 
         words.clear()
         roles.clear()
         seats.forEach { s ->
-            val isU = s in undercoverSeats
-            roles[s] = if (isU) "undercover" else "civilian"
-            words[s] = if (isU) undercoverWord else civilianWord
+            roles[s] = when {
+                s in undercoverSeats -> "undercover"
+                s in blankSeats -> "blank"
+                else -> "civilian"
+            }
+            // 空白玩家根本没有词 —— 不往表里放，[gameState] 会把 myWord 发成 null
+            if (s !in blankSeats) {
+                words[s] = if (s in undercoverSeats) undercoverWord else civilianWord
+            }
         }
 
-        groupSnapshot = group
+        pairUsed = listOf(civilianWord, undercoverWord)
         alive.clear()
         alive.addAll(seats)
         round = 1
@@ -99,6 +127,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
 
     override fun action(room: Play.Room, seatId: String, action: String, data: JsonObject): List<String> {
         if (phase == "waiting") throw PlayError("游戏还没开始")
+        if (seatId in room.spectators) throw PlayError("你在观战，不参与这一局")
         if (seatId !in alive && phase != "finished") throw PlayError("你已出局，只能旁观")
 
         return when (action) {
@@ -126,9 +155,8 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         abstained.clear()
 
         val role = roles[target] ?: "civilian"
-        val roleName = if (role == "undercover") "卧底" else "平民"
         // 只公布身份，不公布词 —— 死了的人再说出自己的词就等于泄底
-        lines.add("${room.nameOf(target)} 被放逐，身份：$roleName")
+        lines.add("${room.nameOf(target)} 被放逐，身份：${roleLabel(role)}")
 
         val undercoverAlive = alive.count { roles[it] == "undercover" }
         val civilianAlive = alive.size - undercoverAlive
@@ -138,13 +166,13 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
                 phase = "finished"
                 result = "civilian"
                 lines.add("卧底全部出局，平民胜利！")
-                lines.add("本局词组：" + groupSnapshot.joinToString("、") + "（卧底词：${undercoverWord()}）")
+                lines.add(revealWords())
             }
             undercoverAlive >= civilianAlive -> {
                 phase = "finished"
                 result = "undercover"
                 lines.add("卧底人数已达平民数，卧底胜利！")
-                lines.add("本局词组：" + groupSnapshot.joinToString("、") + "（卧底词：${undercoverWord()}）")
+                lines.add(revealWords())
             }
             else -> {
                 round += 1
@@ -166,37 +194,51 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         return lines
     }
 
-    private fun undercoverWord(): String =
-        roles.entries.firstOrNull { it.value == "undercover" }?.let { words[it.key] } ?: "?"
+    /** 结束后公布谜底。空白玩家单独列出来，否则平民会以为自己那轮拿的是空白。 */
+    private fun revealWords(): String {
+        val civilian = pairUsed.getOrNull(0) ?: "?"
+        val undercover = pairUsed.getOrNull(1) ?: "?"
+        val blanks = roles.filterValues { it == "blank" }.keys.size
+        val tail = if (blanks > 0) "（本局有 $blanks 名空白玩家）" else ""
+        return "本局平民词：$civilian　卧底词：$undercover$tail"
+    }
 
     override fun visibleRole(room: Play.Room, viewer: String, target: String): String? {
         val role = roles[target] ?: return null
         return when {
             // 结束后全公开，便于复盘
             phase == "finished" -> role
-            // 自己出局了：知道自己是谁
+            // 自己出局了：知道自己是谁（空白也一样，否则出局了还蒙着）
             target == viewer && viewer !in alive -> role
-            // 自己还活着：不知道（这是游戏的核心）
+            // 自己还活着：不知道（这是游戏的核心）。空白玩家靠 myWord 为空自己就能推出来，
+            // 但那是「拿到空白」这个事实，不是身份牌。
             else -> null
         }
     }
 
     override fun gameState(room: Play.Room, seatId: String): JsonObject = buildJsonObject {
         val started = phase != "waiting"
-        // 只有活着的人才看自己的词；出局后词还留着没意义，但也没有泄漏风险
-        put("myWord", if (started) JsonPrimitive(words[seatId] ?: "") else JsonNull)
+        val watching = seatId in room.spectators
+        val myRoleName = roles[seatId]
+        val isBlank = myRoleName == "blank"
+        // 空白玩家没有词：给 null，同时用 myBlank 说清楚这是「你不是没发到词，是本局没有词」
+        put("myWord", if (started && !isBlank && !watching) JsonPrimitive(words[seatId] ?: "") else JsonNull)
+        put("myBlank", JsonPrimitive(started && isBlank))
 
-        val role = roles[seatId]
         val revealOwn = started && (phase == "finished" || seatId !in alive)
-        put("myRole", if (revealOwn && role != null) JsonPrimitive(role) else JsonNull)
+        put("myRole", if (revealOwn && myRoleName != null) JsonPrimitive(myRoleName) else JsonNull)
 
+        put("spectating", JsonPrimitive(watching))
         put("undercoverCount", JsonPrimitive(room.undercoverCount))
+        put("blankCount", JsonPrimitive(room.blankCount))
         put("customGroup", if (room.customGroup == null) JsonNull else Json.encodeToJsonElement(room.customGroup))
 
         val host = room.hostSeat == seatId
         val allOnline = room.seats.values.all { it.online }
-        val canStart = host && phase == "waiting" && allOnline &&
-            room.seats.size >= 3 && room.undercoverCount < room.seats.size - room.undercoverCount
+        val players = room.seats.keys.count { it !in room.spectators }
+        val canStart = host && phase == "waiting" && allOnline && players >= 3 &&
+            room.undercoverCount < players - room.undercoverCount &&
+            room.blankCount < players - room.undercoverCount
         put("canStart", JsonPrimitive(canStart))
         put("canVote", JsonPrimitive(phase == votePhase && seatId in alive))
         put("result", if (result == null) JsonNull else JsonPrimitive(result!!))
@@ -212,7 +254,14 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
     override fun onEndGame(room: Play.Room) {
         words.clear()
         roles.clear()
-        groupSnapshot = emptyList()
+        pairUsed = emptyList()
+        room.spectators.clear()
+    }
+
+    private fun roleLabel(role: String): String = when (role) {
+        "undercover" -> "卧底"
+        "blank" -> "空白"
+        else -> "平民"
     }
 
     private fun JsonObject.string(key: String): String? =
@@ -222,11 +271,13 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
 
         /** 重开时避开上一局的尝试次数。5 人局只有 5 种分法，几次就能撞开。 */
         private const val DEAL_ATTEMPTS = 24
+
         /**
-         * 内置词库。**只放在服务端**：放进 `resources/` 的话会被 `/resources` 直接下载，
+         * 内置词库，每个元素是「一对词」之外的候选池；开局随机挑两个。
+         * **只放在服务端**：放进 `resources/` 的话会被 `/resources` 直接下载，
          * 等于把答案贴出来。
          *
-         * 每组要有 3 个以上词，否则「2 个卧底」时挑不出足量的平民词。
+         * 每组要有 3 个以上词，否则挑不出「两个不同的词」的机会就只剩一种组合。
          */
         private val BUILTIN_GROUPS: List<List<String>> = listOf(
             listOf("苹果", "梨", "桃", "香蕉"),

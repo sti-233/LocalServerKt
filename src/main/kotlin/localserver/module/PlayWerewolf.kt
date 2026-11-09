@@ -76,7 +76,9 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     // ===== 开局 =====
 
     override fun start(room: Play.Room): String? {
-        val seats = room.seats.keys.toList()
+        // 观战者（目前只有卧底局房主自设词组时会出现）不参与对局；狼人杀里通常是空的，
+        // 但按 place 过滤一次比在别处假设「狼人杀没有观战」安全
+        val seats = room.seats.keys.filter { it !in room.spectators }
         if (seats.size < 4) return "至少需要 4 名玩家"
         // 开局必须全员在线：离线的人看不见自己的身份，也轮不到他行动，
         // 一开局就少一个活人的局还不如不开
@@ -387,6 +389,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         }
 
         if (phase == "waiting") throw PlayError("游戏还没开始")
+        if (seatId in room.spectators) throw PlayError("你在观战，不参与这一局")
         if (seatId !in alive && phase != "finished") throw PlayError("你已出局，只能旁观")
 
         return when (action) {
@@ -614,9 +617,10 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
 
         val host = room.hostSeat == seatId
         val allOnline = room.seats.values.all { it.online }
+        val players = room.seats.keys.count { it !in room.spectators }
         put(
             "canStart",
-            JsonPrimitive(host && phase == "waiting" && room.seats.size >= 4 && allOnline)
+            JsonPrimitive(host && phase == "waiting" && players >= 4 && allOnline)
         )
         put("canVote", JsonPrimitive(phase == votePhase && seatId in alive))
         put("result", if (result == null) JsonNull else JsonPrimitive(result!!))
