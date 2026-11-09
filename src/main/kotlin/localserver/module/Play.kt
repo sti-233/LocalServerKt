@@ -8,11 +8,13 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
@@ -583,6 +585,12 @@ object Play {
             val writer = launch {
                 try {
                     for (f in outbox) session.send(Frame.Text(f))
+                } catch (e: CancellationException) {
+                    // 每条连接收尾时都会 cancel 这个协程（见 finally），对端断开时外形也会被取消。
+                    // 这是正常终止，记成 "writer stopped" 只会把日志刷成一片红。
+                    throw e
+                } catch (e: ClosedSendChannelException) {
+                    // 对端已经关了（浏览器刷新/关标签页时常见），同样不需要记日志
                 } catch (e: Exception) {
                     Logger.debug("Play writer stopped: ${e.message}")
                 }
