@@ -244,7 +244,34 @@ class PlayUndercoverTest {
     }
 
     @Test
-    fun `blank guess is a single attempt`() {
+    fun `blank guess is limited to three attempts`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        room.blankCount = 1
+        assertNull(engineOf(room).start(room))
+
+        val w = words(room)
+        val blank = room.seats.keys.first { it !in w.keys }
+        val civilian = w.values.groupingBy { it }.eachCount().maxByOrNull { it.value }!!.key
+        val engine = engineOf(room)
+
+        // 猜错只是消耗一次机会，不结束本局 —— 否则空白可以拿错误次数试出答案
+        assertEquals(3, engine.gameState(room, blank)["guessLeft"]!!.jsonPrimitive.int)
+        repeat(3) { i ->
+            assertFailsWith<PlayError> {
+                act(room, blank, "guess", buildJsonObject { put("word", "一定不是这个词$i") })
+            }
+            assertEquals(2 - i, engine.gameState(room, blank)["guessLeft"]!!.jsonPrimitive.int)
+        }
+        assertEquals("playing", room.engine.phase)
+        assertFalse(engine.gameState(room, blank).bool("canGuess"), "三次用完就不能再猜")
+        // 次数耗尽之后猜对了也不收
+        assertFailsWith<PlayError> {
+            act(room, blank, "guess", buildJsonObject { put("word", civilian) })
+        }
+    }
+
+    @Test
+    fun `a blank player can guess again while tries remain`() {
         val room = newRoom("甲", "乙", "丙", "丁", "戊")
         room.blankCount = 1
         assertNull(engineOf(room).start(room))
@@ -253,16 +280,14 @@ class PlayUndercoverTest {
         val blank = room.seats.keys.first { it !in w.keys }
         val civilian = w.values.groupingBy { it }.eachCount().maxByOrNull { it.value }!!.key
 
-        // 猜错只是把机会用掉，不结束本局 —— 否则空白可以拿错误次数试出答案
         assertFailsWith<PlayError> {
             act(room, blank, "guess", buildJsonObject { put("word", "一定不是这个词") })
         }
+        // 还剩两次，猜对就结束
         assertEquals("playing", room.engine.phase)
-        assertFalse(engineOf(room).gameState(room, blank).bool("canGuess"), "猜过一次就不能再猜")
-        // 猜对了也不给了
-        assertFailsWith<PlayError> {
-            act(room, blank, "guess", buildJsonObject { put("word", civilian) })
-        }
+        act(room, blank, "guess", buildJsonObject { put("word", civilian) })
+        assertEquals("finished", room.engine.phase)
+        assertEquals("blank", room.engine.result)
     }
 
     @Test
@@ -674,7 +699,7 @@ class PlayUndercoverTest {
     }
 
     @Test
-    fun `custom group is never announced when the game ends`() {
+    fun `custom group is announced when the game ends`() {
         // 房主设了词组就下场观战，场上四人：1 卧底 3 平民
         val room = newRoom("甲", "乙", "丙", "丁")
         room.customGroup = listOf("苹果派", "香蕉派")
@@ -684,10 +709,10 @@ class PlayUndercoverTest {
         round(room, u)
         assertEquals("finished", room.engine.phase)
 
-        // 自定义词组是房主给的答案，结束时也不公布
+        // 局中不能摊牌（state 只回房主），但结束之后要公布，否则复盘时
+        // 连「谁描述得像卧底词」都无从谈起
         val text = room.log.joinToString("\n") { it["text"]!!.jsonPrimitive.content }
-        assertFalse(text.contains("苹果派"), "结束公告不该带自定义词组：$text")
-        assertFalse(text.contains("香蕉派"), "结束公告不该带自定义词组：$text")
-        assertTrue(text.contains("不公布谜底"), "应当明确说明本局不公布谜底")
+        assertTrue(text.contains("苹果派"), "结束公告应当公布平民词：$text")
+        assertTrue(text.contains("香蕉派"), "结束公告应当公布卧底词：$text")
     }
 }

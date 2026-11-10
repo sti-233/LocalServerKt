@@ -302,14 +302,17 @@
 
         /**
          * 空白玩家的猜词卡片。
-         * 猜中平民词直接判空白胜、本局结束；猜错只是把这一次机会用掉，
-         * 所以按钮文案要说清楚「只有一次」，别做成随手点着玩的。
+         * 猜中平民词直接判空白胜、本局结束；猜错只是消耗一次机会（整局三次）。
+         * 剩余次数由服务端下发（state.guessLeft），不能在前端自己数 —— 猜错时服务端
+         * 只回一句 err，本地要是一起减就会和真实剩余次数对不上。
          */
         function guessCard() {
+            var left = state.guessLeft || 0;
             var card = Play.el('div', 'act-card');
-            card.appendChild(Play.el('div', 'act-title', '猜平民词（只有一次机会）'));
+            card.appendChild(Play.el('div', 'act-title', '猜平民词（还剩 ' + left + ' 次机会）'));
             card.appendChild(Play.el('div', 'act-hint',
-                '猜中直接判空白玩家胜利、本局结束；猜错这次机会就没了。'));
+                '猜中直接判空白玩家胜利、本局结束；猜错扣掉一次机会。')
+            );
             var row = Play.el('div', 'btn-row');
             var input = Play.el('input', 'text-input guess-input');
             input.type = 'text';
@@ -321,7 +324,7 @@
             b.onclick = function () {
                 var word = (input.value || '').trim();
                 if (!word) { Play.toast('先输入一个词'); return; }
-                if (!window.confirm('确定猜「' + word + '」？只有一次机会。')) return;
+                if (!window.confirm('确定猜「' + word + '」？还剩 ' + left + ' 次机会。')) return;
                 Play.action('guess', { word: word });
             };
             row.appendChild(b);

@@ -34,18 +34,13 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
     private var pairUsed: List<String> = emptyList()
 
     /**
-     * 本局是否用了房主的自定义词组。
-     * 用了就不在结束时公布词组 —— 房主自己给的词，摊给全场等于把「谁是卧底」的
-     * 判断依据直接送出去，玩家自己手里的词已经够了。
+     * 座位 -> 已经用掉的猜词机会次数。空白玩家可以猜平民词，猜中直接结束本局（空白胜）。
+     *
+     * 每人 [GUESS_TRIES] 次，不是无限：不设上限的话空白只要把内置词库里的词挨个试
+     * 就必中，这个身份会从「赌一把」变成「稳赢」。三次是留出「描述里能听出个大概」
+     * 的余地，又不至于让人靠穷举拿下。
      */
-    private var usedCustom: Boolean = false
-
-    /**
-     * 已经用掉猜词机会的座位。空白玩家可以猜平民词，猜中直接结束本局（空白胜）；
-     * **每人只有一次机会** —— 不设上限的话，空白只要把内置词库里的词挨个试一遍
-     * 就必中，这个身份会从「赌一把」变成「稳赢」。
-     */
-    private val guessed = HashSet<String>()
+    private val guessUsed = HashMap<String, Int>()
 
     /**
      * 上一局的卧底座位。重开时避开它 —— 5 人局只有 5 种分法，
@@ -130,8 +125,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         }
 
         pairUsed = listOf(civilianWord, undercoverWord)
-        usedCustom = custom != null
-        guessed.clear()
+        guessUsed.clear()
         alive.clear()
         alive.addAll(seats)
         round = 1
@@ -166,18 +160,21 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         }
     }
 
-    /** 空白玩家猜平民词。每人一次机会，猜错只是浪费掉这次机会。 */
+    /** 空白玩家猜平民词。每人 [GUESS_TRIES] 次，猜错只是消耗一次机会。 */
     private fun guessWord(room: Play.Room, seatId: String, data: JsonObject): List<String> {
         if (roles[seatId] != "blank") throw PlayError("只有空白玩家可以猜词")
         if (phase == "finished") throw PlayError("本局已经结束了")
         if (seatId !in alive) throw PlayError("你已出局，只能旁观")
-        if (seatId in guessed) throw PlayError("你已经猜过一次了")
+        val used = guessUsed[seatId] ?: 0
+        if (used >= GUESS_TRIES) throw PlayError("猜词机会已经用完了")
         val guess = data.string("word")?.trim() ?: throw PlayError("缺少猜测的词")
         val civilianWord = pairUsed.getOrNull(0) ?: throw PlayError("本局没有平民词")
 
-        guessed.add(seatId)
+        // 猜错也要先把次数记上再抛错：抛出去的是拒绝文案，不能顺手把机会留着
+        val left = GUESS_TRIES - used - 1
         if (guess != civilianWord) {
-            throw PlayError("没猜中，这次机会用掉了")
+            guessUsed[seatId] = used + 1
+            throw PlayError(if (left > 0) "没猜中，还剩 $left 次机会" else "没猜中，猜词机会用完了")
         }
 
         val lines = ArrayList<String>()
@@ -261,11 +258,11 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
     /**
      * 结束后公布谜底。空白玩家单独列出来，否则平民会以为自己那轮拿的是空白。
      *
-     * 自定义词组不公布：那对词是房主自己设的，其他人在局中手里已经拿到了属于自己的
-     * 那一个，把两个词摊开只会让人回头去对「谁描述了另一半」。
+     * 自定义词组也照公布：局中不能摊牌（`state.customGroup` 只回房主），但结束之后
+     * 不把两个词说出来，玩家连「谁描述得像卧底词」都复盘不了 —— 那正是这个游戏
+     * 唯一值得讨论的地方。
      */
     private fun revealWords(): String {
-        if (usedCustom) return "本局使用的是房主自定义词组，不公布谜底"
         val civilian = pairUsed.getOrNull(0) ?: "?"
         val undercover = pairUsed.getOrNull(1) ?: "?"
         val blanks = roles.filterValues { it == "blank" }.keys.size
@@ -316,13 +313,16 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
             room.blankCount < players - room.undercoverCount
         put("canStart", JsonPrimitive(canStart))
         put("canVote", JsonPrimitive(phase == votePhase && seatId in alive))
+        val guessLeft = (GUESS_TRIES - (guessUsed[seatId] ?: 0)).coerceAtLeast(0)
         put(
             "canGuess",
             JsonPrimitive(
                 started && isBlank && !watching && phase != "finished" &&
-                    seatId in alive && seatId !in guessed
+                    seatId in alive && guessLeft > 0
             )
         )
+        // 剩余次数也发下去：前端要写「还有 N 次」，只给 canGuess 的话猜错一次按钮就消失
+        put("guessLeft", JsonPrimitive(if (isBlank && started) guessLeft else 0))
         put("result", if (result == null) JsonNull else JsonPrimitive(result!!))
     }
 
@@ -337,8 +337,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         words.clear()
         roles.clear()
         pairUsed = emptyList()
-        usedCustom = false
-        guessed.clear()
+        guessUsed.clear()
         room.spectators.clear()
     }
 
@@ -355,6 +354,9 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
 
         /** 重开时避开上一局的尝试次数。5 人局只有 5 种分法，几次就能撞开。 */
         private const val DEAL_ATTEMPTS = 24
+
+        /** 空白玩家整局的猜词机会。 */
+        private const val GUESS_TRIES = 3
 
         /**
          * 内置词库，每个元素是「一对词」之外的候选池；开局随机挑两个。
