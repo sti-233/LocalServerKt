@@ -126,6 +126,28 @@
         .switch-opt .sub { margin-left: 6px; font-weight: 400; font-size: 12px; color: var(--muted); }
         .switch-opt.active .sub { color: var(--accent); }
 
+        /* 侧边栏高度占比滑块（聊天卡片里）。原生 range 在 Chrome 80 就能用，
+           不要自绘 —— 触屏与键盘都要能拖/能按方向键 */
+        .split-row {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            margin: 14px 5px 8px;
+        }
+        .split-row > * + * { margin-left: 10px; }
+        .split-label { font-size: 13px; color: var(--text); }
+        .split-row input[type="range"] {
+            flex: 1 1 220px;
+            min-width: 160px;
+            accent-color: var(--accent); /* 支持时跟着主题走；不支持时保持原生外观 */
+            cursor: pointer;
+        }
+        .split-val {
+            font-size: 12.5px;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums; /* 数字宽度一致，拖动时不会左右抖 */
+        }
+
         /* 存储表格 */
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
         th, td {
@@ -234,6 +256,15 @@
                     <input type="checkbox" id="chatShowTime">显示消息时间
                 </label>
             </div>
+            <div class="split-row">
+                <label class="split-label" for="chatSplit">侧边栏两段高度</label>
+                <input type="range" id="chatSplit" min="20" max="80" step="5" value="50">
+                <span class="split-val" id="chatSplitVal">私聊 50% / 群聊 50%</span>
+            </div>
+            <p class="hint" style="margin-bottom:0;">
+                只影响聊天页的会话侧边栏：上面是私聊段、下面是群聊记录段，两段各自内部滚动。
+                私聊段太窄时把群聊段留小一点即可。范围限制在 20%~80%，拖到哪一格立即生效。
+            </p>
         </section>
 
         <!-- 小游戏 -->
@@ -372,6 +403,27 @@
             ChatPrefs.set({ showTime: this.checked });
             paintChat();
         });
+
+        // 侧边栏两段高度占比：私聊段百分比，群聊段拿剩下的
+        var splitEl = document.getElementById('chatSplit');
+        var splitValEl = document.getElementById('chatSplitVal');
+
+        function paintSplit() {
+            var pct = ChatPrefs.get().split;
+            splitEl.value = String(pct);
+            splitValEl.textContent = '私聊 ' + pct + '% / 群聊 ' + (100 - pct) + '%';
+        }
+
+        // input 事件（而不是 change）：拖动过程中就跟着变，松手才生效会让人以为没反应。
+        // 每次拖动都写 Cookie 是几十字节，频次也只在拖的时候 —— 不值得再加防抖。
+        splitEl.addEventListener('input', function () {
+            ChatPrefs.set({ split: Number(this.value) });
+            paintSplit();
+        });
+        // 别的标签页/设置页改了这份偏好（BroadcastChannel 转成 onChange）时同步滑块位置
+        ChatPrefs.onChange(paintSplit);
+        paintSplit();
+
         paintChat();
 
         // ===== 小游戏（多标签页支持） =====

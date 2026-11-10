@@ -461,6 +461,10 @@
             // 设置页改了「显示消息时间」时本页立刻跟着重画（同一标签页走 notify、
             // 另一个标签页走 BroadcastChannel，chat-prefs.js 两种都转成 onChange）
             ChatPrefs.onChange(applyShowTimePref);
+            // 侧边栏两段高度占比（设置页可调）；也订阅同一份偏好，
+            // 别的标签页/设置页一改就立刻重算，不用刷新聊天页
+            applySidebarSplit();
+            ChatPrefs.onChange(applySidebarSplit);
             // 手动改私聊对象时退出"浏览某日群聊记录"模式；直接填入日期（yyyy-MM-dd）则切换为该日群聊记录
             document.getElementById('user').addEventListener('input', function () {
                 if (isDateStr(this.value)) {
@@ -491,6 +495,21 @@
         // 加载 message/ 下所有 history 文件名，分组渲染；点击切换对应对话并刷新
         // 未读小红点：按"会话最后消息晚于已读时间且非自己/系统发送"计算（数据来自 /conversations 的 last 字段）
         // 键名直接用用户名，PageStore 内部会做 Cookie 名安全编码（中文等非 token 字符）
+
+        /**
+         * 按设置页的 split（私聊段占高度的百分比，20~80）给两段算 flex-grow。
+         *
+         * 两段的 flex-basis 都是 0，所以 grow 的比值就是高度比，侧边栏总高多少都不影响结果。
+         * 夹取也在这儿再做一次：设置页/别的标签页可能写进越界值，而这里是唯一真正落地的地方。
+         */
+        function applySidebarSplit() {
+            const sidebar = document.getElementById('sidebar');
+            if (!sidebar) return;
+            const pct = Math.min(80, Math.max(20, Number(ChatPrefs.get().split) || 50));
+            sidebar.style.setProperty('--priv-grow', String(pct));
+            sidebar.style.setProperty('--group-grow', String(100 - pct));
+        }
+
         function lastReadKey() { return 'lastRead_' + (me || 'unknown'); }
 
         // lastRead 是否已经从 Cookie/服务端读进来了。
@@ -2410,15 +2429,21 @@
             flex-direction: column;
             min-height: 0;
         }
-        /* 两段各占侧边栏一半：都用 flex-basis 0 + grow 1，谁也不会因为内容多而挤占对方。
-           内容超了就在自己的 .conv-list 里滚，不会把另一段顶出去。 */
-        .conv-section-priv,
-        .conv-section-group {
-            flex: 1 1 0;
+        /* 两段高度占比可在设置页调（偏好 split = 私聊段的百分比，存 lib/chat-prefs.js）。
+           默认一半一半：早先写死 flex:1 1 0，谁也不会因为内容多而挤占对方；
+           现在两个 grow 值由 JS 写进 --priv-grow / --group-grow（20~80 夹过），
+           flex-basis 仍是 0，所以比例就是宽度无关的纯百分比。 */
+        #sidebar {
+            --priv-grow: 1;
+            --group-grow: 1;
+        }
+        .conv-section-priv {
+            flex: var(--priv-grow) 1 0;
             min-height: 0;
         }
-        /* 群聊段顶部那条线就是两段的分割线 */
         .conv-section-group {
+            flex: var(--group-grow) 1 0;
+            min-height: 0;
             margin-top: 6px;
             padding-top: 10px;
             border-top: 1px solid var(--border);

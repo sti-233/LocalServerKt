@@ -7,12 +7,15 @@
  *
  * 用法（chat.html 与 setting.html 都要引，且在页面自己的脚本之前）：
  *     <script src="/resources/lib/chat-prefs.js"></script>
- *     ChatPrefs.get()             -> { showTime: true }
+ *     ChatPrefs.get()             -> { showTime: true, split: 50 }
  *     ChatPrefs.set({ showTime: false })   // 合并写入，并通知其它标签页
  *     ChatPrefs.onChange(fn)      // 别的页面/标签页改了 → 回调，返回取消订阅函数
  *
  * 时间戳位置：默认放在气泡**下面**（气泡内的正文之后）。关掉 showTime 就整块不渲染，
  * 不是用 CSS 隐藏 —— 隐藏的节点仍会被读屏软件念出来，也会参与 flex 布局。
+ *
+ * split：会话侧边栏里**私聊段**占的高度百分比（群聊段拿走剩下的），范围 20~80。
+ * 两段都是 flex-basis:0，所以这个数直接当 flex-grow 用，不必换算像素。
  */
 (function (global) {
     'use strict';
@@ -23,7 +26,19 @@
 
     // 新增开关往这里加：readPrefs 会按这份默认表逐个校验类型，
     // 老 Cookie 里缺字段、或者存了个字符串，都会退回默认值而不是把页面搞坏
-    var DEFAULTS = { showTime: true };
+    var DEFAULTS = { showTime: true, split: 50 };
+
+    // 侧边栏高度占比的合法区间：低于 20% 连段落标题都放不下，高于 80% 等于把群聊段挤没。
+    // 越界一律夹回来而不是拒绝写入 —— 手改 Cookie 或老版本留下的怪值不该把侧边栏搞坏。
+    var SPLIT_MIN = 20, SPLIT_MAX = 80;
+
+    function clampSplit(v) {
+        var n = Number(v);
+        if (!isFinite(n)) return DEFAULTS.split;
+        if (n < SPLIT_MIN) return SPLIT_MIN;
+        if (n > SPLIT_MAX) return SPLIT_MAX;
+        return Math.round(n);
+    }
 
     var prefs = readPrefs();
     var listeners = [];
@@ -46,6 +61,7 @@
                 if (typeof obj[key] === typeof DEFAULTS[key]) out[key] = obj[key];
             }
         }
+        out.split = clampSplit(out.split);
         return out;
     }
 
@@ -93,8 +109,9 @@
             for (var k in patch) {
                 if (!Object.prototype.hasOwnProperty.call(DEFAULTS, k)) continue;
                 if (typeof patch[k] !== typeof DEFAULTS[k]) continue;
-                if (prefs[k] === patch[k]) continue;
-                prefs[k] = patch[k];
+                var val = k === 'split' ? clampSplit(patch[k]) : patch[k];
+                if (prefs[k] === val) continue;
+                prefs[k] = val;
                 touched = true;
             }
             if (!touched) return;
