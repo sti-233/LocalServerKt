@@ -610,13 +610,21 @@ object Play {
                 })
             }
 
-            fun bind(roomId: String, seatId: String) {
+            /**
+             * 绑上（房号, 座位）。
+             *
+             * @param takeover 非 null 表示这是「同一个账号又开了一页」的接管：
+             *   旧连接会收到一条 `fatal` 的错误帧并断开。前端看到 `fatal` 就不再重连 ——
+             *   不标记的话两个标签页会互相把对方顶下去，永远在抢同一个座位。
+             */
+            fun bind(roomId: String, seatId: String, takeover: String? = null) {
                 val key = "$roomId|$seatId"
                 // 同一座位在别处登录：先告诉旧页面一声，再掐掉它的出站队列
                 conns[key]?.let { old ->
                     old.trySend(buildJsonObject {
                         put("type", JsonPrimitive("err"))
-                        put("text", JsonPrimitive("该座位已在别的页面登录"))
+                        put("text", JsonPrimitive(takeover ?: "该座位已在别的页面登录"))
+                        if (takeover != null) put("fatal", JsonPrimitive(true))
                     }.toString())
                     old.close()
                 }
@@ -680,17 +688,26 @@ object Play {
                             "join" -> {
                                 val roomId = (obj["room"]?.jsonPrimitive?.contentOrNull ?: "").uppercase()
                                 val room = rooms[roomId] ?: throw PlayError("房间不存在")
+                                // 多标签页支持：默认关闭。关掉时同一个账号在一个房间里只保留
+                                // 一个座位 —— 后来加入的页面接管那个座位，旧页面收到 fatal 并断开，
+                                // 否则一个人开两个标签页就等于在投票里投两票。
+                                // 打开后**不接管**：同一个人开几个标签页就坐几个座位，
+                                // 单人测狼人杀全靠它。开关存在 path=/ 的 Cookie 里（lib/play-prefs.js）。
+                                // 刷新页面走的是 resume（带 sessionStorage 里的 seat），不受这里影响。
+                                val multiTab = obj["multiTab"]?.jsonPrimitive?.booleanOrNull ?: false
                                 ensureTicker()
                                 synchronized(room) {
-                                    // 同一个账号的**离线**座位直接接管：刷新页面/手机熄屏回来，
-                                    // 都该回到自己原来那个座位，而不是在旁边多站一个人。
-                                    // 只认离线座位是刻意的 —— 同一个人开四个标签页假装四个人是
-                                    // 单人测试的常用手法，把在线座位也合并掉就没法测了。
-                                    val mine = room.seatByOwner(ownerKey)?.takeIf { !it.online }
+                                    val mine = if (multiTab) null else room.seatByOwner(ownerKey)
                                     if (mine != null) {
+                                        val wasOnline = mine.online
                                         mine.online = true
                                         room.syncSeatName(mine, displayName)
-                                        bind(roomId, mine.id)
+                                        bind(
+                                            roomId, mine.id,
+                                            if (!multiTab && wasOnline)
+                                                "这个账号已经在另一个页面加入房间，本页已断开"
+                                            else null
+                                        )
                                         sendJoined(room, mine.id)
                                         room.addLog("${mine.name} 回到了房间")
                                         broadcast(room)
@@ -715,13 +732,22 @@ object Play {
                                 val roomId = (obj["room"]?.jsonPrimitive?.contentOrNull ?: "").uppercase()
                                 val seatId = obj["seat"]?.jsonPrimitive?.contentOrNull ?: ""
                                 val room = rooms[roomId] ?: throw PlayError("房间不存在")
+                                val multiTab = obj["multiTab"]?.jsonPrimitive?.booleanOrNull ?: false
                                 ensureTicker()
                                 synchronized(room) {
                                     val seat = room.seats[seatId] ?: throw PlayError("座位已失效，请重新加入")
+                                    val wasOnline = seat.online
                                     seat.owner = ownerKey
                                     room.syncSeatName(seat, displayName)
                                     seat.online = true
-                                    bind(roomId, seatId)
+                                    // 关掉多标签页时，同一个座位在第二个页面 resume 也算接管：
+                                    // 旧页面必须收到 fatal 才会停手，否则两边会一直抢这个座位
+                                    bind(
+                                        roomId, seatId,
+                                        if (!multiTab && wasOnline)
+                                            "这个座位已经在另一个页面登录，本页已断开"
+                                        else null
+                                    )
                                     sendJoined(room, seatId)
                                     broadcast(room)
                                 }
@@ -816,12 +842,15 @@ object Play {
                 val seatId = boundSeat
                 if (roomId != null && seatId != null) {
                     val key = "$roomId|$seatId"
-                    // 只摘自己这一条：被新连接顶掉的旧连接不能把新连接从表里删掉
-                    if (conns[key] === outbox) conns.remove(key)
-                    rooms[roomId]?.let { room ->
-                        synchronized(room) {
-                            room.seats[seatId]?.online = false
-                            broadcast(room)
+                    // 只摘自己这一条：被新连接顶掉的旧连接不能把新连接从表里删掉，
+                    // 也不能顺手把这个座位置成离线 —— 新页面刚坐上去，座位是活的。
+                    if (conns[key] === outbox) {
+                        conns.remove(key)
+                        rooms[roomId]?.let { room ->
+                            synchronized(room) {
+                                room.seats[seatId]?.online = false
+                                broadcast(room)
+                            }
                         }
                     }
                 }

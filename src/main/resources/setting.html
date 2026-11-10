@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/resources/lib/lightbox.css">
     <script src="/resources/lib/lightbox.js"></script>
     <script src="/resources/lib/chat-prefs.js"></script>
+    <script src="/resources/lib/play-prefs.js"></script>
     <script src="/resources/config.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -235,6 +236,27 @@
             </div>
         </section>
 
+        <!-- 小游戏 -->
+        <section class="card">
+            <h2>小游戏</h2>
+            <p class="hint">
+                谁是卧底 / 狼人杀的房间选项。和图片查看一样存在 path=/ 的 Cookie 里，跨页面共享，
+                改了立即生效（游戏页开着也会同步）。
+            </p>
+            <div class="switch-row" id="playRow">
+                <label class="switch-opt" data-key="multiTab">
+                    <input type="checkbox" id="playMultiTab">多标签页支持
+                    <span class="sub">（允许同一账号同时占多个座位）</span>
+                </label>
+            </div>
+            <p class="hint" style="margin-bottom:0;">
+                关掉时同一个账号在一个房间里只保留一个座位：后进入的页面接管前面的，
+                前一个会提示「该座位已在别的页面登录」并断开，不会自动重连。
+                开着则一个人可以开几个标签页坐几个座位 —— 单人测狼人杀时全靠它。
+                注意它只管同一账号的座位合并，浏览器本身的多标签页照常能开。
+            </p>
+        </section>
+
         <!-- 强制刷新 -->
         <section class="card">
             <h2>强制刷新页面缓存</h2>
@@ -351,6 +373,28 @@
             paintChat();
         });
         paintChat();
+
+        // ===== 小游戏（多标签页支持） =====
+        // 偏好由 lib/play-prefs.js 维护（path=/ Cookie + BroadcastChannel），
+        // 游戏页在发 join/resume 时会把它一并带上，所以这里一改，下一个进房间的动作就生效
+        var playOpts = document.querySelectorAll('#playRow .switch-opt');
+
+        function paintPlay() {
+            var p = PlayPrefs.get();
+            for (var i = 0; i < playOpts.length; i++) {
+                var el = playOpts[i];
+                var on = !!p[el.getAttribute('data-key')];
+                el.classList.toggle('active', on);
+                var cb = el.querySelector('input');
+                if (cb) cb.checked = on;
+            }
+        }
+
+        document.getElementById('playMultiTab').addEventListener('change', function () {
+            PlayPrefs.set({ multiTab: this.checked });
+            paintPlay();
+        });
+        paintPlay();
 
         // ===== 强制刷新 JS/CSS =====
         // 浏览器按 Cache-Control 记账，服务端改了 max-age 对已缓存的那份没有追溯力，

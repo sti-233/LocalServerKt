@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/resources/lib/theme.css">
     <script src="/resources/lib/page-store.js"></script>
     <script src="/resources/lib/theme.js"></script>
+    <script src="/resources/lib/play-prefs.js"></script>
     <link rel="stylesheet" href="/resources/play/play.css">
 </head>
 <body>
@@ -556,6 +557,14 @@
             onClosed: function (msg) {
                 showErr('');
                 Play.toast((msg && msg.text) || '房间已解散');
+                Play.clearSeat(room);
+                enterLobby();
+            },
+            onFatal: function (text) {
+                // 这个账号在另一个页面占了同一个座位（设置页里关着「多标签页支持」）。
+                // 本页已经断开且不会再重连，直接回大厅，别留个操作不了的界面。
+                showErr(text);
+                Play.toast(text);
                 Play.clearSeat(room);
                 enterLobby();
             },

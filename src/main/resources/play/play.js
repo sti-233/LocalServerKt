@@ -25,6 +25,18 @@
     var backoff = 1000;
     var lastStatus = '';
     var memSeats = {};   // sessionStorage 不可用时的退化存储（隐私模式等）
+    // 被别的页面接管（同一个座位被新连接顶掉）：收到 fatal 错误的连接不再重连。
+    // 不设这个标记的话，两个标签页会互相把对方顶下去，永远在抢同一个座位。
+    var fatalStop = false;
+
+    /** 多标签页支持开关：存在 path=/ 的 Cookie 里，由设置页改（lib/play-prefs.js）。 */
+    function multiTab() {
+        try {
+            return !!(global.PlayPrefs && global.PlayPrefs.get().multiTab);
+        } catch (e) {
+            return false;
+        }
+    }
 
     function wsUrl() {
         return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + WS_PATH;
@@ -78,6 +90,8 @@
             if (ws !== sock) return;
             ws = null;
             setStatus('down');
+            // 被别的页面接管了座位：这条连接本来就该结束，重连只会把对方再顶下去
+            if (fatalStop) return;
             scheduleReconnect();
         };
 
@@ -111,17 +125,28 @@
             if (msg.room) clearSeat(msg.room);
             fire('onClosed', msg);
         } else if (msg.type === 'err') {
+            if (msg.fatal) {
+                // 这个座位被另一个页面接管了：本页到此为止，不再重连。
+                // 页面收到 onFatal 后自己回大厅 —— 留着旧界面只会让人以为还能操作。
+                fatalStop = true;
+                setStatus('down');
+                fire('onFatal', msg.text || '该座位已在别的页面登录');
+                return;
+            }
             fire('onError', msg.text || '出错了');
         }
     }
 
     /**
      * 建立（或复用）连接。
-     * opts = { game, onOpen, onState, onJoined, onRoomList, onError, onClosed, onStatus }
+     * opts = { game, onOpen, onState, onJoined, onRoomList, onError, onClosed, onFatal, onStatus }
+     *
+     * onFatal：座位被另一个页面接管（多标签页支持关闭时才会发生）。收到后本页不再重连。
      */
     function connect(o) {
         opts = o || {};
         lastStatus = '';
+        fatalStop = false;
         if (ws && (ws.readyState === 0 || ws.readyState === 1)) {
             // 已经连着就不重开：只把圆点拨回正确状态（CONNECTING 时还得等）
             setStatus(ws.readyState === 1 ? 'ok' : 'wait');
@@ -140,6 +165,11 @@
 
     function send(obj) {
         if (!ws || ws.readyState !== 1) return false;
+        // join / resume 都带上当前的多标签页开关：服务端据此决定「接管旧座位」还是「新开一个」。
+        // 在这里统一注入，比让每个页面自己拼更不容易漏。
+        if (obj && (obj.type === 'join' || obj.type === 'resume') && obj.multiTab === undefined) {
+            obj.multiTab = multiTab();
+        }
         try {
             ws.send(JSON.stringify(obj));
             return true;
@@ -508,6 +538,7 @@
         setSeat: setSeat,
         clearSeat: clearSeat,
         lastRoom: lastRoom,
+        multiTab: multiTab,
         gameName: gameName,
         phaseName: phaseName,
         roleName: roleName,

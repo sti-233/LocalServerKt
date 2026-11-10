@@ -510,6 +510,66 @@ class PlayRouteTest {
         assertNotNull(Play.rooms[roomId]!!.seats["on"])
     }
 
+    // ===== 多标签页支持 =====
+
+    @Test
+    fun `with multiTab off the second page takes over the seat`() = withApp { client ->
+        var roomId = ""
+        var hostSeat = ""
+
+        client.webSocket("/play/ws") {
+            sendJson(frame("create", "game" to "undercover", "name" to "甲"))
+            val joined = readUntil("joined")
+            roomId = joined["room"]!!.jsonPrimitive.content
+            hostSeat = joined["seat"]!!.jsonPrimitive.content
+            readUntil("state")
+
+            // 同一个账号另开一页（multiTab 默认关）：服务端应当把这个座位交出去，
+            // 并给旧页面一条 fatal 的错误帧 —— 前端看到 fatal 就不再重连。
+            client.webSocket("/play/ws") {
+                sendJson(buildJsonObject {
+                    put("type", JsonPrimitive("join"))
+                    put("room", JsonPrimitive(roomId))
+                    put("multiTab", JsonPrimitive(false))
+                })
+                val again = readUntil("joined")
+                assertEquals(hostSeat, again["seat"]!!.jsonPrimitive.content, "应当接管原来那个座位")
+                readUntil("state")
+            }
+
+            val err = readUntil("err")
+            assertEquals(true, err["fatal"]?.jsonPrimitive?.booleanOrNull, "被接管的一页要收到 fatal")
+        }
+        // 房间里仍然只有一个座位
+        assertEquals(1, Play.rooms[roomId]!!.seats.size)
+    }
+
+    @Test
+    fun `with multiTab on the same account takes another seat`() = withApp { client ->
+        var roomId = ""
+        var hostSeat = ""
+
+        client.webSocket("/play/ws") {
+            sendJson(frame("create", "game" to "undercover", "name" to "甲"))
+            val joined = readUntil("joined")
+            roomId = joined["room"]!!.jsonPrimitive.content
+            hostSeat = joined["seat"]!!.jsonPrimitive.content
+            readUntil("state")
+        }
+
+        client.webSocket("/play/ws") {
+            sendJson(buildJsonObject {
+                put("type", JsonPrimitive("join"))
+                put("room", JsonPrimitive(roomId))
+                put("multiTab", JsonPrimitive(true))
+            })
+            val joined = readUntil("joined")
+            assertTrue(joined["seat"]!!.jsonPrimitive.content != hostSeat, "开着多标签页应当新开一个座位")
+            val state = readUntil("state")["state"]!!.jsonObject
+            assertEquals(2, state["players"]!!.jsonArray.size)
+        }
+    }
+
     @Test
     fun `config accepts a valid group and clears with empty string`() = withApp { client ->
         var roomId = ""
