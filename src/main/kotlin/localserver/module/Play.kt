@@ -872,8 +872,9 @@ object Play {
                         if (words.size != 2) throw PlayError("自定义词组必须恰好两个：平民词,卧底词")
                         if (words.any { it.length > 16 }) throw PlayError("每个词最长 16 个字符")
                         room.customGroup = words
-                        room.addLog("房主设置了自定义词组：" + words.joinToString("、") +
-                            "（接下来的对局由房主观战）")
+                        // 词组本身就是这一局的答案，绝不能写进房间日志 ——
+                        // 日志是广播给全场每一帧的，写进去等于开局就摊牌
+                        room.addLog("房主设置了自定义词组，接下来的对局由房主观战")
                     }
                 }
                 data["blank"]?.jsonPrimitive?.intOrNull?.let { n ->

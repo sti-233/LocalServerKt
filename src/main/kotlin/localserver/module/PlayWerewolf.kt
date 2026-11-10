@@ -228,7 +228,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         // 同守同救 = 奶死：守卫守的人和女巫救的人是同一个，两个保护叠在一起反而把人送走。
         // 狼刀本身已经被守卫挡掉了，但药还是照扣 —— 女巫事先无从知道守卫守了谁。
         if (victim != null && victim == guarded && witchSaves && witchTarget == victim) {
-            lines.add("守卫与女巫同时护住了 ${room.nameOf(victim)}，反被救死")
+            lines.add("守卫与女巫护住了同一个人，反被救死")
             killed = victim
             antidoteLeft -= 1
         } else {
@@ -236,7 +236,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
             if (killed != null && witchSaves) {
                 val witch = livingWithRole("witch").firstOrNull()
                 if (witch != null && killed != witch) {
-                    lines.add("女巫用解药救回了 ${room.nameOf(killed)}")
+                    lines.add("女巫使用了解药，被袭击者获救")
                     antidoteLeft -= 1
                     killed = null
                 }
@@ -246,7 +246,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         // 女巫毒药：无视守护，直接死
         val poisoned = if (witchAction == "poison" && poisonLeft > 0) witchTarget else null
         if (poisoned != null) {
-            lines.add("女巫毒死了 ${room.nameOf(poisoned)}")
+            lines.add("女巫使用了毒药")
             poisonLeft -= 1
         }
 
@@ -328,7 +328,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
                 val legal = alive.filter { it != guard && it != lastGuardTarget }
                 val pick = legal.randomOrNull(random)
                 guardTarget = pick ?: guard
-                lines.add("守卫$why，自动守护 ${pick?.let { room.nameOf(it) } ?: "自己"}")
+                lines.add("守卫$why，已自动完成守护")
             }
 
             "wolf" -> {
@@ -338,7 +338,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
                 if (pick != null) {
                     // 自动时全体狼人统一指向同一个目标，避免「意见不一 = 空刀」
                     wolves.forEach { wolfVotes[it] = pick }
-                    lines.add("狼人$why，自动袭击 ${room.nameOf(pick)}")
+                    lines.add("狼人$why，已自动完成狩猎")
                 }
             }
 
@@ -424,7 +424,11 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         // 狼人在商量期间改票算「有操作」，60 秒的自动跳过从最后一次操作重新计时，
         // 否则他们正讨论到一半就被系统替他们决定了
         nightDeadlineAt = System.currentTimeMillis() + NIGHT_STEP_MS
-        return listOf("${room.nameOf(seatId)} 选择了袭击目标") + advanceNight(room)
+        // 夜间日志不写人名：谁刀了谁只该狼人自己知道，写进公共日志等于
+        // 给全场直播狼的身份与目标。整队商量完再报一句抽象的。
+        // 收齐才报一句「完成了狩猎」，还在商量的阶段不报 —— 报早了等于告诉别人刀已经定了
+        val ready = stepDone(room, "wolf")
+        return (if (ready) listOf("狼人完成了狩猎") else emptyList()) + advanceNight(room)
     }
 
     private fun seerCheckAction(room: Play.Room, seatId: String, data: JsonObject): List<String> {
@@ -486,7 +490,8 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         if (target == seatId) throw PlayError("不能守护自己")
         if (target == lastGuardTarget) throw PlayError("不能连续两晚守护同一个人")
         guardTarget = target
-        return listOf("守卫守护了 ${room.nameOf(target)}") + advanceNight(room)
+        // 同上：守护了谁不能让全场看见，否则狼人按「谁没被守」反推守卫
+        return listOf("守卫完成了守护") + advanceNight(room)
     }
 
     // ===== 出局与胜负 =====

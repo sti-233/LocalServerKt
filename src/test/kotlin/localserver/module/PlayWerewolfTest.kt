@@ -705,6 +705,31 @@ class PlayWerewolfTest {
     }
 
     @Test
+    fun `night action logs never mention player names`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        // 走一整夜，四个角色都真的动过手（含女巫用药，那种行最容易带名字）
+        val victim = nightVictimOf(room)
+        doGuard(room, avoid = victim)
+        doWolves(room, victim)
+        doWitch(room, "save")
+        doSeer(room)
+
+        // 天亮公告会列死者名字（那是全场都该知道的），这里只看夜间行动那几行
+        val actionLines = logText().lines().filter { line ->
+            line.startsWith("守卫") || line.startsWith("狼人") ||
+                line.startsWith("女巫") || line.startsWith("预言家")
+        }
+        assertTrue(actionLines.isNotEmpty(), "夜间应当有行动日志：${logText()}")
+        actionLines.forEach { line ->
+            assertTrue(
+                !line.contains("玩家"),
+                "夜间行动日志不能出现玩家名，否则等于公开谁是什么身份、刀口指向谁：$line"
+            )
+        }
+    }
+
+    @Test
     fun `deaths is empty during the night phase`() {
         val room = newRoom(5)
         engineOf(room).start(room)

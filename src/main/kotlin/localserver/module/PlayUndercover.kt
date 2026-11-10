@@ -34,6 +34,13 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
     private var pairUsed: List<String> = emptyList()
 
     /**
+     * 本局是否用了房主的自定义词组。
+     * 用了就不在结束时公布词组 —— 房主自己给的词，摊给全场等于把「谁是卧底」的
+     * 判断依据直接送出去，玩家自己手里的词已经够了。
+     */
+    private var usedCustom: Boolean = false
+
+    /**
      * 上一局的卧底座位。重开时避开它 —— 5 人局只有 5 种分法，
      * 连撞两局（20%）足够让人以为卧底是固定的。
      */
@@ -116,6 +123,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         }
 
         pairUsed = listOf(civilianWord, undercoverWord)
+        usedCustom = custom != null
         alive.clear()
         alive.addAll(seats)
         round = 1
@@ -194,8 +202,14 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         return lines
     }
 
-    /** 结束后公布谜底。空白玩家单独列出来，否则平民会以为自己那轮拿的是空白。 */
+    /**
+     * 结束后公布谜底。空白玩家单独列出来，否则平民会以为自己那轮拿的是空白。
+     *
+     * 自定义词组不公布：那对词是房主自己设的，其他人在局中手里已经拿到了属于自己的
+     * 那一个，把两个词摊开只会让人回头去对「谁描述了另一半」。
+     */
     private fun revealWords(): String {
+        if (usedCustom) return "本局使用的是房主自定义词组，不公布谜底"
         val civilian = pairUsed.getOrNull(0) ?: "?"
         val undercover = pairUsed.getOrNull(1) ?: "?"
         val blanks = roles.filterValues { it == "blank" }.keys.size
@@ -231,7 +245,12 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         put("spectating", JsonPrimitive(watching))
         put("undercoverCount", JsonPrimitive(room.undercoverCount))
         put("blankCount", JsonPrimitive(room.blankCount))
-        put("customGroup", if (room.customGroup == null) JsonNull else Json.encodeToJsonElement(room.customGroup))
+        // 只回给房主：词组就是这一局的答案，广播给别人等于开局就摊牌
+        put(
+            "customGroup",
+            if (room.hostSeat != seatId || room.customGroup == null) JsonNull
+            else Json.encodeToJsonElement(room.customGroup)
+        )
 
         val host = room.hostSeat == seatId
         val allOnline = room.seats.values.all { it.online }
@@ -255,6 +274,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         words.clear()
         roles.clear()
         pairUsed = emptyList()
+        usedCustom = false
         room.spectators.clear()
     }
 

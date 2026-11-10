@@ -563,7 +563,7 @@ class PlayUndercoverTest {
     }
 
     @Test
-    fun `custom group is echoed back`() {
+    fun `custom group is echoed back to the host only`() {
         val room = newRoom("甲", "乙", "丙")
         room.customGroup = listOf("红", "蓝")
         val engine = engineOf(room)
@@ -571,5 +571,27 @@ class PlayUndercoverTest {
         val g = engine.gameState(room, "s0")["customGroup"]
         assertNotNull(g)
         assertEquals("红", g.jsonArray[0].jsonPrimitive.content)
+
+        // 词组就是这一局的答案：除了房主，谁都不该在 state 里看到它
+        assertTrue(engine.gameState(room, "s1")["customGroup"] is JsonNull, "非房主不该看到词组")
+        assertTrue(engine.gameState(room, "s2")["customGroup"] is JsonNull, "非房主不该看到词组")
+    }
+
+    @Test
+    fun `custom group is never announced when the game ends`() {
+        // 房主设了词组就下场观战，场上四人：1 卧底 3 平民
+        val room = newRoom("甲", "乙", "丙", "丁")
+        room.customGroup = listOf("苹果派", "香蕉派")
+        assertNull(engineOf(room).start(room))
+        val u = undercoverSeat(room)
+
+        round(room, u)
+        assertEquals("finished", room.engine.phase)
+
+        // 自定义词组是房主给的答案，结束时也不公布
+        val text = room.log.joinToString("\n") { it["text"]!!.jsonPrimitive.content }
+        assertFalse(text.contains("苹果派"), "结束公告不该带自定义词组：$text")
+        assertFalse(text.contains("香蕉派"), "结束公告不该带自定义词组：$text")
+        assertTrue(text.contains("不公布谜底"), "应当明确说明本局不公布谜底")
     }
 }
