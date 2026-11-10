@@ -684,7 +684,7 @@
                 privList.appendChild(item);
             }
             if (privShown === 0) privList.innerHTML = '<p class="conv-empty">暂无私聊记录</p>';
-            sortPrivList(); // 按最后一条消息由新到旧（DOM 是乱序建出来的，见 privSortKey）
+            sortPrivList(); // 在线优先，同组按最后一条消息由新到旧（DOM 是乱序建出来的，见 privSortKey）
             updateUnreadState(); // 重建列表后按实时缓存（convLast/lastRead）同步红点
             updatePresenceDots(); // 重建后绿点也没了，按手上的在线名单补回来
             syncSidebarActive();
@@ -709,7 +709,11 @@
         }
 
         /**
-         * 把私聊项按"最后一条消息由新到旧"重排。
+         * 把私聊项重排：**在线的人在前**，同组内按"最后一条消息由新到旧"。
+         *
+         * 在线优先是刻意的：侧边栏的用处是"现在能找谁说话"，把离线的人按最后
+         * 消息时间顶在最上面，等于每次都要往下翻找谁亮着绿点。在线名单变了
+         * （onPresence）也要重排一次 —— 只重画绿点的话顺序会停在上一轮。
          *
          * 用 appendChild 移动已有节点而不是重建列表：重建会丢掉滚动位置、
          * 正在 hover 的项，以及 `privPartners` 之外那些只存在于 DOM 的状态。
@@ -723,10 +727,15 @@
                 .filter(function (el) { return el.dataset.other !== undefined; });
             if (items.length < 2) return;
             items.sort(function (a, b) {
+                // 第一关键字：在线在前。拿不到在线名单（WS 还没连上）时全体算离线，
+                // 退化成纯时间排序，不会出现"所有人都被当成离线而顺序错乱"
+                const oa = onlineSet.has(a.dataset.other) ? 1 : 0;
+                const ob = onlineSet.has(b.dataset.other) ? 1 : 0;
+                if (oa !== ob) return ob - oa;
                 const ka = privSortKey(a.dataset.other);
                 const kb = privSortKey(b.dataset.other);
                 if (ka !== kb) return ka < kb ? 1 : -1; // 时间晚的在前
-                // 都没消息记录（理论上不该有）时按名字兜底，保证顺序稳定不抖
+                // 同组内都没消息记录（理论上不该有）时按名字兜底，保证顺序稳定不抖
                 return a.dataset.other < b.dataset.other ? -1 : 1;
             });
             for (const el of items) list.appendChild(el);
@@ -774,6 +783,8 @@
         function onPresence(msg) {
             onlineSet = new Set(msg.names || []);
             updatePresenceDots();
+            // 在线优先是私聊排序的第一关键字，名单一变就得重排（只重画绿点顺序会停住）
+            sortPrivList();
         }
 
         // 实时维护未读状态：WS 消息到达时更新各会话"最后消息"缓存，
