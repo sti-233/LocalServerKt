@@ -227,16 +227,16 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
 
         // 同守同救 = 奶死：守卫守的人和女巫救的人是同一个，两个保护叠在一起反而把人送走。
         // 狼刀本身已经被守卫挡掉了，但药还是照扣 —— 女巫事先无从知道守卫守了谁。
+        //
+        // 这一段**不写任何日志**：写「守卫挡下了袭击」「女巫用解药救回了谁」等于把
+        // 夜里谁动了手、刀口指向谁全直播给对方，天亮只该看到结果。
         if (victim != null && victim == guarded && witchSaves && witchTarget == victim) {
-            lines.add("守卫与女巫护住了同一个人，反被救死")
             killed = victim
             antidoteLeft -= 1
         } else {
-            if (victim != null && victim == guarded) lines.add("守卫挡下了今晚的袭击")
             if (killed != null && witchSaves) {
                 val witch = livingWithRole("witch").firstOrNull()
                 if (witch != null && killed != witch) {
-                    lines.add("女巫使用了解药，被袭击者获救")
                     antidoteLeft -= 1
                     killed = null
                 }
@@ -245,10 +245,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
 
         // 女巫毒药：无视守护，直接死
         val poisoned = if (witchAction == "poison" && poisonLeft > 0) witchTarget else null
-        if (poisoned != null) {
-            lines.add("女巫使用了毒药")
-            poisonLeft -= 1
-        }
+        if (poisoned != null) poisonLeft -= 1
 
         val deaths = LinkedHashSet<String>()
         killed?.let { deaths.add(it) }
@@ -346,7 +343,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
                 // 默认不用药：药只有一瓶，自动替人挥霍比"这夜空过"糟糕得多
                 witchAction = "none"
                 submitted.add("witch")
-                lines.add("女巫$why，本夜不用药")
+                lines.add("女巫$why，已自动完成行动")
             }
 
             "seer" -> {
@@ -474,12 +471,8 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
             }
         }
         submitted.add("witch")
-        val text = when (use) {
-            "save" -> "女巫使用了解药"
-            "poison" -> "女巫使用了毒药"
-            else -> "女巫本夜不用药"
-        }
-        return listOf(text) + advanceNight(room)
+        // 只报「完成了行动」：说成用解药 / 用毒药 / 没用，等于把女巫这夜的选择告诉全场
+        return listOf("女巫完成了行动") + advanceNight(room)
     }
 
     private fun guardProtectAction(room: Play.Room, seatId: String, data: JsonObject): List<String> {

@@ -4,6 +4,7 @@ import kotlinx.serialization.json.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -726,6 +727,45 @@ class PlayWerewolfTest {
                 !line.contains("玩家"),
                 "夜间行动日志不能出现玩家名，否则等于公开谁是什么身份、刀口指向谁：$line"
             )
+        }
+    }
+
+    @Test
+    fun `night logs never reveal what the witch or guard did`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        val victim = nightVictimOf(room)
+        // 守卫守住这一刀（本可写成「守卫挡下了今晚的袭击」），女巫再用解药救人
+        doGuard(room, victim)
+        doWolves(room, victim)
+        doWitch(room, "save")
+        doSeer(room)
+
+        val text = logText()
+        // 结果层面：人是被守住的，所以没死 —— 但过程一个字都不能说
+        listOf("挡下", "解药", "毒药", "救回", "获救").forEach { word ->
+            assertFalse(text.contains(word), "夜间日志不能透露用药与挡刀：含「$word」\n$text")
+        }
+        // 女巫只报「完成了行动」
+        assertTrue(text.contains("女巫完成了行动"), text)
+    }
+
+    @Test
+    fun `morning only names the dead without a cause`() {
+        val room = newRoom(6)
+        engineOf(room).start(room)
+        val victim = nightVictimOf(room)
+        doGuard(room, avoid = victim)
+        doWolves(room, victim)
+        doWitch(room, "none")
+        doSeer(room)
+
+        val text = logText()
+        assertTrue(text.contains("昨晚出局"), text)
+        // 死因、身份、谁动的手，一律不能出现在公告里
+        listOf("因为", "被刀", "被毒", "被救", "守卫", "女巫", "狼人", "预言家").forEach { word ->
+            val announce = text.lines().first { it.contains("昨晚出局") }
+            assertFalse(announce.contains(word), "天亮公告只该说谁死了：$announce")
         }
     }
 

@@ -246,6 +246,7 @@
     var ROLE_NAMES = {
         undercover: '卧底',
         civilian: '平民',
+        blank: '空白',
         wolf: '狼人',
         seer: '预言家',
         witch: '女巫',

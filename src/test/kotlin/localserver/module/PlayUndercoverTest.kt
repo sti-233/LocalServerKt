@@ -227,6 +227,102 @@ class PlayUndercoverTest {
     }
 
     @Test
+    fun `blank player wins by guessing the civilian word`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        room.blankCount = 1
+        assertNull(engineOf(room).start(room))
+
+        val w = words(room)
+        val blank = room.seats.keys.first { it !in w.keys }
+        // 多数人拿到的是平民词，空白要猜的就是它
+        val civilian = w.values.groupingBy { it }.eachCount().maxByOrNull { it.value }!!.key
+
+        val lines = act(room, blank, "guess", buildJsonObject { put("word", civilian) })
+        assertEquals("finished", room.engine.phase)
+        assertEquals("blank", room.engine.result)
+        assertTrue(lines.any { it.contains("猜中了平民词") }, lines.toString())
+    }
+
+    @Test
+    fun `blank guess is a single attempt`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        room.blankCount = 1
+        assertNull(engineOf(room).start(room))
+
+        val w = words(room)
+        val blank = room.seats.keys.first { it !in w.keys }
+        val civilian = w.values.groupingBy { it }.eachCount().maxByOrNull { it.value }!!.key
+
+        // 猜错只是把机会用掉，不结束本局 —— 否则空白可以拿错误次数试出答案
+        assertFailsWith<PlayError> {
+            act(room, blank, "guess", buildJsonObject { put("word", "一定不是这个词") })
+        }
+        assertEquals("playing", room.engine.phase)
+        assertFalse(engineOf(room).gameState(room, blank).bool("canGuess"), "猜过一次就不能再猜")
+        // 猜对了也不给了
+        assertFailsWith<PlayError> {
+            act(room, blank, "guess", buildJsonObject { put("word", civilian) })
+        }
+    }
+
+    @Test
+    fun `only blank players may guess`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        room.blankCount = 1
+        assertNull(engineOf(room).start(room))
+
+        val w = words(room)
+        val civilianSeat = w.entries.first {
+            it.value == w.values.groupingBy { v -> v }.eachCount().maxByOrNull { c -> c.value }!!.key
+        }.key
+        assertFailsWith<PlayError> {
+            act(room, civilianSeat, "guess", buildJsonObject { put("word", "苹果") })
+        }
+    }
+
+    @Test
+    fun `blanks win once they reach parity with civilians`() {
+        // 6 人：1 卧底 + 2 空白 + 3 平民
+        val room = newRoom("甲", "乙", "丙", "丁", "戊", "己")
+        room.blankCount = 2
+        assertNull(engineOf(room).start(room))
+
+        val w = words(room)
+        val blankSeats = room.seats.keys.filter { it !in w.keys }
+        assertEquals(2, blankSeats.size)
+
+        // 先投掉卧底：此时空白 2 < 平民 3，还得继续
+        round(room, undercoverSeat(room))
+        assertEquals("playing", room.engine.phase, "没有卧底但空白还没追平，本局必须继续")
+
+        // 再投掉一个平民 → 空白 2 = 平民 2，空白胜利
+        val civilianSeat = room.engine.alive.first { it !in blankSeats }
+        round(room, civilianSeat)
+        assertEquals("finished", room.engine.phase)
+        assertEquals("blank", room.engine.result)
+    }
+
+    @Test
+    fun `blanks lose when they are all voted out`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊", "己")
+        room.blankCount = 2
+        assertNull(engineOf(room).start(room))
+
+        val w = words(room)
+        val blankSeats = room.seats.keys.filter { it !in w.keys }
+
+        round(room, undercoverSeat(room))
+        assertEquals("playing", room.engine.phase)
+
+        round(room, blankSeats[0])
+        assertEquals("playing", room.engine.phase, "还剩一个空白，平民不能直接赢")
+
+        round(room, blankSeats[1])
+        assertEquals("finished", room.engine.phase)
+        assertEquals("civilian", room.engine.result)
+    }
+
+    @Test
     fun `single word custom group cannot start`() {
         val room = newRoom("甲", "乙", "丙")
         room.customGroup = listOf("只有一个")

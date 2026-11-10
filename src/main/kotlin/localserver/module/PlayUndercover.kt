@@ -41,6 +41,13 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
     private var usedCustom: Boolean = false
 
     /**
+     * 已经用掉猜词机会的座位。空白玩家可以猜平民词，猜中直接结束本局（空白胜）；
+     * **每人只有一次机会** —— 不设上限的话，空白只要把内置词库里的词挨个试一遍
+     * 就必中，这个身份会从「赌一把」变成「稳赢」。
+     */
+    private val guessed = HashSet<String>()
+
+    /**
      * 上一局的卧底座位。重开时避开它 —— 5 人局只有 5 种分法，
      * 连撞两局（20%）足够让人以为卧底是固定的。
      */
@@ -124,6 +131,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
 
         pairUsed = listOf(civilianWord, undercoverWord)
         usedCustom = custom != null
+        guessed.clear()
         alive.clear()
         alive.addAll(seats)
         round = 1
@@ -151,8 +159,34 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
                 listOf("${room.nameOf(seatId)} 弃票")
             }
 
+            // 空白玩家可以猜平民词：猜中直接判空白胜、本局结束
+            "guess" -> guessWord(room, seatId, data)
+
             else -> throw PlayError("未知动作：$action")
         }
+    }
+
+    /** 空白玩家猜平民词。每人一次机会，猜错只是浪费掉这次机会。 */
+    private fun guessWord(room: Play.Room, seatId: String, data: JsonObject): List<String> {
+        if (roles[seatId] != "blank") throw PlayError("只有空白玩家可以猜词")
+        if (phase == "finished") throw PlayError("本局已经结束了")
+        if (seatId !in alive) throw PlayError("你已出局，只能旁观")
+        if (seatId in guessed) throw PlayError("你已经猜过一次了")
+        val guess = data.string("word")?.trim() ?: throw PlayError("缺少猜测的词")
+        val civilianWord = pairUsed.getOrNull(0) ?: throw PlayError("本局没有平民词")
+
+        guessed.add(seatId)
+        if (guess != civilianWord) {
+            throw PlayError("没猜中，这次机会用掉了")
+        }
+
+        val lines = ArrayList<String>()
+        lines.add("${room.nameOf(seatId)} 是空白玩家，猜中了平民词！")
+        phase = "finished"
+        result = "blank"
+        lines.add("空白玩家胜利！")
+        lines.add(revealWords())
+        return lines
     }
 
     /** 放逐某人、公布身份、判胜负。票型由基类的 [settleVote] 结算后调进来。 */
@@ -166,30 +200,52 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         // 只公布身份，不公布词 —— 死了的人再说出自己的词就等于泄底
         lines.add("${room.nameOf(target)} 被放逐，身份：${roleLabel(role)}")
 
-        val undercoverAlive = alive.count { roles[it] == "undercover" }
-        val civilianAlive = alive.size - undercoverAlive
+        val outcome = outcomeText()
+        return if (outcome != null) {
+            lines.add(outcome)
+            lines.add(revealWords())
+            lines
+        } else {
+            round += 1
+            ensureHost(room)
+            lines.add("进入第 $round 轮讨论")
+            beginDiscuss(room)
+            lines
+        }
+    }
 
-        when {
-            undercoverAlive == 0 -> {
+    /**
+     * 判胜负，赢了就写 `phase`/`result` 并返回公告文案，没赢返回 null。
+     *
+     * 三个阵营的顺序有讲究：
+     * - 卧底、空白都没了 → 平民胜；
+     * - 卧底没了但还有空白 → **继续**（不能直接判平民胜，空白还没出局也没赢）；
+     * - 空白活着且人数追平平民 → 空白胜（这是空白玩家唯一的胜利方式，除了猜中词）；
+     * - 卧底人数追平「剩下的所有人」→ 卧底胜（与原来一致，空白算在好人这边里）。
+     */
+    private fun outcomeText(): String? {
+        val undercoverAlive = alive.count { roles[it] == "undercover" }
+        val blankAlive = alive.count { roles[it] == "blank" }
+        val citizenAlive = alive.size - undercoverAlive
+
+        return when {
+            undercoverAlive == 0 && blankAlive == 0 -> {
                 phase = "finished"
                 result = "civilian"
-                lines.add("卧底全部出局，平民胜利！")
-                lines.add(revealWords())
+                "卧底全部出局，平民胜利！"
             }
-            undercoverAlive >= civilianAlive -> {
+            undercoverAlive == 0 && blankAlive >= citizenAlive - blankAlive -> {
+                phase = "finished"
+                result = "blank"
+                "空白玩家人数已达平民数，空白玩家胜利！"
+            }
+            undercoverAlive >= citizenAlive -> {
                 phase = "finished"
                 result = "undercover"
-                lines.add("卧底人数已达平民数，卧底胜利！")
-                lines.add(revealWords())
+                "卧底人数已达平民数，卧底胜利！"
             }
-            else -> {
-                round += 1
-                ensureHost(room)
-                lines.add("进入第 $round 轮讨论")
-                beginDiscuss(room)
-            }
+            else -> null
         }
-        return lines
     }
 
     /** 平票或全员弃票：本轮不淘汰，直接开下一轮讨论。 */
@@ -260,6 +316,13 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
             room.blankCount < players - room.undercoverCount
         put("canStart", JsonPrimitive(canStart))
         put("canVote", JsonPrimitive(phase == votePhase && seatId in alive))
+        put(
+            "canGuess",
+            JsonPrimitive(
+                started && isBlank && !watching && phase != "finished" &&
+                    seatId in alive && seatId !in guessed
+            )
+        )
         put("result", if (result == null) JsonNull else JsonPrimitive(result!!))
     }
 
@@ -275,6 +338,7 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         roles.clear()
         pairUsed = emptyList()
         usedCustom = false
+        guessed.clear()
         room.spectators.clear()
     }
 

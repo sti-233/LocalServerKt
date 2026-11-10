@@ -268,11 +268,13 @@
             if (state.phase === 'finished') {
                 if (state.result === 'civilian') text = '🎉 平民胜利';
                 else if (state.result === 'undercover') text = '🎉 卧底胜利';
+                else if (state.result === 'blank') text = '🎉 空白玩家胜利';
                 else text = '本局结束';
             }
             if (!text) { show(bannerEl, false); return; }
             bannerEl.textContent = text;
-            bannerEl.className = 'banner' + (state.result === 'undercover' ? ' win' : '');
+            bannerEl.className = 'banner' +
+                (state.result === 'undercover' || state.result === 'blank' ? ' win' : '');
             show(bannerEl, true);
         }
 
@@ -297,11 +299,43 @@
             return card;
         }
 
+        /**
+         * 空白玩家的猜词卡片。
+         * 猜中平民词直接判空白胜、本局结束；猜错只是把这一次机会用掉，
+         * 所以按钮文案要说清楚「只有一次」，别做成随手点着玩的。
+         */
+        function guessCard() {
+            var card = Play.el('div', 'act-card');
+            card.appendChild(Play.el('div', 'act-title', '猜平民词（只有一次机会）'));
+            card.appendChild(Play.el('div', 'act-hint',
+                '猜中直接判空白玩家胜利、本局结束；猜错这次机会就没了。'));
+            var row = Play.el('div', 'btn-row');
+            var input = Play.el('input', 'text-input guess-input');
+            input.type = 'text';
+            input.maxLength = 16;
+            input.placeholder = '你认为平民拿到的是…';
+            row.appendChild(input);
+            var b = Play.el('button', 'btn', '猜！');
+            b.type = 'button';
+            b.onclick = function () {
+                var word = (input.value || '').trim();
+                if (!word) { Play.toast('先输入一个词'); return; }
+                if (!window.confirm('确定猜「' + word + '」？只有一次机会。')) return;
+                Play.action('guess', { word: word });
+            };
+            row.appendChild(b);
+            card.appendChild(row);
+            return card;
+        }
+
         function renderActs() {
             Play.clear(actsEl);
             if (!state) return;
 
             var phase = state.phase;
+
+            // 万一这局根本开不起来（没卧底没空白之类），先让人知道点什么
+            if (state.canGuess) actsEl.appendChild(guessCard());
 
             // 讨论：每人必须发一次言，全员发完服务端自动开投票，这里只报进度
             if (phase === 'playing' || phase === 'day') {
