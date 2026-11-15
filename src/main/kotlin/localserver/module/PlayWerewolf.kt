@@ -55,6 +55,14 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     private var nightDeadlineAt: Long = 0L
 
     /**
+     * 当前步骤是因为「这个角色已经全死」被服务端代报完成的（见 [autoAct]）。
+     *
+     * 为什么要让死角色的步骤照常走一遍：步骤一消失，日志里就少了「守卫完成了守护」
+     * 这一行，全场立刻能反推出守卫已经出局 —— 那是白送的身份信息。
+     */
+    private var deadStepPassed: String? = null
+
+    /**
      * 当前步骤的行动者「是什么时候全部离线的」，0 = 不是全离线状态。
      * 用来区分「刚刷新了一下」和「真的关了页面」。
      */
@@ -143,21 +151,40 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         spoken.clear()
         // 阶段必须在这里先置好：tickOwn / advanceNight 都以 phase == "night" 为前提
         phase = "night"
+        deadStepPassed = null
         nightStep = nextStepAfter("")
-        // 所有人都有活人可动手时才有下一步；没有就直接结算（残局里守卫/预言家可能全军覆没）
+        // 本局没有这个角色（例如 4 人局没有守卫）才是真的跳过；角色死了也照样走这一步
         if (nightStep.isEmpty()) return resolveNight(room)
-        nightDeadlineAt = System.currentTimeMillis() + NIGHT_STEP_MS
-        allOfflineSince = 0L
+        armNightStep(room)
         return emptyList()
     }
 
-    /** 从 `step` 之后往下找第一个还有活人的角色。 */
+    /**
+     * 从 `step` 之后往下找第一个**本局发过这张牌**的步骤。
+     *
+     * 判据是发牌表而不是「还有人活着」：角色死后整步消失，等于告诉全场这个角色已经
+     * 出局了。死人的那一步照旧走，只是没人能提交动作，由服务端在 [DEAD_STEP_MS]
+     * 之后代报一句完成（见 [autoAct]）。
+     */
     private fun nextStepAfter(step: String): String {
         val from = if (step.isEmpty()) 0 else NIGHT_ORDER.indexOf(step) + 1
         for (idx in from until NIGHT_ORDER.size) {
-            if (livingWithRole(NIGHT_ORDER[idx]).isNotEmpty()) return NIGHT_ORDER[idx]
+            if (roles.containsValue(NIGHT_ORDER[idx])) return NIGHT_ORDER[idx]
         }
         return ""
+    }
+
+    /**
+     * 给当前步骤上表。
+     *
+     * 死角色的步骤没人能提交动作，只等 [DEAD_STEP_MS]（两秒）就代报完成，
+     * 不能让全场对着一个动不了的人等满一分钟。
+     */
+    private fun armNightStep(room: Play.Room) {
+        val waiting = stepActors(room, nightStep)
+        nightDeadlineAt = System.currentTimeMillis() +
+            if (waiting.isEmpty()) DEAD_STEP_MS else NIGHT_STEP_MS
+        allOfflineSince = 0L
     }
 
     /**
@@ -175,11 +202,13 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
     }
 
     /** 本步是否已交齐。 */
-    private fun stepDone(room: Play.Room, step: String): Boolean = when (step) {
-        "guard" -> guardTarget != null
+    private fun stepDone(room: Play.Room, step: String): Boolean = when {
+        // 死角色的步骤：代报一句就算交齐，否则整夜卡在这一步
+        step == deadStepPassed -> true
+        step == "guard" -> guardTarget != null
         // 狼人不只是"都投了"，还必须指向同一个人：意见不一时停在这一步等他们商量，
         // 不能替他们决定（也不能当成空刀直接跳过，那样女巫看到的就是"没人被袭击"）
-        "wolf" -> wolvesAgreed(room)
+        step == "wolf" -> wolvesAgreed(room)
         else -> step in submitted
     }
 
@@ -196,9 +225,9 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         if (nightStep.isEmpty() || !stepDone(room, nightStep)) return emptyList()
         if (nightStep == "wolf") nightVictim = agreedWolfVictim(room)
         nightStep = nextStepAfter(nightStep)
+        deadStepPassed = null
         if (nightStep.isEmpty()) return resolveNight(room)
-        nightDeadlineAt = System.currentTimeMillis() + NIGHT_STEP_MS
-        allOfflineSince = 0L
+        armNightStep(room)
         return emptyList()
     }
 
@@ -265,6 +294,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         witchTarget = null
         nightVictim = null
         nightStep = ""
+        deadStepPassed = null
         nightDeadlineAt = 0L
         wolfVotes.clear()
         submitted.clear()
@@ -315,6 +345,22 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
 
     /** 服务端替当前步骤做决定。[offline] 只影响日志措辞。 */
     private fun autoAct(room: Play.Room, offline: Boolean) {
+        // 这个角色本局存在，但已经全死：步骤照常「演」完。
+        // 措辞必须和活人提交后的一模一样 —— 措辞不同一样能反推出角色已死。
+        if (stepActors(room, nightStep).isEmpty()) {
+            deadStepPassed = nightStep
+            room.addLog(
+                when (nightStep) {
+                    "guard" -> "守卫完成了守护"
+                    "witch" -> "女巫完成了行动"
+                    "seer" -> "预言家完成查验"
+                    else -> "狼人完成了狩猎"
+                }
+            )
+            advanceNight(room).forEach { room.addLog(it) }
+            return
+        }
+
         val lines = ArrayList<String>()
         val why = if (offline) "离线" else "超时未行动"
 
@@ -557,9 +603,13 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
             phase == "finished" -> role
             // 自己永远知道自己的身份
             target == viewer -> role
+            // 出局者看得到全场身份：他已经出局，说不了话也投不了票，瞒着他没有意义，
+            // 反而让人只能干看着屏幕等下一局。观战者不算 —— 他没进场，
+            // 看得到身份就等于场边多了个裁判，随时能报给还活着的人
+            viewer !in alive && viewer !in room.spectators -> role
             // 狼人互认
             roles[viewer] == "wolf" && role == "wolf" -> role
-            // 其余一律不公开 —— 包括出局者：身份一公开，「谁被刀」就等于「谁是好人」
+            // 其余一律不公开 —— 身份一公开，「谁被刀」就等于「谁是好人」
             else -> null
         }
     }
@@ -635,6 +685,7 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
         witchTarget = null
         nightStep = ""
         nightVictim = null
+        deadStepPassed = null
         nightDeadlineAt = 0L
         lastDeaths = emptyList()
         antidoteLeft = 1
@@ -662,6 +713,14 @@ class PlayWerewolf : GameEngine(Play.WEREWOLF) {
 
         /** 每个角色 1 分钟不操作就自动替他决定并跳过。 */
         private const val NIGHT_STEP_MS = 60_000L
+
+        /**
+         * 该角色已经全死时，那一步等多久就代报完成。
+         *
+         * 两秒是「看得出有人动过手」与「不用干等」的折中：太短会让日志像一口气刷过去，
+         * 太长又等于把时间浪费在一个不存在的人身上。
+         */
+        private const val DEAD_STEP_MS = 2_000L
 
         /**
          * 行动角色全部离线后，先等这么久再替他行动。

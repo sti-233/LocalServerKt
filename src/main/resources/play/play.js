@@ -352,10 +352,34 @@
         if (!state) return '';
         if (state.phase !== 'playing' && state.phase !== 'day') return '';
         if (needSpeak(state)) return '请先在下方发言，全员发言后自动开始投票。';
-        if (!iAmAlive(state)) return '你已出局，观战中，等待其他玩家发言。';
+        if (!iAmAlive(state)) return '你已出局，可以看全场身份，但不能再发言了。';
         var n = remainSpeak(state);
         if (n > 0) return '已发言，等待其他玩家（还差 ' + n + ' 人）。';
         return '已发言，等待其他玩家发言结束…';
+    }
+
+    /**
+     * 我此刻还能不能发言。
+     *
+     * 对局中出了局就不许说话（服务端也会拒），否则被投出去的人还能继续带节奏，
+     * 投票等于白投。等待期与结束后不限 —— 那时没有「出局」这回事。
+     * 观战者（压根没进场，比如自设词组的房主）不算出局，照常能说。
+     */
+    function canChat(state) {
+        if (!state) return false;
+        var phase = state.phase;
+        if (phase === 'waiting' || phase === 'finished' || !phase) return true;
+        if (iAmAlive(state)) return true;
+        return spectatorMe(state);
+    }
+
+    /** 我是不是观战者（没进场，与「出局」不同） */
+    function spectatorMe(state) {
+        var ps = (state && state.players) || [];
+        for (var i = 0; i < ps.length; i++) {
+            if (ps[i] && ps[i].me) return ps[i].spectating === true;
+        }
+        return false;
     }
 
     /** 已投票 / 已弃票后的等待提示；还没表态返回 '' */
@@ -369,6 +393,21 @@
         var n = Number(sec);
         if (!(n > 0)) return '';
         return Math.floor(n) + ' 秒后自动结算';
+    }
+
+    /**
+     * 按 [canChat] 开关发言框。
+     *
+     * 出局后**禁用**而不是隐藏：藏掉输入栏，玩家会以为页面出了问题；
+     * 灰着并写明原因，他才知道自己是被投出去了、还能看别人说。
+     */
+    function syncChatBar(input, btn, state) {
+        var ok = canChat(state);
+        if (input) {
+            input.disabled = !ok;
+            input.placeholder = ok ? '说点什么…' : '你已出局，只能旁观';
+        }
+        if (btn) btn.disabled = !ok;
     }
 
     /* ================= 房间列表 ================= */
@@ -546,6 +585,8 @@
         renderPlayers: renderPlayers,
         remainSpeak: remainSpeak,
         speakHint: speakHint,
+        canChat: canChat,
+        syncChatBar: syncChatBar,
         voteWaitHint: voteWaitHint,
         secsText: secsText,
         renderLog: renderLog,

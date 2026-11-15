@@ -93,7 +93,20 @@ abstract class GameEngine(val game: String) {
     protected abstract fun skipVote(room: Play.Room, reason: String): List<String>
 
     /** 该座位能否看到某个 scope 的日志（`public` 恒可见，`wolves` 只给狼人）。 */
-    open fun canSeeScope(room: Play.Room, seatId: String, scope: String): Boolean = scope == "public"
+    open fun canSeeScope(room: Play.Room, seatId: String, scope: String): Boolean =
+        scope == "public"
+
+    /**
+     * 该座位此刻能不能发言。
+     *
+     * 局中出局的人不能再说话 —— 否则被投出去的人还能继续带节奏，投票等于白投。
+     * 等待期与结束后不限（那时没有「出局」这回事），观战者也不受限（他压根没进场）。
+     */
+    fun canChat(room: Play.Room, seatId: String): Boolean {
+        if (phase == "waiting" || phase == "finished") return true
+        if (seatId in room.spectators) return true
+        return seatId in alive
+    }
 
     /** 游戏专属字段，直接合并进 [view] 的顶层。 */
     abstract fun gameState(room: Play.Room, seatId: String): JsonObject
@@ -812,6 +825,9 @@ object Play {
                                 val scope = obj["scope"]?.jsonPrimitive?.contentOrNull
                                     ?.takeIf { it == "wolves" } ?: "public"
                                 synchronized(room) {
+                                    if (!room.engine.canChat(room, seatId)) {
+                                        throw PlayError("你已出局，不能发言")
+                                    }
                                     if (!room.engine.canSeeScope(room, seatId, scope)) {
                                         throw PlayError("你不能发送该频道")
                                     }

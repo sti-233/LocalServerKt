@@ -309,6 +309,35 @@ class PlayRouteTest {
     }
 
     @Test
+    fun `an eliminated player cannot chat`() = withApp { client ->
+        val room = Play.Room("GGGG", Play.UNDERCOVER)
+        room.seats["s1"] = Play.Seat("s1").also { it.name = "甲"; it.online = true }
+        room.seats["s2"] = Play.Seat("s2").also { it.name = "乙"; it.online = true }
+        room.hostSeat = "s1"
+        // 直接摆一个「局中、s2 已出局」的场面：不真跑一局，只验发言闸门
+        room.engine.phase = "playing"
+        room.engine.alive.add("s1")
+        Play.rooms["GGGG"] = room
+
+        client.webSocket("/play/ws") {
+            sendJson(frame("resume", "room" to "GGGG", "seat" to "s2"))
+            readUntil("joined")
+            readUntil("state")
+
+            sendJson(buildJsonObject {
+                put("type", JsonPrimitive("chat"))
+                put("text", JsonPrimitive("我死了但我还要带节奏"))
+                put("scope", JsonPrimitive("public"))
+            })
+            val err = readUntil("err")
+            assertTrue(
+                err["text"]!!.jsonPrimitive.content.contains("出局"),
+                "出局者发言应被拒：$err"
+            )
+        }
+    }
+
+    @Test
     fun `resume with a stale seat reports an error`() = withApp { client ->
         val room = Play.Room("EEEE", Play.UNDERCOVER)
         room.seats["real"] = Play.Seat("real").also { it.name = "甲" }

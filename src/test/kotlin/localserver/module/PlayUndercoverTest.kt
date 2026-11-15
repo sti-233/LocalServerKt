@@ -374,6 +374,55 @@ class PlayUndercoverTest {
     }
 
     @Test
+    fun `eliminated player sees every role`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        engineOf(room).start(room)
+        val u = undercoverSeat(room)
+        val target = room.seats.keys.first { it != u }
+        val onlooker = room.seats.keys.first { it != target && it != u }
+
+        round(room, target)
+
+        val engine = engineOf(room)
+        assertNotEquals("finished", room.engine.phase)
+        // 出局者：全场身份都看得见（他已经说不了话、投不了票）
+        engine.view(room, target)["players"]!!.jsonArray.forEach { p ->
+            assertFalse(p.jsonObject["role"] is JsonNull, "出局者应看得到全场身份：$p")
+        }
+        // 还活着的人：照旧一片空白，连自己都不知道
+        engine.view(room, onlooker)["players"]!!.jsonArray.forEach { p ->
+            assertTrue(p.jsonObject["role"] is JsonNull, "活人不该看到任何身份：$p")
+        }
+    }
+
+    @Test
+    fun `spectators still keep roles hidden`() {
+        val room = newRoom("甲", "乙", "丙", "丁")
+        room.customGroup = listOf("苹果派", "香蕉派")
+        assertNull(engineOf(room).start(room))
+
+        // 房主自设词组 → 观战。他没进场，看得到身份等于场边多了个裁判
+        val engine = engineOf(room)
+        engine.view(room, "s0")["players"]!!.jsonArray.forEach { p ->
+            assertTrue(p.jsonObject["role"] is JsonNull, "观战者不该看到身份：$p")
+        }
+    }
+
+    @Test
+    fun `dead players cannot chat`() {
+        val room = newRoom("甲", "乙", "丙", "丁", "戊")
+        engineOf(room).start(room)
+        val u = undercoverSeat(room)
+        val target = room.seats.keys.first { it != u }
+
+        round(room, target)
+
+        val engine = engineOf(room)
+        assertFalse(engine.canChat(room, target), "出局的人不能再发言")
+        assertTrue(engine.canChat(room, room.seats.keys.first { it != target }))
+    }
+
+    @Test
     fun `no state field ever carries another player's word`() {
         val room = newRoom("甲", "乙", "丙", "丁", "戊")
         engineOf(room).start(room)

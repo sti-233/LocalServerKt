@@ -133,15 +133,42 @@ class PlayWerewolfTest {
     }
 
     /**
+     * 死掉的角色那一步照样要走（否则日志里少一行，全场就能反推出这个神职死了），
+     * 由服务端在 [PlayWerewolf.DEAD_STEP_MS] 后「代报」完成。
+     *
+     * 单测不等那 2 秒：把截止时刻拉到过去再 tick 一次。**只有该步没有任何存活行动者时才动手** ——
+     * 有人活着就交回给下面那些 doXxx，不然就成替活人做决定了。
+     */
+    private fun passDeadSteps(room: Play.Room) {
+        val engine = engineOf(room)
+        repeat(8) {
+            if (room.engine.phase != "night") return
+            val step = stepOf(room)
+            if (step.isEmpty()) return
+            val actors = if (step == "wolf") seatsWithRole(room, "wolf") else seatsWithRole(room, step)
+            if (actors.any { it in room.engine.alive }) return
+            engine.forceNightDeadline()
+            if (!engine.tick(room)) return
+        }
+    }
+
+    /**
      * 走完一个夜晚：守卫 → 狼人 → 女巫 → 预言家。
      *
      * 顺序由服务端强制，最后一步交完**自动结算**，不需要房主再点一下。
+     * 每两步之间先让 [passDeadSteps] 把「这个神职已经死了」的步骤代报掉，
+     * 否则那一夜会永远停在那一步上。
      */
     private fun runNight(room: Play.Room, wolfTarget: String, guardTarget: String? = null) {
+        passDeadSteps(room)
         doGuard(room, target = guardTarget, avoid = wolfTarget)
+        passDeadSteps(room)
         doWolves(room, wolfTarget)
+        passDeadSteps(room)
         doWitch(room, "none")
+        passDeadSteps(room)
         doSeer(room)
+        passDeadSteps(room)
     }
 
     /** 夜里被杀的默认对象：一个平民，别误伤关键角色。 */
@@ -340,6 +367,97 @@ class PlayWerewolfTest {
             "出局不公布身份 —— 公开身份等于告诉大家这一刀砍对没有"
         )
         assertTrue(p.jsonObject["alive"]!!.jsonPrimitive.boolean.not())
+    }
+
+    @Test
+    fun `dead players can see every role`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        val victim = nightVictimOf(room)
+
+        runNight(room, victim)
+
+        val engine = engineOf(room)
+        engine.view(room, victim)["players"]!!.jsonArray.forEach { p ->
+            assertFalse(p.jsonObject["role"] is JsonNull, "出局者应该看得到全场身份：$p")
+        }
+        // 还活着的人照旧看不到别人的身份（自己除外）
+        val seer = seatsWithRole(room, "seer").first { it in room.engine.alive }
+        engine.view(room, seer)["players"]!!.jsonArray
+            .filter { it.jsonObject["id"]!!.jsonPrimitive.content != seer }
+            .forEach { p ->
+                assertTrue(p.jsonObject["role"] is JsonNull, "活人不该看到别人的身份：$p")
+            }
+    }
+
+    @Test
+    fun `dead players cannot chat`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        val victim = nightVictimOf(room)
+        runNight(room, victim)
+
+        val engine = engineOf(room)
+        assertFalse(engine.canChat(room, victim), "出局的人不能再发言，否则投票等于白投")
+        assertTrue(engine.canChat(room, seatsWithRole(room, "seer").first { it in room.engine.alive }))
+
+        // 等待期没有「出局」这回事，谁都能说话
+        val waiting = newRoom(5)
+        assertTrue(engineOf(waiting).canChat(waiting, "s3"))
+    }
+
+    @Test
+    fun `a dead role still logs its night action`() {
+        val room = newRoom(5)
+        engineOf(room).start(room)
+        val guard = seatsWithRole(room, "guard").first()
+
+        // 第一夜做掉守卫：他从第二夜起就没有行动者了
+        runNight(room, guard)
+        assertTrue(guard !in room.engine.alive)
+        abstainAll(room)
+        assertEquals("night", room.engine.phase)
+
+        // 步骤照常存在 —— 少一步就等于告诉全场「守卫已经死了」
+        assertEquals("guard", stepOf(room))
+        val engine = engineOf(room)
+        val before = room.log.size
+        assertFalse(engine.tick(room), "死角色的步骤也要停一下，不能瞬间闪过")
+        engine.forceNightDeadline()
+        assertTrue(engine.tick(room))
+
+        val added = room.log.drop(before).map { it["text"]!!.jsonPrimitive.content }
+        assertTrue(
+            added.contains("守卫完成了守护"),
+            "死掉的守卫也要报同一句话，措辞不同一样能反推：$added"
+        )
+        assertEquals("wolf", stepOf(room))
+    }
+
+    @Test
+    fun `a dead witch keeps her step too`() {
+        val room = newRoom(6)
+        engineOf(room).start(room)
+        val witch = seatsWithRole(room, "witch").first()
+
+        // 第一夜把女巫刀掉：从第二夜起她那一步就没有行动者了
+        runNight(room, witch)
+        assertTrue(witch !in room.engine.alive)
+        abstainAll(room)
+        assertEquals("night", room.engine.phase)
+
+        val steps = ArrayList<String>()
+        repeat(5) {
+            if (room.engine.phase != "night") return@repeat
+            steps.add(stepOf(room))
+            engineOf(room).forceNightDeadline()
+            engineOf(room).tick(room)
+        }
+        assertTrue(steps.contains("witch"), "女巫死后这一步仍然要走：$steps")
+
+        val roomLog = room.log.joinToString("\n") { it["text"]!!.jsonPrimitive.content }
+        assertTrue(roomLog.contains("女巫完成了行动"), "死掉的女巫也要报同一句话：$roomLog")
+        assertFalse(roomLog.contains("女巫使用了"), "不能借日志透露她用了什么药：$roomLog")
     }
 
     // ===== 夜间流程 =====

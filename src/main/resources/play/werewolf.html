@@ -699,6 +699,7 @@
             renderActs();
             renderHost();
             renderWolfTab();
+            Play.syncChatBar(chatInput, Play.$('sendBtn'), state);
         }
 
         /* ---------- 状态/事件 ---------- */
@@ -819,6 +820,7 @@
         };
 
         function sendChat() {
+            if (!Play.canChat(state)) { Play.toast('你已出局，不能再发言'); return; }
             var text = (chatInput.value || '').trim();
             if (!text) return;
             var scope = wolfScope ? 'wolves' : 'public';

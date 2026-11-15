@@ -275,8 +275,10 @@ class PlayUndercover : GameEngine(Play.UNDERCOVER) {
         return when {
             // 结束后全公开，便于复盘
             phase == "finished" -> role
-            // 自己出局了：知道自己是谁（空白也一样，否则出局了还蒙着）
-            target == viewer && viewer !in alive -> role
+            // 自己出局了：知道自己是谁（空白也一样，否则出局了还蒙着），
+            // 同时也看得到全场身份 —— 已经说不了话、投不了票，继续瞒着只是让人干等。
+            // 观战者（自设词组的房主）不算：他能看全场身份，等于场边坐着个裁判
+            viewer !in alive && viewer !in room.spectators -> role
             // 自己还活着：不知道（这是游戏的核心）。空白玩家靠 myWord 为空自己就能推出来，
             // 但那是「拿到空白」这个事实，不是身份牌。
             else -> null
