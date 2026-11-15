@@ -1,6 +1,8 @@
 # LocalServerKt 端点一览
 
 > 基础地址：`http://<serverIp>/`。除特别标注外均为 GET；「鉴权」列：`auth` = form 域（白名单 IP 放行），`control` = basic 域（白名单 IP 放行），`—` = 无。
+>
+> **WebSocket 一律用 `ws://<host>/...`**：本服务只监听明文 HTTP/WS 端口，没有 TLS 终结，按页面协议拼成 `wss://` 只会在握手阶段直接失败（`chat.html`、`terminal.html`、`play/play.js` 三处同一拼法）。host 跟着当前页面走（用域名或反代进来才对得上），只有在 `file://` 直开时才退回 `/config.js` 探测到的网卡地址。
 
 ## Chat（聊天）
 | 端点 | 鉴权 | 用法 |

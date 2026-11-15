@@ -138,7 +138,8 @@
         }
 
         function connect() {
-            const url = (location.protocol === 'file:' ? 'ws://' + SERVER_IP : (location.protocol === 'https:' ? 'wss://' + location.hostname : 'ws://' + location.hostname)) + '/terminal';
+            // 一律用 ws://：服务端只有明文 WS 端口，没有 TLS 终结，wss:// 握不上手。
+            const url = 'ws://' + (location.protocol === 'file:' ? SERVER_IP : location.hostname) + '/terminal';
             ws = new WebSocket(url);
             ws.onopen = () => {
                 connDot.classList.add('ok');

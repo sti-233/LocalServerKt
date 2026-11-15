@@ -5,8 +5,9 @@
  * **本文件不含任何游戏规则判定**——一切以服务端下发的 state 为准，
  * 前端只负责把 state 画出来、按用户点击发 action。
  *
- * WS 地址必须跟着当前页面的 origin 走（https 用 wss://）：
- * 写死服务器 IP 时用域名/反代进来会对不上，https 页面下还会被当混合内容拦掉。
+ * WS 地址必须跟着当前页面的 origin 走，但协议一律是 ws://：
+ * 本服务没有 TLS 终结，只有明文 HTTP/WS 端口，按页面协议拼 wss:// 会在握手阶段失败。
+ * host 跟着当前页面走 —— 写死服务器 IP 时用域名/反代进来会对不上。
  *
  * 兼容 Chrome 80：不用可选链之外的 ES2020+ 语法（?. 与 ?? 可用），DOM 用 createElement 拼。
  */
@@ -39,7 +40,8 @@
     }
 
     function wsUrl() {
-        return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + WS_PATH;
+        // 一律 ws://：服务端只有明文 WS 端口，没有 TLS 终结。
+        return 'ws://' + location.host + WS_PATH;
     }
 
     function setStatus(s) {

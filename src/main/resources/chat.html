@@ -1099,13 +1099,11 @@
         }
 
         function connect() {
-            // 跟 terminal.html 同一套拼法：优先跟着当前页面的 host 与协议走，
-            // 硬写 'ws://' + SERVER_IP 有两个坑 —— https 页面下混合内容会被浏览器直接拦，
-            // 而 SERVER_IP 是 /config.js 探测出来的网卡地址，用域名或反代进来时对不上。
-            // SERVER_IP 只在 file:// 直开时兜底。
-            const url = (location.protocol === 'file:'
-                ? 'ws://' + SERVER_IP
-                : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host) + '/message';
+            // 一律用 ws://：本服务只监听明文 HTTP/WS 端口，没有 TLS 终结，
+            // 按页面协议拼 wss:// 只会在握手阶段直接失败。
+            // host 跟着当前页面走（用域名或反代进来才对得上），SERVER_IP 是
+            // /config.js 探测出来的网卡地址，仅在 file:// 直开时兜底。
+            const url = 'ws://' + (location.protocol === 'file:' ? SERVER_IP : location.host) + '/message';
             websocket = new WebSocket(url);
             setConnState('wait');
 
