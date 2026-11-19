@@ -24,6 +24,24 @@
 | `/deleteAvatar`（POST） | auth | 恢复默认头像（首字 + 按名字取色），返回 `{ok,user}` |
 | `/migrateImages` | control | 聊天记录图片消息迁移（`ImageB64:` → `ImageRef:`） |
 | `/migratePictures` | control | 图片目录迁移（旧 `cache/<sha256>.<ext>` → `cache/picture/`） |
+| `/mute` | auth | 我自己的禁言状态 `{muted, until, reason, left}`；`left` 是服务端算好的剩余时长文案，客户端时钟不准也不影响 |
+
+### 禁言
+
+control 用户可以临时禁言某人（`/control` 面板的「禁言」卡片，或 `GET /control/mute`）。被禁的人
+**仍然能看历史、能收新消息**，只是发不出新的 —— 文字与图片一起拦（两者都走 `send` 帧同一个入口）。
+
+- 时长：缺省 10 分钟，上限 1440 分钟（一天）。`minutes` 传 0 或负数一律 400，不会被解释成"永久"。
+- **改时长就是覆盖**：对同一个人再禁一次，`until` 被整个替换成新的解禁时刻，不会累加。
+- 解除用 `action=unmute`；`unban` 那个名字留给图片封禁，两者不要混。
+- 到点自动失效：`active()` 读的时候就把过期条目滤掉，**不依赖任何清理动作**。写盘时会顺手丢掉过期条目，
+  否则这份文件只增不减。
+- 立刻生效：改完状态会向这个人的全部在线连接推 `{"type":"muted","muted":…}`，聊天页据此置灰/恢复输入区。
+  没在线就什么都不推，他下次打开页面走 `/mute` 拿状态。
+- 只在服务端生效：页面置灰只是提示，真正的拦截在 `handleSend()` —— 手搓 WS 帧一样发不出去。
+- 撤回（`del`）不受禁言影响：自己发错了仍然可以收回。
+- **改名会失效**：禁言记录按用户名存，`/resetName` 之后旧名字的记录就再也匹配不上了。
+- 落盘 `cache/mute/mutes.json`，跨重启保留（只放内存的话，被禁的人等一次重启就解除了）。
 
 ### 图片举报
 
@@ -49,8 +67,9 @@
 | 端点 | 鉴权 | 用法 |
 |---|---|---|
 | `/canControl` | — | 当前 IP 是否在 control 白名单，返回 `true`/`false`（前端据此隐藏控制端按钮） |
-| `/control` | control | 跳转 `control.html`：control 快捷操作面板（开关服务器/开关视频/用户改名移除/撤销图片封禁/日志） |
-| `/control/status` | control | 面板状态汇总 `{serverIp, state, video:{open,manual,available}, timetable:{inClass,period,week}, online, users, banned, pending}`（`no-store`） |
+| `/control` | control | 跳转 `control.html`：control 快捷操作面板（开关服务器/开关视频/用户改名移除/禁言/撤销图片封禁/日志） |
+| `/control/status` | control | 面板状态汇总 `{serverIp, state, video:{open,manual,available}, timetable:{inClass,period,week}, online, users, mutes, banned, pending}`（`no-store`） |
+| `/control/mute?action=&name=&minutes=&reason=` | control | 禁言某人 / 改时长 / 解除（见下方「禁言」）；`action` 缺省 `mute`，`minutes` 缺省 10、上限 1440 |
 | `/control/unban?name=` | control | 撤销对某张图片的封禁（`name` 为 `<sha256>.<ext>`）；只从黑名单移除，**已删的图片与消息不会恢复** |
 | `/log` | — | 最近日志文本 |
 | `/userList` | — | 用户列表 JSON |

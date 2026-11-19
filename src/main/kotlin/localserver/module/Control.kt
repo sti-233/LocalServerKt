@@ -40,6 +40,7 @@ object Control {
         page()
         status()
         report()
+        mute()
     }
     
     // 前端（如 browser.html）据此隐藏需要 control 鉴权的按钮
@@ -110,6 +111,18 @@ object Control {
                 })
                 put("online", JsonPrimitive(Chat.onlineClients()))
                 put("users", Json.encodeToJsonElement(Util.getUserList()))
+                // 生效中的禁言：面板要显示「谁、还剩多久、谁禁的」。已到点的不会出现在这里
+                put("mutes", buildJsonArray {
+                    MuteStore.mutes().forEach { m ->
+                        add(buildJsonObject {
+                            put("name", JsonPrimitive(m.name))
+                            put("until", JsonPrimitive(m.until))
+                            put("by", JsonPrimitive(m.by))
+                            put("reason", JsonPrimitive(m.reason))
+                            put("left", JsonPrimitive(MuteStore.remainingText(m.until)))
+                        })
+                    }
+                })
                 put("banned", Json.encodeToJsonElement(ReportStore.banned()))
                 put("pending", buildJsonArray {
                     ReportStore.pending().forEach { p ->
@@ -164,6 +177,75 @@ object Control {
                     status = HttpStatusCode.NotFound
                 )
             }
+        }
+    }
+
+    /**
+     * 禁言 / 取消禁言 / 修改时长。
+     *
+     * 三个动作合成一个端点，靠 `action` 区分（`mute` / `unmute`），而不是三个路径：
+     * 「修改时长」与「重新禁言」在存储上就是同一件事（覆盖那条记录的 `until`），
+     * 分成两个端点只会让前端多一个分支、让两处逻辑有分叉的机会。
+     *
+     * 不传 `minutes` 时用 [MuteStore.DEFAULT_MINUTES]；超过上限会被夹到 [MuteStore.MAX_MINUTES]
+     * （一天），再长就不是临时静音了，管理员也没有回头改的机会。
+     */
+    private fun Route.mute() = authenticate("control") {
+        get("/control/mute") {
+            val action = call.parameters["action"] ?: "mute"
+            val name = call.parameters["name"].orEmpty()
+            // 只认已登记的用户名：禁一个不存在的名字不会生效（active() 按名字查），
+            // 却会在面板上凭空多出一行，看着像禁成功了
+            if (name.isEmpty() || !Util.nameExists(name)) {
+                return@get call.respondText(
+                    buildJsonObject {
+                        put("ok", JsonPrimitive(false))
+                        put("error", JsonPrimitive("用户名 '$name' 不在白名单里"))
+                    }.toString(),
+                    contentType = ContentType.Application.Json,
+                    status = HttpStatusCode.BadRequest
+                )
+            }
+            if (action == "unmute") {
+                val changed = MuteStore.unmute(name)
+                Chat.notifyMute(name, null)
+                if (changed) Logger.debug("control: 解除 $name 的禁言")
+                return@get call.respondText(
+                    buildJsonObject {
+                        put("ok", JsonPrimitive(changed))
+                        put("muted", JsonPrimitive(false))
+                        put("name", JsonPrimitive(name))
+                    }.toString(),
+                    contentType = ContentType.Application.Json
+                )
+            }
+            val minutes = call.parameters["minutes"]?.toIntOrNull() ?: MuteStore.DEFAULT_MINUTES
+            if (minutes <= 0) {
+                return@get call.respondText(
+                    buildJsonObject {
+                        put("ok", JsonPrimitive(false))
+                        put("error", JsonPrimitive("时长必须是正整数分钟"))
+                    }.toString(),
+                    contentType = ContentType.Application.Json,
+                    status = HttpStatusCode.BadRequest
+                )
+            }
+            val reason = call.parameters["reason"].orEmpty().take(200)
+            val me = runCatching { Util.getUserName(call.request.local.remoteAddress) }.getOrNull()
+            val entry = MuteStore.mute(name, minutes, me ?: "control", reason)
+            // 立刻推给被禁的人：他可能正开着聊天页，不推这一帧他要等到点发送才知道
+            Chat.notifyMute(name, entry)
+            Logger.debug("control: 禁言 $name ${minutes.coerceIn(1, MuteStore.MAX_MINUTES)} 分钟")
+            call.respondText(
+                buildJsonObject {
+                    put("ok", JsonPrimitive(true))
+                    put("name", JsonPrimitive(name))
+                    put("until", JsonPrimitive(entry.until))
+                    put("left", JsonPrimitive(MuteStore.remainingText(entry.until)))
+                    put("reason", JsonPrimitive(entry.reason))
+                }.toString(),
+                contentType = ContentType.Application.Json
+            )
         }
     }
 

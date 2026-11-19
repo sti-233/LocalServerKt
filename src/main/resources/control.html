@@ -257,6 +257,27 @@
             </div>
         </section>
 
+        <!-- 禁言 -->
+        <section class="card">
+            <h2>禁言</h2>
+            <p class="hint">
+                被禁言的人<b>仍然能看历史、能收消息</b>，只是发不出新的（文字和图片一起拦）。
+                时长到点自动解除，也可以随时取消或改成别的时长 —— 改名后禁言会跟着失效，
+                因为记录按用户名存。
+            </p>
+            <div id="muteBox"><div class="empty">正在读取…</div></div>
+            <div class="row" style="margin-top:12px;">
+                <input type="text" id="muteName" placeholder="用户名">
+                <input type="text" id="muteMinutes" placeholder="时长（分钟，默认 10）" style="min-width:170px;">
+                <input type="text" id="muteReason" placeholder="原因（可选）" style="min-width:170px;">
+                <button class="btn primary" onclick="doMute()">禁言</button>
+            </div>
+            <p class="hint" style="margin:10px 0 0;">
+                对同一个人再点一次就是<b>修改时长</b>（覆盖成新的解禁时刻，不会累加）。
+                上限 1440 分钟（一天）。
+            </p>
+        </section>
+
         <!-- 图片举报 -->
         <section class="card">
             <h2>图片举报</h2>
@@ -361,7 +382,32 @@
             document.getElementById('stBanned').textContent = (s.banned || []).length + ' 张';
 
             paintUsers(s.users || []);
+            paintMutes(s.mutes || []);
             paintBans(s.banned || [], s.pending || []);
+        }
+
+        function paintMutes(mutes) {
+            var box = document.getElementById('muteBox');
+            if (!mutes.length) {
+                box.innerHTML = '<div class="empty">当前没有被禁言的人。</div>';
+                return;
+            }
+            var html = '<table><thead><tr><th>用户名</th><th>剩余</th><th>原因</th><th></th></tr></thead><tbody>';
+            for (var i = 0; i < mutes.length; i++) {
+                var m = mutes[i] || {};
+                var name = m.name == null ? '' : String(m.name);
+                html += '<tr>'
+                    + '<td>' + esc(name) + '</td>'
+                    + '<td>' + esc(m.left || '') + '</td>'
+                    + '<td>' + (m.reason ? esc(m.reason) : '<span class="empty" style="padding:0">—</span>') + '</td>'
+                    + '<td class="ops">'
+                    // 改时长走同一个人名 + prompt 填分钟，避免再加一套表单
+                    + '<button class="btn sm" data-name="' + esc(name) + '" onclick="editMute(this)">改时长</button> '
+                    + '<button class="btn sm danger" data-name="' + esc(name) + '" onclick="unmute(this)">解除</button>'
+                    + '</td></tr>';
+            }
+            html += '</tbody></table>';
+            box.innerHTML = html;
         }
 
         function paintUsers(users) {
@@ -516,6 +562,61 @@
                 .catch(function (err) {
                     toast('撤销失败：' + (err && err.message ? err.message : err), true);
                 });
+        }
+
+        // 禁言 / 改时长 / 解除：三个动作共用一个端点，靠 action 区分。
+        // 回的都是 JSON，所以不走 act()（那个把响应当纯文本弹 toast，会显示成一坨 {…}）
+        function muteCall(params, okText) {
+            return fetch('/control/mute?' + params, { cache: 'no-store' })
+                .then(function (r) {
+                    return r.text().then(function (t) { return { ok: r.ok, status: r.status, text: t }; });
+                })
+                .then(function (res) {
+                    if (!res.ok) {
+                        var msg = '';
+                        try { msg = JSON.parse(res.text).error || ''; } catch (e) { /* 用状态码兜底 */ }
+                        toast(msg || ('HTTP ' + res.status), true);
+                    } else {
+                        toast(okText);
+                    }
+                    return refresh();
+                })
+                .catch(function (err) {
+                    toast('操作失败：' + (err && err.message ? err.message : err), true);
+                });
+        }
+
+        function doMute() {
+            var name = document.getElementById('muteName').value.trim();
+            var minutes = document.getElementById('muteMinutes').value.trim() || '10';
+            var reason = document.getElementById('muteReason').value.trim();
+            if (!name) { toast('请填写用户名', true); return; }
+            muteCall('action=mute'
+                + '&name=' + encodeURIComponent(name)
+                + '&minutes=' + encodeURIComponent(minutes)
+                + '&reason=' + encodeURIComponent(reason),
+                '已禁言 ' + name)
+                .then(function () {
+                    document.getElementById('muteName').value = '';
+                    document.getElementById('muteMinutes').value = '';
+                    document.getElementById('muteReason').value = '';
+                });
+        }
+
+        function editMute(btn) {
+            var name = btn.getAttribute('data-name');
+            var next = prompt('把 ' + name + ' 的禁言时长改成多少分钟？（填入后会从现在重新计时）', '10');
+            if (next === null) return;
+            next = next.trim();
+            if (!next) return;
+            muteCall('action=mute&name=' + encodeURIComponent(name) + '&minutes=' + encodeURIComponent(next),
+                '已改时长');
+        }
+
+        function unmute(btn) {
+            var name = btn.getAttribute('data-name');
+            if (!confirm('解除 ' + name + ' 的禁言？他能立刻恢复发言。')) return;
+            muteCall('action=unmute&name=' + encodeURIComponent(name), '已解除禁言');
         }
 
         function loadLog() {

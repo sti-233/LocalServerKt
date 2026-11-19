@@ -61,6 +61,29 @@ object Chat {
     private fun clientsOf(ip: String): List<Client> = clients.values.filter { it.ip == ip }
 
     /**
+     * 把「你被禁言了 / 你被解除了」推给这个人的全部在线连接。
+     *
+     * Control 面板改完禁言后调它：被禁的人可能正开着聊天页，不推这一帧他就得等到
+     * 打完一段话点发送、收到 err 才知道自己被禁了。
+     *
+     * 找不到这个人的连接（没在线）就什么都不做 —— 他下次打开页面会走 `/mute` 拿状态。
+     */
+    fun notifyMute(name: String, muted: MuteStore.Muted?) {
+        val targets = clientsOfIpOf(name)
+        if (targets.isEmpty()) return
+        val frame = buildJsonObject {
+            put("type", JsonPrimitive("muted"))
+            put("muted", JsonPrimitive(muted != null))
+            if (muted != null) {
+                put("until", JsonPrimitive(muted.until))
+                put("reason", JsonPrimitive(muted.reason))
+                put("left", JsonPrimitive(MuteStore.remainingText(muted.until)))
+            }
+        }.toString()
+        deliver(targets, frame)
+    }
+
+    /**
      * 当前在线的**连接**数（不是人数）。
      *
      * Control 面板要显示它，而 `/clients` 只回纯文本 "Connected clients: N"，
@@ -124,6 +147,7 @@ object Chat {
         setAvatar()
         deleteAvatar()
         members()
+        muteState()
         migrateImages()
         migratePictures()
         serverInfo()
@@ -544,6 +568,32 @@ object Chat {
         }
     }
 
+    /**
+     * 我自己是否被禁言（`auth` 鉴权，只回自己的状态）。
+     *
+     * 禁言只拦「发」，不拦「看」：被禁的人照常收消息、看历史，只是输入框要置灰。
+     * 页面靠这个端点知道该不该拦，而不是等服务端回一条 err 才发现 —— 后者要等到
+     * 用户打完一整段话点发送才告诉他，那段话就白写了。
+     */
+    private fun Route.muteState() = authenticate("auth") {
+        get("/mute") {
+            val me = runCatching { Util.getUserName(call.request.local.remoteAddress) }.getOrNull()
+            val muted = me?.let { MuteStore.active(it) }
+            call.respondText(
+                buildJsonObject {
+                    put("muted", JsonPrimitive(muted != null))
+                    if (muted != null) {
+                        put("until", JsonPrimitive(muted.until))
+                        put("reason", JsonPrimitive(muted.reason))
+                        // 剩余时长由服务端算：客户端的时钟可能差几分钟，禁言是服务端时间说了算
+                        put("left", JsonPrimitive(MuteStore.remainingText(muted.until)))
+                    }
+                }.toString(),
+                contentType = ContentType.Application.Json
+            )
+        }
+    }
+
     /** 把一个字符串编成 JSON 字面量（用户名里可能有引号、中文） */
     private fun jsonStr(s: String): String = JsonPrimitive(s).toString()
 
@@ -740,6 +790,14 @@ object Chat {
      */
     private fun handleSend(me: Client, json: Content, current: String) {
         val sendTo = json.sendTo
+        // 禁言只拦「发」，不拦「看」与「撤回」：能读历史、能收回自己说错的话，
+        // 但新消息一律挡住。判定在**服务端**，前端置灰只是提示 —— 被禁的人手搓一个
+        // WS 帧也发不出去。图片走同一个入口，所以文字与图片一起被拦。
+        MuteStore.active(current)?.let { mute ->
+            err(me, current, "你已被禁言，${MuteStore.remainingText(mute.until)}后恢复" +
+                (if (mute.reason.isNotBlank()) "（原因：${mute.reason}）" else ""), sendTo)
+            return
+        }
         // 私聊对象不在用户列表时直接回 err，避免 getUserIp 抛异常导致整个连接被断开。
         // 必须按**名字**校验：userExists 连 IP 也算命中，往输入框里填个内网地址就能过这一关，
         // 消息先落盘（archive 里多出一份 history_192.168.3.32-我.json），广播时 getUserIp

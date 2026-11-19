@@ -440,6 +440,11 @@
                 if (document.activeElement !== contentEl) hideMentionPop();
             });
             document.getElementById('replyBarClose').addEventListener('click', clearReply);
+            document.getElementById('muteBarClose').addEventListener('click', function () {
+                // 只是收起提示，禁言本身照旧：输入区继续置灰，到期后自己恢复
+                muteBarDismissed = true;
+                paintMute();
+            });
             // 点一下消息就地展开「回复 / 撤回」，再点一下（或点别处）收起。
             // 触屏没有 hover，这是唯一入口；桌面端悬停本来就会浮现，点击只当补充。
             document.addEventListener('click', function (e) {
@@ -485,6 +490,7 @@
             });
             await loadMe();
             await refresh();
+            await loadMute();
             connect();
             // 宽屏默认展开侧边栏，窄屏收起，顶栏按钮可手动切换
             if (window.innerWidth > 600) document.getElementById('sidebar').classList.add('open');
@@ -1148,6 +1154,9 @@
                 } else if (resp.type === 'reported') {
                     // 举报回执（还没凑够人数，或那张图已被撤下但没留下任何消息）
                     showError(resp.text);
+                } else if (resp.type === 'muted') {
+                    // control 改了我的禁言状态：立刻置灰/恢复输入区，别等下一次发送才发现
+                    applyMute(resp);
                 } else if (resp.type === 'err') {
                     showError(resp.text);
                 }
@@ -1871,6 +1880,87 @@
             });
         }
 
+        // ===== 禁言状态 =====
+        // 禁言只拦「发」：历史照常看、别人发来的消息照常收，所以这里不遮消息区，
+        // 只在输入栏上方挂一条红条并置灰输入区。
+        //
+        // 状态以服务端为准（/mute 与 WS 的 muted 帧都来自同一个 MuteStore），本地只记
+        // 「还剩多久」用于提示文案 —— 定时的倒计时靠 until 自己算，不依赖服务端再推。
+        let muteUntil = 0;
+        let muteReason = '';
+        // 用户手动收起过提示条：这次禁言内不再自动弹回来，但输入区该置灰还是置灰
+        let muteBarDismissed = false;
+
+        function paintMute() {
+            const bar = document.getElementById('muteBar');
+            const barText = document.getElementById('muteBarText');
+            const bar2 = document.getElementById('inputbar');
+            const active = muteUntil > Date.now();
+            if (!active) {
+                bar.classList.remove('show');
+                bar2.classList.remove('muted');
+                return;
+            }
+            const left = leftText(muteUntil);
+            barText.textContent = (left ? '还剩 ' + left : '禁言已到期') +
+                (muteReason ? '（原因：' + muteReason + '）' : '') + '，期间无法发送消息';
+            bar.classList.toggle('show', !muteBarDismissed);
+            // 置灰是提示，真正的拦截在服务端：手搓 WS 帧一样发不出去
+            bar2.classList.add('muted');
+        }
+
+        // 剩余时长的本地说法。与服务端 MuteStore.remainingText 保持同一套口径
+        // （向上取整到分钟，剩几十秒说「1 分钟」而不是「0 分钟」）；
+        // 本地这份只是为了每秒刷新文案时不必反复请求服务端。
+        function leftText(until) {
+            const diff = until - Date.now();
+            if (diff <= 0) return '';
+            const minutes = Math.ceil(diff / 60000);
+            if (minutes > 60) {
+                const h = Math.floor(minutes / 60);
+                const m = minutes % 60;
+                return h + ' 小时' + (m ? ' ' + m + ' 分钟' : '');
+            }
+            if (minutes > 1) return minutes + ' 分钟';
+            return Math.ceil(diff / 1000) + ' 秒';
+        }
+
+        function applyMute(resp) {
+            if (resp && resp.muted) {
+                muteUntil = Number(resp.until) || 0;
+                muteReason = resp.reason || '';
+                muteBarDismissed = false;
+            } else {
+                muteUntil = 0;
+                muteReason = '';
+                muteBarDismissed = false;
+            }
+            paintMute();
+        }
+
+        async function loadMute() {
+            try {
+                const resp = await fetch('/mute', { cache: 'no-store' });
+                if (!resp.ok) return;
+                applyMute(await resp.json());
+            } catch (e) {
+                // 拿不到就当没被禁：服务端那边仍会拦，只是页面不会提前置灰
+                console.warn('读取禁言状态失败:', e);
+            }
+        }
+
+        // 每秒重画一次剩余时长（禁言到期时把输入区恢复回来）。
+        // 清理完必须再 paintMute 一次：只把 muteUntil 置 0 而不重画，输入区会一直灰着。
+        setInterval(function () {
+            if (muteUntil <= 0) return;
+            if (muteUntil <= Date.now()) {
+                muteUntil = 0;
+                muteReason = '';
+                muteBarDismissed = false;
+            }
+            paintMute();
+        }, 1000);
+
         // 服务端返回的 err 类型消息（如私聊对象不存在），显示 4 秒后自动消失
         function showError(text) {
             let toast = document.getElementById('errToast');
@@ -2211,6 +2301,12 @@
         async function sendRaw(text) {
             if (!websocket || websocket.readyState !== WebSocket.OPEN) {
                 showError('连接已断开，正在重连，消息未发送');
+                return false;
+            }
+            // 被禁言时本地就拦住：服务端也会拦（手搓 WS 帧绕不过去），但让人打完一整段
+            // 话再看到「你已被禁言」是白费功夫，这里先说清楚
+            if (muteUntil > Date.now()) {
+                showError('你已被禁言，还剩 ' + leftText(muteUntil) + '，期间无法发送消息');
                 return false;
             }
             if (document.getElementById('user').value !== nowTarget) {
@@ -2852,6 +2948,30 @@
         }
         .reply-bar .reply-bar-close:hover { background: var(--fill); color: var(--text); }
 
+        /* 被禁言的提示条：与回复条同一个位置、同一套布局，只是红色。
+            它能看见消息（禁言只拦「发」），所以这里说清「还剩多久」而不是把整个消息区盖住 */
+        .mute-bar {
+            display: none;
+            align-items: center;
+            padding: 7px 16px;
+            background: var(--danger-soft);
+            border-top: 1px solid var(--danger-border);
+            font-size: 12.5px;
+            color: var(--text-2);
+        }
+        .mute-bar.show { display: flex; }
+        .mute-bar .mute-bar-who { font-weight: 700; color: var(--danger); }
+        .mute-bar .mute-bar-text {
+            flex: 1;
+            min-width: 0;
+            margin-left: 8px;
+            color: var(--muted);
+        }
+        /* 输入区整体置灰：`pointer-events: none` 比逐个 disable 更彻底 —— 被禁的人
+            点🖼️、拖图进来、按 Enter 都发不出去，而服务端本来就还会再拦一次 */
+        .inputbar.muted { opacity: .55; }
+        .inputbar.muted > * { pointer-events: none; }
+
         /* @ 选人浮层：挂在输入框上方，键盘上下选、回车确定 */
         .mention-pop {
             position: absolute;
@@ -3234,7 +3354,15 @@
                 <button id="replyBarClose" class="reply-bar-close" type="button" title="取消回复">✕</button>
             </div>
 
-            <footer class="inputbar">
+            <!-- 禁言提示条：被 control 禁言时出现，说明还剩多久、为什么。
+                 禁言只拦「发」，历史与别人发来的消息照常看得见 -->
+            <div id="muteBar" class="mute-bar">
+                <span class="mute-bar-who">已被禁言</span>
+                <span id="muteBarText" class="mute-bar-text"></span>
+                <button id="muteBarClose" class="reply-bar-close" type="button" title="收起提示">✕</button>
+            </div>
+
+            <footer class="inputbar" id="inputbar">
                 <!-- @ 补全候选面板：浮在输入栏上方（.inputbar 是 position:relative，
                      所以 bottom:100% 正好贴着它上沿）。 -->
                 <div id="mentionPop" class="mention-pop"></div>
