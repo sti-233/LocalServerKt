@@ -22,6 +22,10 @@ import localserver.utils.Timetable
  * **control 用户不受限制**：`Control.allowed()` 白名单里的 IP（与 `/canControl`、取流限速同一份）
  * 即使在正课期间也能正常打开视频页与接口，`/videoStatus` 对他们恒回 `{"open":true}`，
  * 免得页面被自己的轮询踢走。
+ *
+ * **手动开关优先于课表**：[manualOverride] 三态（跟随课表 / 强制开 / 强制关）。
+ * 「强制关」让 control 在**非正课期间**也能把视频收起来 —— 旧版只有"手动放行"一个标记，
+ * 那种情况下 `/closeVideo` 什么都做不了。手动状态在下一次上下课切换时自动清回 `null`。
  */
 internal object VideoGate {
 
@@ -30,21 +34,46 @@ internal object VideoGate {
     var open: Boolean = true
 
     /**
-     * 手动放行：control 用户调 `/openVideo` 后为 true，**只对这一节课有效**。
+     * 手动开关，三态：
      *
-     * 为什么按「节课」而不是永久：需求是「开放普通用户当节课的权限」，下课就该收回，
-     * 否则一次放行会一直开着、没人记得关。所以 [followTimetable] 一旦检测到阶段变化
-     * （上下课切换）就把这里清掉，与 [ClassGate] 的节流共用同一个触发点。
+     * - `null` —— 跟随课表，由 [open] 说了算（默认）；
+     * - `true` —— control 调了 `/openVideo`，正课期间也对普通用户开放；
+     * - `false` —— control 调了 `/closeVideo`，即使在非正课期间也**不给**普通用户看。
+     *
+     * 为什么需要第三态：早先只有"手动放行"一个标记，于是 `/closeVideo` 在非正课期间
+     * 什么也做不了 —— 课表门本身开着，清掉放行标记后仍然是开的，control 想临时关掉
+     * 视频（比如让别人专心写作业）只能去改课表。现在两个方向都能覆盖，且都只到下次
+     * 上下课切换为止。
+     *
+     * 为什么按「阶段」而不是永久：需求是"当节/当下的临时状态"，过了就该回到课表的判断，
+     * 否则一次手动操作会一直开着或一直关着、没人记得改回来。所以 [followTimetable]
+     * 一旦检测到阶段变化（上下课切换）就把手动开关清回 `null`，与 [ClassGate] 共用触发点。
      */
     @Volatile
-    var manualOpen: Boolean = false
+    var manualOverride: Boolean? = null
         private set
 
-    /** 手动放行 / 收回，返回是否真的发生了变化。 */
-    fun setManualOpen(value: Boolean): Boolean {
-        if (manualOpen == value) return false
-        manualOpen = value
-        Logger.debug("视频模块：手动放行 = $value")
+    /** 是否正处于"手动放行"（仅供状态展示与测试，写入请用 [setManualOverride]）。 */
+    val manualOpen: Boolean get() = manualOverride == true
+
+    /** 是否正处于"手动关闭"。 */
+    val manualClosed: Boolean get() = manualOverride == false
+
+    /**
+     * 设置手动开关，返回是否真的发生了变化。
+     *
+     * 传 `null` = 回到跟随课表。
+     */
+    fun setManualOverride(value: Boolean?): Boolean {
+        if (manualOverride == value) return false
+        manualOverride = value
+        Logger.debug(
+            "视频模块：手动开关 = " + when (value) {
+                true -> "放行"
+                false -> "关闭"
+                null -> "跟随课表"
+            }
+        )
         return true
     }
 
@@ -54,7 +83,7 @@ internal object VideoGate {
     /**
      * 由 Server.kt 的后台协程每 30 秒调一次。
      *
-     * 阶段变化时顺带清掉 [manualOpen] —— 这就是「只放行当节课」的落地点。
+     * 阶段变化时顺带把手动开关清回 `null` —— 这就是「临时操作只到下次上下课」的落地点。
      */
     fun followTimetable(): Boolean = applyPhase(Timetable.phaseKey())
 
@@ -64,9 +93,9 @@ internal object VideoGate {
      */
     internal fun applyPhase(phase: String): Boolean {
         val changed = gate.apply(phase)
-        if (changed && manualOpen) {
-            manualOpen = false
-            Logger.debug("视频模块：上下课切换，手动放行已收回")
+        if (changed && manualOverride != null) {
+            manualOverride = null
+            Logger.debug("视频模块：上下课切换，手动开关已收回，恢复跟随课表")
         }
         return changed
     }
@@ -111,14 +140,18 @@ internal object VideoGate {
     /**
      * 对某个请求方而言视频模块是否可用（拦截器与 `/videoStatus` 共用同一判断）。
      *
-     * 三种放行理由：模块本身开着（非正课）、[manualOpen]（control 手动放行了当节课）、
-     * 或者请求方自己就是 control 用户。
+     * 三种放行理由：手动开关开着（[manualOverride] 为 true）、模块本身开着（非正课且没有被
+     * 手动关掉）、或者请求方自己就是 control 用户。
+     *
+     * 手动开关优先于课表：`false` 时连非正课也不给普通用户看，这就是"临时关掉"。
+     * control 自己始终豁免 —— 否则把视频关掉的 control 用户自己也进不去，没法验证效果。
      *
      * 拆出来是为了能直接单测：测试宿主里 `remoteAddress` 恒为 `localhost`，没法在路由层模拟
      * control 网段的来源 IP。
      */
     internal fun availableTo(remoteAddress: String): Boolean =
-        open || manualOpen || bypass(remoteAddress)
+        // 括号不能省：`a || b ?: c` 在 Kotlin 里是 `a || (b ?: c)`，但读代码的人未必记得
+        bypass(remoteAddress) || (manualOverride ?: open)
 
     /**
      * 前端轮询用：`{"open":false}` 时 video 各页立刻跳去课表。

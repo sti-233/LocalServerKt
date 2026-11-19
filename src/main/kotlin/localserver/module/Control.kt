@@ -89,8 +89,18 @@ object Control {
                 put("serverIp", JsonPrimitive(serverIp))
                 put("state", JsonPrimitive(state))
                 put("video", buildJsonObject {
+                    // 三个值分开给：页面要能说清"课表怎么判、有没有被人为覆盖、普通用户实际看到什么"。
+                    // 只给一个布尔值时，"关着"到底是正课还是被人手动关的，界面上分不清。
                     put("open", JsonPrimitive(VideoGate.open))
-                    put("manualOpen", JsonPrimitive(VideoGate.manualOpen))
+                    put("manual", JsonPrimitive(
+                        when (VideoGate.manualOverride) {
+                            true -> "open"
+                            false -> "closed"
+                            null -> "auto"
+                        }
+                    ))
+                    // 普通用户当前能不能看（control 自己始终能，判据见 VideoGate.availableTo）
+                    put("available", JsonPrimitive(VideoGate.manualOverride ?: VideoGate.open))
                 })
                 put("timetable", buildJsonObject {
                     put("inClass", JsonPrimitive(Timetable.inClass()))
@@ -175,22 +185,23 @@ object Control {
             }
         }
 
-        // 临时放行视频模块：正课期间让普通用户也能看，**只到这节课结束**
-        // （阶段变化时 VideoGate.followTimetable 会自动收回，见 VideoGate.manualOpen）
+        // 手动开关视频模块，**只到下次上下课切换为止**
+        // （阶段变化时 VideoGate.followTimetable 会把手动开关清回 null，见 VideoGate.manualOverride）
         get("/openVideo") {
-            if (VideoGate.open) {
-                // 本来就开着，不必留一个会过期的标记
-                call.respondText("Video is already open")
-            } else {
-                val changed = VideoGate.setManualOpen(true)
-                call.respondText(
-                    if (changed) "Video opened for this period" else "Video already open for this period"
-                )
-            }
+            val changed = VideoGate.setManualOverride(true)
+            call.respondText(if (changed) "Video manually opened" else "Video is already manually open")
         }
+        // 非正课期间也能关：早先只清"手动放行"标记，课表门开着时等于什么都没做，
+        // control 想临时关掉视频只能去改课表 —— 现在直接盖成关闭。
         get("/closeVideo") {
-            val changed = VideoGate.setManualOpen(false)
-            call.respondText(if (changed) "Video closed" else "Video already closed")
+            val changed = VideoGate.setManualOverride(false)
+            call.respondText(if (changed) "Video manually closed" else "Video is already manually closed")
+        }
+        // 回到跟随课表。手动开关有有效期，但没有这个出口的话，想立刻恢复自动判定
+        // 就只能干等到下一次上下课（课间点了关闭、下节课还想按课表走就得等）。
+        get("/autoVideo") {
+            val changed = VideoGate.setManualOverride(null)
+            call.respondText(if (changed) "Video follows the timetable again" else "Video already follows the timetable")
         }
     }
 

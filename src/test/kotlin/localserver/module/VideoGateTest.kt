@@ -15,6 +15,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -25,8 +26,8 @@ class VideoGateTest {
     @BeforeTest
     fun openUp() {
         VideoGate.open = true
-        // 手动放行是全局 mutable 状态，不重置会污染其它用例（单跑通过、全跑失败）
-        VideoGate.setManualOpen(false)
+        // 手动开关是全局 mutable 状态，不重置会污染其它用例（单跑通过、全跑失败）
+        VideoGate.setManualOverride(null)
         // 测试宿主的 remoteAddress 恒为 localhost（在 control 白名单里），默认当成普通用户，
         // 否则「关闭时应该被拦」的用例全会被 control 豁免掉；需要测豁免的用例自己换回来。
         VideoGate.isControl = { false }
@@ -35,7 +36,7 @@ class VideoGateTest {
     @AfterTest
     fun closeDown() {
         VideoGate.open = true
-        VideoGate.setManualOpen(false)
+        VideoGate.setManualOverride(null)
         VideoGate.isControl = { Control.allowed(it) }
     }
 
@@ -171,9 +172,9 @@ class VideoGateTest {
                     blockWhenClosed()
                     videoStatusRoute()
                 }
-                // 冒充 control 路由，验证放行状态确实被 setManualOpen 改了
-                get("/openVideo") { call.respondText(VideoGate.setManualOpen(true).toString()) }
-                get("/closeVideo") { call.respondText(VideoGate.setManualOpen(false).toString()) }
+                // 冒充 control 路由，验证放行状态确实被 setManualOverride 改了
+                get("/openVideo") { call.respondText(VideoGate.setManualOverride(true).toString()) }
+                get("/autoVideo") { call.respondText(VideoGate.setManualOverride(null).toString()) }
                 get("/recommend") { call.respondText("handler") }
             }
         }
@@ -190,10 +191,69 @@ class VideoGateTest {
         // 重复放行不算变化
         assertEquals("false", client.get("/openVideo").bodyAsText())
 
-        // 手动收回
+        // 回到跟随课表：又拦上
+        assertEquals("true", client.get("/autoVideo").bodyAsText())
+        assertEquals(HttpStatusCode.Forbidden, client.get("/recommend").status)
+        assertEquals("false", client.get("/autoVideo").bodyAsText())
+    }
+
+    @Test
+    fun `manual close also works outside class hours`() = testApplication {
+        // 非正课：课表把模块开着。这正是旧版本关不掉的场景 ——
+        // 那时 /closeVideo 只是清"手动放行"，而 open 本来就是 true，结果什么都没变。
+        VideoGate.open = true
+        application {
+            routing {
+                with(VideoGate) {
+                    blockWhenClosed()
+                    videoStatusRoute()
+                }
+                get("/closeVideo") { call.respondText(VideoGate.setManualOverride(false).toString()) }
+                get("/autoVideo") { call.respondText(VideoGate.setManualOverride(null).toString()) }
+                get("/recommend") { call.respondText("handler") }
+            }
+        }
+
+        // 课表开着：普通用户本来能看
+        assertEquals("handler", client.get("/recommend").bodyAsText())
+        assertEquals("""{"open":true}""", client.get("/videoStatus").bodyAsText())
+
+        // 手动关闭：即使非正课也挡住
         assertEquals("true", client.get("/closeVideo").bodyAsText())
         assertEquals(HttpStatusCode.Forbidden, client.get("/recommend").status)
+        assertEquals("""{"open":false}""", client.get("/videoStatus").bodyAsText())
+        // 重复关闭不算变化
         assertEquals("false", client.get("/closeVideo").bodyAsText())
+
+        // 恢复跟随课表：课表说开着，就还是开着
+        assertEquals("true", client.get("/autoVideo").bodyAsText())
+        assertEquals("handler", client.get("/recommend").bodyAsText())
+        assertEquals("""{"open":true}""", client.get("/videoStatus").bodyAsText())
+    }
+
+    @Test
+    fun `manual close still exempts control clients`() {
+        // 手动关闭是给普通用户用的；control 自己必须还能进，否则关完之后没法验证效果
+        VideoGate.isControl = { Control.allowed(it) }
+        VideoGate.open = true
+        VideoGate.setManualOverride(false)
+
+        assertTrue(VideoGate.availableTo("127.0.0.1"), "control stays in even when manually closed")
+        assertFalse(VideoGate.availableTo("192.168.1.50"), "ordinary client is blocked")
+    }
+
+    @Test
+    fun `manual override beats whatever the timetable says`() {
+        VideoGate.open = false
+        VideoGate.setManualOverride(true)
+        assertTrue(VideoGate.availableTo("203.0.113.9"), "manual open overrides a closed gate")
+
+        VideoGate.open = true
+        VideoGate.setManualOverride(false)
+        assertFalse(VideoGate.availableTo("203.0.113.9"), "manual close overrides an open gate")
+
+        VideoGate.setManualOverride(null)
+        assertTrue(VideoGate.availableTo("203.0.113.9"), "back to following the timetable")
     }
 
     @Test
@@ -203,7 +263,7 @@ class VideoGateTest {
 
         // 先把"当前阶段"垫定，否则第一次 applyPhase 算首次同步、会当成变化
         VideoGate.applyPhase("class:2026-11-04:3")
-        VideoGate.setManualOpen(true)
+        VideoGate.setManualOverride(true)
         assertTrue(VideoGate.availableTo("203.0.113.9"), "manual open should let an ordinary client in")
 
         // 同一阶段内不动手动开关
@@ -212,8 +272,31 @@ class VideoGateTest {
 
         // 换到下一节课：自动收回
         VideoGate.applyPhase("class:2026-11-04:4")
-        assertFalse(VideoGate.manualOpen, "changing period should drop the manual open")
+        assertNull(VideoGate.manualOverride, "changing period should drop the manual override")
         assertFalse(VideoGate.availableTo("203.0.113.9"), "ordinary client is blocked again after the period ends")
+    }
+
+    @Test
+    fun `manual close is also cleared when the period changes`() {
+        // 反向同理：课间点了关闭，上课时课表本来就会关、但下课后不该还一直关着
+        VideoGate.open = true
+        VideoGate.applyPhase("free")
+
+        VideoGate.setManualOverride(false)
+        assertFalse(VideoGate.availableTo("203.0.113.9"), "manual close blocks an ordinary client")
+
+        // 同一阶段不动
+        VideoGate.applyPhase("free")
+        assertTrue(VideoGate.manualClosed, "same phase keeps the manual close")
+
+        // 进入正课：手动开关收回，改由课表判定（正课=关）
+        VideoGate.applyPhase("class:2026-11-04:5")
+        assertNull(VideoGate.manualOverride, "changing period should drop the manual close")
+        assertFalse(VideoGate.availableTo("203.0.113.9"))
+
+        // 再下课：课表恢复开启，手动关闭不该还留着
+        VideoGate.applyPhase("free")
+        assertTrue(VideoGate.availableTo("203.0.113.9"), "manual close must not survive the period change")
     }
 
     @Test

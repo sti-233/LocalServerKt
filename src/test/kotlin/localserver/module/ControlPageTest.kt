@@ -79,7 +79,14 @@ class ControlPageTest {
         val json = Json.parseToJsonElement(resp.bodyAsText()).jsonObject
 
         assertTrue(json["state"]!!.jsonPrimitive.boolean, "默认是启动状态")
-        assertTrue(json["video"]!!.jsonObject.containsKey("manualOpen"))
+        // video 三项：open = 课表判定，manual = 有没有被人为覆盖，available = 普通用户实际能不能看。
+        // 只给一个布尔值时，"关着"是正课还是被手动关的，面板上分不清。
+        val video = json["video"]!!.jsonObject
+        assertTrue(video.containsKey("open") && video.containsKey("manual") && video.containsKey("available"))
+        assertTrue(
+            video["manual"]!!.jsonPrimitive.content in setOf("auto", "open", "closed"),
+            "unexpected manual state: ${video["manual"]}"
+        )
         // 课表三项必须都在：前端据此显示「正课 · 第 N 节」还是「非正课」
         val tt = json["timetable"]!!.jsonObject
         assertTrue(tt.containsKey("inClass") && tt.containsKey("period") && tt.containsKey("week"))

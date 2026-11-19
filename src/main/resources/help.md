@@ -49,13 +49,14 @@
 | 端点 | 鉴权 | 用法 |
 |---|---|---|
 | `/canControl` | — | 当前 IP 是否在 control 白名单，返回 `true`/`false`（前端据此隐藏控制端按钮） |
-| `/control` | control | 跳转 `control.html`：control 快捷操作面板（开关服务器/临时放行视频/用户改名移除/撤销图片封禁/日志） |
-| `/control/status` | control | 面板状态汇总 `{serverIp, state, video:{open,manualOpen}, timetable:{inClass,period,week}, online, users, banned, pending}`（`no-store`） |
+| `/control` | control | 跳转 `control.html`：control 快捷操作面板（开关服务器/开关视频/用户改名移除/撤销图片封禁/日志） |
+| `/control/status` | control | 面板状态汇总 `{serverIp, state, video:{open,manual,available}, timetable:{inClass,period,week}, online, users, banned, pending}`（`no-store`） |
 | `/control/unban?name=` | control | 撤销对某张图片的封禁（`name` 为 `<sha256>.<ext>`）；只从黑名单移除，**已删的图片与消息不会恢复** |
 | `/log` | — | 最近日志文本 |
 | `/userList` | — | 用户列表 JSON |
 | `/start`、`/exit` | control | 切换 `Control.state`（只影响 auth 放行逻辑，不停服） |
-| `/openVideo`、`/closeVideo` | control | 临时放行 / 收回视频模块，**只对当节课有效**（下节课的上下课切换会自动收回） |
+| `/openVideo`、`/closeVideo` | control | 手动打开 / 手动关闭视频模块（**手动状态优先于课表**，非正课也能关；只到下次上下课切换为止） |
+| `/autoVideo` | control | 清掉手动覆盖，回到跟随课表判定 |
 | `/addUser?ip=&username=` | control | 添加白名单用户（用户名不能含 `-` 与控制字符） |
 | `/removeUser?ip=` | control | 移除白名单用户 |
 | `/resetName?ip=&username=` | control | 改名，并连带迁移旧名下的聊天记录、图片、AI 会话与页面配置（回 `{users, migrated}`）；用户名不能含 `-` 与控制字符，也不能改成别人正在用的名字 |
@@ -219,11 +220,28 @@
 **control 用户不受限制**：`Control.allowed()` 白名单里的 IP（与 `/canControl`、取流限速是同一份）
 即使在正课期间也能正常打开视频页与接口，`GET /videoStatus` 对他们恒回 `{"open":true}`，
 免得页面被自己的轮询踢走。判据集中在 `VideoGate.availableTo()`，拦截器与状态接口共用它。
+手动关闭也不影响这条豁免 —— 关完之后自己还得能进去验证效果。
 
-**临时给普通用户放行**：control 用户调 `GET /openVideo` 可以把视频模块对所有人放开，
-`GET /closeVideo` 立刻收回。放行**只到这节课结束** —— 课表阶段一变（上下课切换）
-`VideoGate.followTimetable()` 就自动清掉，避免一次放行忘关、之后一直开着。
-`/openVideo`、`/closeVideo` 都走 `control` 鉴权，返回纯文本（如 `Video opened for this period`）。
+**手动开关（三态）**：`VideoGate.manualOverride` 决定手动覆盖：
+
+| 值 | 端点 | 含义 |
+|---|---|---|
+| `null`（默认） | `/autoVideo` | 跟随课表，由 `VideoGate.open` 说了算 |
+| `true` | `/openVideo` | 正课期间也放行普通用户 |
+| `false` | `/closeVideo` | **即使非正课也挡住普通用户** |
+
+手动状态**优先于课表**判定的结果，且**只到下一次上下课切换为止** —— 课表阶段一变
+`VideoGate.followTimetable()` 就把它清回 `null`，避免一次手动操作一直留着（放行忘关，
+或课间关了、下节课还想按课表走却恢复不了）。
+
+早先只有"手动放行"一个标记，所以 `/closeVideo` 在**非正课期间什么也做不了**：课表门本身
+开着，清掉放行标记后仍然是开的，想临时关掉视频只能去改课表。现在两个方向都能覆盖，
+并多了 `/autoVideo` 立刻回到自动判定（否则只能干等到下次上下课）。
+
+`/openVideo`、`/closeVideo`、`/autoVideo` 都走 `control` 鉴权，返回纯文本
+（如 `Video manually closed`、`Video follows the timetable again`）。
+`/control/status` 的 `video` 字段因此拆成三项：`open`（课表怎么判）、
+`manual`（`auto`/`open`/`closed`）、`available`（普通用户实际能不能看）。
 
 ## Environment（浏览器能力检测）
 

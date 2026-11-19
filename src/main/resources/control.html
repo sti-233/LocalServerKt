@@ -229,13 +229,15 @@
         <section class="card">
             <h2>视频模块</h2>
             <p class="hint">
-                正课时段视频模块会自动关闭（只关视频，不动聊天与课表）。这里的「临时放行」
-                <b>只对当节课有效</b>：下一次上下课切换时服务端会自动收回，免得一次放行忘关、之后一直开着。
-                control 白名单 IP 本来就不受限制，这个按钮是给普通用户用的。
+                正课时段视频模块会自动关闭（只关视频，不动聊天与课表）。这里的两个按钮是<b>手动覆盖</b>课表判断，
+                <b>都只到下一次上下课切换为止</b>：上课时切走就自动收回，下课后点「关闭」也会在下节课开启时失效。
+                手动状态优先于课表 —— 非正课期间点「关闭」同样能立刻把所有人挡在外面。
+                control 白名单 IP 本来就不受限制，这两个按钮是给普通用户用的。
             </p>
             <div class="row">
-                <button class="btn" onclick="act('/openVideo')">临时放行（当节课）</button>
-                <button class="btn" onclick="act('/closeVideo')">收回</button>
+                <button class="btn primary" onclick="act('/openVideo')">手动打开</button>
+                <button class="btn danger" onclick="act('/closeVideo')">手动关闭</button>
+                <button class="btn" onclick="act('/autoVideo')">恢复跟随课表</button>
             </div>
         </section>
 
@@ -338,10 +340,13 @@
             st.className = 'v ' + (s.state ? 'on' : 'off');
 
             var v = document.getElementById('stVideo');
-            var vopen = s.video && s.video.open;
-            var manual = s.video && s.video.manualOpen;
-            v.textContent = (vopen ? '开放' : '已关闭') + (manual ? '（手动放行中）' : '');
-            v.className = 'v ' + (vopen ? 'on' : 'off');
+            var vobj = s.video || {};
+            // available = 普通用户实际能不能看；manual 说明是不是被人为覆盖过课表判断
+            var avail = !!vobj.available;
+            var manual = vobj.manual || 'auto';
+            var tag = manual === 'open' ? '（手动打开）' : (manual === 'closed' ? '（手动关闭）' : '（跟随课表）');
+            v.textContent = (avail ? '开放' : '已关闭') + tag;
+            v.className = 'v ' + (avail ? 'on' : 'off');
 
             var cls = document.getElementById('stClass');
             var t = s.timetable || {};
