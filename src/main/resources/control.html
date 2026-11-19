@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Control</title>
+    <link rel="stylesheet" href="/resources/lib/theme.css">
+    <script src="/resources/lib/theme.js"></script>
+    <script src="/resources/config.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            min-height: 56px; /* 与 setting.html/chat.html 统一 */
+            padding: 10px 18px;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+        }
+        .topbar.topbar > * + * { margin-left: 12px; }
+        .topbar h1 { margin: 0; font-size: 18px; }
+        .topbar .back {
+            margin-left: auto;
+            color: var(--muted);
+            font-size: 13px;
+            text-decoration: none;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+        }
+        .topbar .back:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+        .wrap {
+            flex: 1;
+            overflow-y: auto;
+            padding: 18px;
+            max-width: 900px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px 18px;
+            margin-bottom: 14px;
+            box-shadow: var(--shadow);
+        }
+        .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+        .card .hint { margin: 0 0 12px; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+
+        /* 状态格子：两列，窄屏一列。用相邻兄弟 margin 而不是 grid gap（与全站保守写法一致） */
+        .stats { display: flex; flex-wrap: wrap; margin: -6px; }
+        .stat {
+            flex: 1 1 180px;
+            margin: 6px;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg);
+        }
+        .stat .k { font-size: 12px; color: var(--muted); }
+        .stat .v { font-size: 15px; font-weight: 600; margin-top: 2px; word-break: break-all; }
+        .stat .v.on { color: var(--green); }
+        .stat .v.off { color: var(--danger); }
+
+        .row { display: flex; align-items: center; flex-wrap: wrap; margin: 0 -5px; }
+        .row > * { margin: 5px; }
+
+        .btn {
+            padding: 7px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card);
+            color: var(--text);
+            font-size: 13px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+        .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+        .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
+        .btn.danger:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+        .btn:disabled { opacity: .45; cursor: not-allowed; }
+        .btn:disabled:hover { border-color: var(--border); color: var(--text); background: var(--card); }
+        .btn.sm { padding: 4px 10px; font-size: 12px; }
+
+        input[type="text"] {
+            padding: 7px 11px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 13px;
+            background: var(--bg);
+            color: var(--text);
+            outline: none;
+            min-width: 140px;
+        }
+        input[type="text"]:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(79, 124, 255, .15);
+            background: var(--card);
+        }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th, td {
+            text-align: left;
+            padding: 8px 6px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+        th { color: var(--muted); font-weight: 600; font-size: 12px; }
+        td.mono { font-family: Consolas, Monaco, monospace; font-size: 12px; word-break: break-all; }
+        td.ops { text-align: right; white-space: nowrap; }
+        tr:last-child td { border-bottom: none; }
+
+        .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+        .err { color: var(--danger); font-size: 13px; }
+
+        /* 日志框：定高滚动，别把整页撑长 */
+        pre.log {
+            margin: 0;
+            max-height: 260px;
+            overflow: auto;
+            padding: 10px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: Consolas, Monaco, monospace;
+            font-size: 12px;
+            line-height: 1.55;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        /* 与 chat.html / setting.html 一致：底部居中浮层 */
+        .toast {
+            position: fixed;
+            left: 50%;
+            bottom: 32px;
+            transform: translateX(-50%) translateY(20px);
+            max-width: 80vw;
+            padding: 10px 18px;
+            background: var(--accent);
+            color: var(--on-accent);
+            border-radius: 8px;
+            font-size: 13.5px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s, transform .2s;
+            z-index: 1100;
+        }
+        .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        .toast.error { background: var(--danger); color: var(--on-danger); }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <h1>🛠 Control</h1>
+        <a class="back" href="/resources/browser.html">← 返回</a>
+    </header>
+
+    <div class="wrap">
+        <!-- 状态 -->
+        <section class="card">
+            <h2>当前状态</h2>
+            <p class="hint">
+                由 <code>/control/status</code> 汇总，每 10 秒自动刷新一次（页面切到后台时暂停）。
+                这里显示的「节次」按服务端时钟与 <code>timetable.json</code> 判定，与你手机的时间无关。
+            </p>
+            <div class="stats">
+                <div class="stat">
+                    <div class="k">服务器开关</div>
+                    <div class="v" id="stState">—</div>
+                </div>
+                <div class="stat">
+                    <div class="k">视频模块</div>
+                    <div class="v" id="stVideo">—</div>
+                </div>
+                <div class="stat">
+                    <div class="k">课表</div>
+                    <div class="v" id="stClass">—</div>
+                </div>
+                <div class="stat">
+                    <div class="k">在线连接</div>
+                    <div class="v" id="stOnline">—</div>
+                </div>
+                <div class="stat">
+                    <div class="k">服务地址</div>
+                    <div class="v" id="stIp">—</div>
+                </div>
+                <div class="stat">
+                    <div class="k">已封禁图片</div>
+                    <div class="v" id="stBanned">—</div>
+                </div>
+            </div>
+            <div class="row" style="margin-top:14px;">
+                <button class="btn" id="refreshBtn" onclick="refresh()">刷新</button>
+            </div>
+        </section>
+
+        <!-- 服务器开关 -->
+        <section class="card">
+            <h2>服务器开关</h2>
+            <p class="hint">
+                切换 <code>Control.state</code>：关掉后，<b>白名单 IP 之外的客户端一律被拦</b>
+                （聊天、课表、文件全都进不去）。它只影响鉴权放行逻辑，<b>不会真的停掉进程</b>；你自己
+                （control 白名单）和 <code>?p=114514</code> 仍然进得来，所以不会把自己锁在外面。
+            </p>
+            <div class="row">
+                <button class="btn primary" onclick="act('/start')">启动（放行普通用户）</button>
+                <button class="btn danger" onclick="act('/exit')">停止（拦住普通用户）</button>
+            </div>
+        </section>
+
+        <!-- 视频 -->
+        <section class="card">
+            <h2>视频模块</h2>
+            <p class="hint">
+                正课时段视频模块会自动关闭（只关视频，不动聊天与课表）。这里的「临时放行」
+                <b>只对当节课有效</b>：下一次上下课切换时服务端会自动收回，免得一次放行忘关、之后一直开着。
+                control 白名单 IP 本来就不受限制，这个按钮是给普通用户用的。
+            </p>
+            <div class="row">
+                <button class="btn" onclick="act('/openVideo')">临时放行（当节课）</button>
+                <button class="btn" onclick="act('/closeVideo')">收回</button>
+            </div>
+        </section>
+
+        <!-- 用户 -->
+        <section class="card">
+            <h2>用户白名单</h2>
+            <p class="hint">
+                用户名是聊天里的显示名，同时也是私聊归档文件名的一半、图片与 AI 会话的目录名。
+                因此<b>不能含 <code>-</code> 与控制字符</b>，也不能改成别人正在用的名字（否则两份记录会混在一起）。
+                改名会自动迁移旧名下的聊天记录、图片、头像、AI 会话与页面配置。
+            </p>
+            <div id="userBox"><div class="empty">正在读取…</div></div>
+            <div class="row" style="margin-top:12px;">
+                <input type="text" id="newIp" placeholder="IP，如 192.168.3.20">
+                <input type="text" id="newName" placeholder="用户名">
+                <button class="btn primary" onclick="addUser()">添加</button>
+            </div>
+        </section>
+
+        <!-- 图片举报 -->
+        <section class="card">
+            <h2>图片举报</h2>
+            <p class="hint">
+                同一张图被 3 个不同用户、或 1 个 control 用户举报后会自动封禁：撤回引用它的消息、
+                删掉磁盘上所有副本，并禁止再次保存/发送。误封可以在这里撤销 ——
+                但<b>被封禁时删掉的图片与消息不会回来</b>，那一步不可逆。
+            </p>
+            <div id="banBox"><div class="empty">正在读取…</div></div>
+        </section>
+
+        <!-- 快捷入口 -->
+        <section class="card">
+            <h2>快捷入口</h2>
+            <div class="row">
+                <button class="btn" onclick="location.href='/vnc'">VNC 远程桌面</button>
+                <button class="btn" onclick="location.href='/terminal'">终端</button>
+                <button class="btn" onclick="location.href='/file'">文件浏览</button>
+                <button class="btn" onclick="location.href='/help'">端点清单</button>
+                <button class="btn" onclick="location.href='/chat'">聊天</button>
+            </div>
+        </section>
+
+        <!-- 日志 -->
+        <section class="card">
+            <h2>日志</h2>
+            <p class="hint">
+                内存/文件里的最近日志（<code>/log</code>）。服务器每次启动都会重建 <code>logs.txt</code>，
+                所以这里只有本次运行的记录。排查问题时点一下刷新即可。
+            </p>
+            <pre class="log" id="logBox">（点「刷新日志」读取）</pre>
+            <div class="row" style="margin-top:12px;">
+                <button class="btn" id="logBtn" onclick="loadLog()">刷新日志</button>
+            </div>
+        </section>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        function esc(s) {
+            return String(s).replace(/[&<>"']/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+        }
+
+        function toast(text, isError) {
+            var el = document.getElementById('toast');
+            el.textContent = text;
+            el.classList.toggle('error', !!isError);
+            el.classList.add('show');
+            clearTimeout(el._t);
+            el._t = setTimeout(function () { el.classList.remove('show'); }, 2600);
+        }
+
+        // 这些端点回的都是纯文本（"Server started" 之类），出错时才是非 2xx。
+        // 不管成功失败都把服务器原文显示出来 —— 它写的正是"already started""已被占用"这类
+        // 真正有用的原因，自己在浏览器里另编一套文案只会和它不一致。
+        function act(url) {
+            return fetch(url, { cache: 'no-store' })
+                .then(function (r) {
+                    return r.text().then(function (t) { return { ok: r.ok, status: r.status, text: t }; });
+                })
+                .then(function (res) {
+                    toast(res.text || ('HTTP ' + res.status), !res.ok);
+                    return refresh().then(function () { return res; });
+                })
+                .catch(function (err) {
+                    toast('请求失败：' + (err && err.message ? err.message : err), true);
+                    return { ok: false, status: 0, text: '' };
+                });
+        }
+
+        var lastStatus = null;
+
+        function paintStatus(s) {
+            lastStatus = s;
+
+            var st = document.getElementById('stState');
+            st.textContent = s.state ? '已启动' : '已停止';
+            st.className = 'v ' + (s.state ? 'on' : 'off');
+
+            var v = document.getElementById('stVideo');
+            var vopen = s.video && s.video.open;
+            var manual = s.video && s.video.manualOpen;
+            v.textContent = (vopen ? '开放' : '已关闭') + (manual ? '（手动放行中）' : '');
+            v.className = 'v ' + (vopen ? 'on' : 'off');
+
+            var cls = document.getElementById('stClass');
+            var t = s.timetable || {};
+            if (t.inClass) {
+                cls.textContent = '正课 · 第 ' + (t.period || '?') + ' 节（第 ' + t.week + ' 周）';
+            } else {
+                cls.textContent = '非正课（第 ' + t.week + ' 周）';
+            }
+
+            document.getElementById('stOnline').textContent = (s.online || 0) + ' 条连接';
+            document.getElementById('stIp').textContent = s.serverIp || '—';
+            document.getElementById('stBanned').textContent = (s.banned || []).length + ' 张';
+
+            paintUsers(s.users || []);
+            paintBans(s.banned || [], s.pending || []);
+        }
+
+        function paintUsers(users) {
+            var box = document.getElementById('userBox');
+            if (!users.length) {
+                box.innerHTML = '<div class="empty">白名单是空的 —— 此时除了 control 白名单 IP 和 ?p= 密码，'
+                    + '其他人都会被拦在门外。</div>';
+                return;
+            }
+            var html = '<table><thead><tr><th>IP</th><th>用户名</th><th></th></tr></thead><tbody>';
+            for (var i = 0; i < users.length; i++) {
+                var u = users[i] || {};
+                var name = u.name == null ? '' : String(u.name);
+                html += '<tr>'
+                    + '<td class="mono">' + esc(u.ip == null ? '' : u.ip) + '</td>'
+                    + '<td>' + (name ? esc(name) : '<span class="empty" style="padding:0">（未命名）</span>') + '</td>'
+                    + '<td class="ops">'
+                    + '<button class="btn sm" data-ip="' + esc(u.ip) + '" data-name="' + esc(name)
+                    + '" onclick="renameUser(this)">改名</button> '
+                    + '<button class="btn sm danger" data-ip="' + esc(u.ip)
+                    + '" onclick="removeUser(this)">移除</button>'
+                    + '</td></tr>';
+            }
+            html += '</tbody></table>';
+            box.innerHTML = html;
+        }
+
+        function paintBans(banned, pending) {
+            var box = document.getElementById('banBox');
+            var html = '';
+
+            if (pending.length) {
+                html += '<div style="font-size:13px;font-weight:600;margin-bottom:4px;">正在累计的举报</div>';
+                html += '<table><thead><tr><th>图片</th><th>举报人</th><th>进度</th></tr></thead><tbody>';
+                for (var j = 0; j < pending.length; j++) {
+                    var p = pending[j] || {};
+                    var who = (p.reporters || []).join('、');
+                    html += '<tr>'
+                        + '<td class="mono">' + esc(p.name) + '</td>'
+                        + '<td>' + (who ? esc(who) : '<span class="empty" style="padding:0">—</span>') + '</td>'
+                        + '<td>' + (p.reporters || []).length + ' / 3</td>'
+                        + '</tr>';
+                }
+                html += '</tbody></table>';
+            }
+
+            if (!banned.length) {
+                if (!pending.length) {
+                    box.innerHTML = '<div class="empty">目前没有被封禁的图片，也没有累计中的举报。</div>';
+                    return;
+                }
+                box.innerHTML = html + '<div class="empty" style="margin-top:10px;">还没有被封禁的图片。</div>';
+                return;
+            }
+
+            html += '<div style="font-size:13px;font-weight:600;margin:12px 0 4px;">已封禁</div>';
+            html += '<table><thead><tr><th>图片</th><th></th></tr></thead><tbody>';
+            for (var i = 0; i < banned.length; i++) {
+                html += '<tr>'
+                    + '<td class="mono">' + esc(banned[i]) + '</td>'
+                    + '<td class="ops"><button class="btn sm danger" data-name="' + esc(banned[i])
+                    + '" onclick="unban(this)">撤销封禁</button></td>'
+                    + '</tr>';
+            }
+            html += '</tbody></table>';
+            box.innerHTML = html;
+        }
+
+        function refresh() {
+            return fetch('/control/status', { cache: 'no-store' })
+                .then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(paintStatus)
+                .catch(function (err) {
+                    toast('读取状态失败：' + (err && err.message ? err.message : err), true);
+                });
+        }
+
+        function addUser() {
+            var ip = document.getElementById('newIp').value.trim();
+            var name = document.getElementById('newName').value.trim();
+            if (!ip) { toast('请填写 IP', true); return; }
+            act('/addUser?ip=' + encodeURIComponent(ip) + '&username=' + encodeURIComponent(name))
+                .then(function () {
+                    document.getElementById('newIp').value = '';
+                    document.getElementById('newName').value = '';
+                });
+        }
+
+        function removeUser(btn) {
+            var ip = btn.getAttribute('data-ip');
+            if (!confirm('把 ' + ip + ' 从白名单移除？\n移除后该 IP 的聊天、课表、文件都会进不去（存档不会删）。')) return;
+            act('/removeUser?ip=' + encodeURIComponent(ip));
+        }
+
+        function renameUser(btn) {
+            var ip = btn.getAttribute('data-ip');
+            var old = btn.getAttribute('data-name');
+            var next = prompt('把 ' + ip + ' 的用户名改成：', old);
+            if (next === null) return;
+            next = next.trim();
+            if (!next || next === old) return;
+            // /resetName 回的是 JSON（含各步骤迁移统计），不能走 act() ——
+            // act 把响应当纯文本直接弹 toast，那个 JSON 原样显示出来没法看
+            fetch('/resetName?ip=' + encodeURIComponent(ip) + '&username=' + encodeURIComponent(next),
+                { cache: 'no-store' })
+                .then(function (r) {
+                    return r.text().then(function (t) { return { ok: r.ok, status: r.status, text: t }; });
+                })
+                .then(function (res) {
+                    if (!res.ok) {
+                        // 400 时服务端回的是中文原因（含 '-'、名字被占用…），原样显示
+                        toast(res.text || ('HTTP ' + res.status), true);
+                        return;
+                    }
+                    var migrated = {};
+                    try { migrated = JSON.parse(res.text).migrated || {}; } catch (e) { /* 非 JSON 就当没迁移统计 */ }
+                    var parts = [];
+                    Object.keys(migrated).forEach(function (step) {
+                        var stats = migrated[step] || {};
+                        var nums = Object.keys(stats).map(function (k) { return k + ' ' + stats[k]; });
+                        if (nums.length) parts.push(step + ': ' + nums.join(', '));
+                    });
+                    toast(parts.length ? '已改名 · ' + parts.join(' / ') : '已改名');
+                    refresh();
+                })
+                .catch(function (err) {
+                    toast('改名失败：' + (err && err.message ? err.message : err), true);
+                });
+        }
+
+        function unban(btn) {
+            var name = btn.getAttribute('data-name');
+            if (!confirm('撤销对这张图片的封禁？\n被封禁时删掉的图片与消息不会恢复，之后只是允许再保存/发送同一张图。')) return;
+            // /control/unban 回 JSON，不能走 act()（act 把响应当纯文本弹 toast，会显示成一坨 {…}）
+            fetch('/control/unban?name=' + encodeURIComponent(name), { cache: 'no-store' })
+                .then(function (r) {
+                    return r.text().then(function (t) { return { ok: r.ok, status: r.status, text: t }; });
+                })
+                .then(function (res) {
+                    var msg = '';
+                    try { msg = JSON.parse(res.text).error || ''; } catch (e) { /* 非 JSON 时用状态码兜底 */ }
+                    if (res.ok) {
+                        toast('已撤销封禁');
+                    } else {
+                        toast(msg || ('HTTP ' + res.status), true);
+                    }
+                    return refresh();
+                })
+                .catch(function (err) {
+                    toast('撤销失败：' + (err && err.message ? err.message : err), true);
+                });
+        }
+
+        function loadLog() {
+            var btn = document.getElementById('logBtn');
+            var box = document.getElementById('logBox');
+            btn.disabled = true;
+            fetch('/log', { cache: 'no-store' })
+                .then(function (r) { return r.text(); })
+                .then(function (t) {
+                    // 只留最后 200 行：日志一天能长到几 MB，整份塞进 DOM 会卡
+                    var lines = (t || '').replace(/\s+$/, '').split(/\r?\n/);
+                    if (lines.length > 200) lines = lines.slice(lines.length - 200);
+                    box.textContent = lines.join('\n') || '（没有日志）';
+                    box.scrollTop = box.scrollHeight;
+                })
+                .catch(function (err) {
+                    box.textContent = '读取失败：' + (err && err.message ? err.message : err);
+                })
+                .then(function () { btn.disabled = false; });
+        }
+
+        // 后台标签页不轮询：手机上切走后还会一直发请求，纯属浪费电
+        setInterval(function () {
+            if (document.hidden) return;
+            refresh();
+        }, 10000);
+        // 切回前台立刻补一次，不然要等十秒才看到最新状态
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden) refresh();
+        });
+
+        refresh();
+    </script>
+</body>
+</html>

@@ -42,11 +42,16 @@
 - 已知限制：`/img` 响应带一年 `immutable`，举报前已经看过的客户端仍会从自己的 HTTP 缓存里画出这张图，
   服务端收不回。真正让它消失的是被撤回的那条消息（页面不再有节点去请求它）；前端在收到图片的 `del`
   帧时会顺手清掉本机 IndexedDB 里的副本。
+- 误封有出口：`/control` 面板的「图片举报」卡片列出累计中的举报（谁报的、差几票）与已封禁的图，
+  可逐个撤销封禁（`/control/unban`）。撤销只放行这张图以后能再发，**封禁时删掉的图片与消息不会回来**。
 
 ## Control（控制）
 | 端点 | 鉴权 | 用法 |
 |---|---|---|
 | `/canControl` | — | 当前 IP 是否在 control 白名单，返回 `true`/`false`（前端据此隐藏控制端按钮） |
+| `/control` | control | 跳转 `control.html`：control 快捷操作面板（开关服务器/临时放行视频/用户改名移除/撤销图片封禁/日志） |
+| `/control/status` | control | 面板状态汇总 `{serverIp, state, video:{open,manualOpen}, timetable:{inClass,period,week}, online, users, banned, pending}`（`no-store`） |
+| `/control/unban?name=` | control | 撤销对某张图片的封禁（`name` 为 `<sha256>.<ext>`）；只从黑名单移除，**已删的图片与消息不会恢复** |
 | `/log` | — | 最近日志文本 |
 | `/userList` | — | 用户列表 JSON |
 | `/start`、`/exit` | control | 切换 `Control.state`（只影响 auth 放行逻辑，不停服） |

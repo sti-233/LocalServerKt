@@ -3,6 +3,8 @@ package localserver.module
 import localserver.serverIp
 import localserver.types.User
 import localserver.utils.Logger
+import localserver.utils.Time
+import localserver.utils.Timetable
 import localserver.utils.Util
 
 import io.ktor.server.auth.*
@@ -35,8 +37,11 @@ object Control {
         userList()
         canControl()
         help()
+        page()
+        status()
+        report()
     }
-
+    
     // 前端（如 browser.html）据此隐藏需要 control 鉴权的按钮
     private fun Route.canControl() = get("/canControl") {
         call.respondText(allowed(call.request.local.remoteAddress).toString())
@@ -55,6 +60,101 @@ object Control {
     // 端点清单：control 鉴权后跳转 resources/help.html（页面 fetch /resources/help.md 用 marked.js 渲染，与 ai.html 一致）
     private fun Route.help() = authenticate("control") {
         get("/help") { call.respondRedirect("/resources/help.html") }
+    }
+
+    /**
+     * control 快捷操作面板。
+     *
+     * 这些操作本来各自是裸端点（`/start`、`/addUser`…），要用就得记路径、手拼查询串，
+     * 在手机上一个都不好用。这里给一个把它们摆成按钮的页面，页面自身与它调用的接口
+     * 都走 control 鉴权，非白名单 IP 连页面都打不开。
+     */
+    private fun Route.page() = authenticate("control") {
+        get("/control") { call.respondRedirect("/resources/control.html") }
+    }
+
+    /**
+     * 面板的状态汇总。
+     *
+     * 一次性把页面要显示的东西都给了，而不是让前端去拼 `/log`、`/userList`、`/videoStatus`
+     * 再加几个读不到的（`/start` 的当前值根本没有读的端点）：拼端点既慢，又拼不出
+     * 「现在是不是正课」「视频模块是被课表关的还是被手动关的」这些真正想知道的信息。
+     *
+     * **不能加 `no-store` 之外的缓存**：这些值随时在变，缓存住页面就会显示上一分钟的状态。
+     */
+    private fun Route.status() = authenticate("control") {
+        get("/control/status") {
+            call.response.header(HttpHeaders.CacheControl, "no-store")
+            val body = buildJsonObject {
+                put("serverIp", JsonPrimitive(serverIp))
+                put("state", JsonPrimitive(state))
+                put("video", buildJsonObject {
+                    put("open", JsonPrimitive(VideoGate.open))
+                    put("manualOpen", JsonPrimitive(VideoGate.manualOpen))
+                })
+                put("timetable", buildJsonObject {
+                    put("inClass", JsonPrimitive(Timetable.inClass()))
+                    // 0 表示节次未知/无课，前端据此决定显不显示
+                    put("period", JsonPrimitive(Timetable.currentPeriod(Time.now()) ?: 0))
+                    put("week", JsonPrimitive(Timetable.weekOf()))
+                })
+                put("online", JsonPrimitive(Chat.onlineClients()))
+                put("users", Json.encodeToJsonElement(Util.getUserList()))
+                put("banned", Json.encodeToJsonElement(ReportStore.banned()))
+                put("pending", buildJsonArray {
+                    ReportStore.pending().forEach { p ->
+                        add(buildJsonObject {
+                            put("name", JsonPrimitive(p.name))
+                            put("reporters", Json.encodeToJsonElement(p.reporters))
+                            put("updatedAt", JsonPrimitive(p.updatedAt))
+                        })
+                    }
+                })
+            }
+            call.respondText(
+                Json.encodeToString(JsonObject.serializer(), body),
+                contentType = ContentType.Application.Json
+            )
+        }
+    }
+
+    /**
+     * 撤销图片封禁。
+     *
+     * 封禁是三个用户（或一个 control）就能触发的事，误封一定会发生，所以必须有个出口。
+     * 只从黑名单里移除；被封禁时已经删掉的图片文件与消息**不会**回来 —— 那一步不可逆。
+     */
+    private fun Route.report() = authenticate("control") {
+        get("/control/unban") {
+            val name = call.parameters["name"].orEmpty()
+            if (!PictureStore.IMAGE_NAME.matches(name)) {
+                return@get call.respondText(
+                    "图片文件名不合法（应为 <sha256>.<ext>）",
+                    status = HttpStatusCode.BadRequest
+                )
+            }
+            if (ReportStore.unban(name)) {
+                Logger.debug("control: 撤销图片封禁 $name")
+                // 手搓 JSON 而不是 encodeToString(mapOf("ok" to true, ...))：
+                // Boolean 与 String 混在一个 Map 里，kotlinx 找不到 Any 的序列化器，运行时 500
+                call.respondText(
+                    buildJsonObject {
+                        put("ok", JsonPrimitive(true))
+                        put("name", JsonPrimitive(name))
+                    }.toString(),
+                    contentType = ContentType.Application.Json
+                )
+            } else {
+                call.respondText(
+                    buildJsonObject {
+                        put("ok", JsonPrimitive(false))
+                        put("error", JsonPrimitive("这张图不在封禁名单里"))
+                    }.toString(),
+                    contentType = ContentType.Application.Json,
+                    status = HttpStatusCode.NotFound
+                )
+            }
+        }
     }
 
     private fun Route.control() = authenticate("control") {

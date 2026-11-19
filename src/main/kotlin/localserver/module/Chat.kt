@@ -61,6 +61,15 @@ object Chat {
     private fun clientsOf(ip: String): List<Client> = clients.values.filter { it.ip == ip }
 
     /**
+     * 当前在线的**连接**数（不是人数）。
+     *
+     * Control 面板要显示它，而 `/clients` 只回纯文本 "Connected clients: N"，
+     * 前端再拿正则去抠一个数字太脆弱。同一个人开两个标签页算两条，这正是面板想看的量
+     * （人数在 [onlineNames] 里，按名字去过重）。
+     */
+    fun onlineClients(): Int = clients.size
+
+    /**
      * 当前在线的用户名。
      *
      * 按名字去重：同一个人开两个标签页只算一次（侧边栏那个绿点是「人」在不在线，

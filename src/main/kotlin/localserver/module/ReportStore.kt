@@ -33,6 +33,9 @@ object ReportStore {
     /** 一次举报的结果。[count] 是当前累计人数（control 直接记作已达阈值） */
     class Result(val count: Int, val needed: Int, val banned: Boolean, val duplicate: Boolean)
 
+    /** 一条还在累计中的举报，供 Control 页面展示（谁报了、什么时候） */
+    class Pending(val name: String, val reporters: List<String>, val updatedAt: Long)
+
     private fun file(): File = File(DIR, "votes.json")
 
     /**
@@ -47,6 +50,40 @@ object ReportStore {
     /** 已封禁的全部文件名（排查用） */
     @Synchronized
     fun banned(): List<String> = bannedOf(load()).sorted()
+
+    /**
+     * 还在累计中的举报（按更新时间倒序），供 Control 页面看「差几票」。
+     *
+     * 已封禁的不会出现在这里 —— 封禁时那条就从 votes 里删掉了。
+     */
+    @Synchronized
+    fun pending(): List<Pending> {
+        val votes = load()["votes"]?.jsonObject ?: return emptyList()
+        return votes.mapNotNull { (name, value) ->
+            val obj = value as? JsonObject ?: return@mapNotNull null
+            val reporters = obj["reporters"]?.jsonArray
+                ?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+            val at = obj["updatedAt"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+            Pending(name, reporters, at)
+        }.sortedByDescending { it.updatedAt }
+    }
+
+    /**
+     * 撤销封禁，返回是否真的解封了一张。
+     *
+     * 误封是必然会发生的事：report 那张图可能是被恶意举报的，也可能举报者记错了图。
+     * 没有这个出口的话，解封只能去手改 `cache/report/votes.json`，而那份文件在服务端运行目录里，
+     * 手改还要重启才生效（本对象的读取虽然每次都读盘，但不建议让人去碰它）。
+     */
+    @Synchronized
+    fun unban(name: String): Boolean {
+        val root = load()
+        val banned = bannedOf(root).toMutableSet()
+        if (!banned.remove(name)) return false
+        // 解封只动黑名单，不还原已删的图片与消息 —— 那些在封禁时就没了，这里做不到
+        write(banned, root["votes"]?.jsonObject ?: emptyMap())
+        return true
+    }
 
     /**
      * 记一次举报，返回累计结果。

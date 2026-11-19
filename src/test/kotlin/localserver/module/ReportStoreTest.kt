@@ -108,4 +108,50 @@ class ReportStoreTest {
         val r = ReportStore.report(name("broken"), "alice", control = false)
         assertEquals(1, r.count)
     }
+
+    @Test
+    fun `pending lists unconfirmed reports and drops them when banned`() {
+        val pending = name("pending")
+        val banned = name("now-banned")
+        ReportStore.report(pending, "alice", control = false)
+        ReportStore.report(pending, "bob", control = false)
+        ReportStore.report(banned, "admin", control = true)
+
+        val list = ReportStore.pending()
+        assertEquals(1, list.size, "已封禁的不该还在累计表里")
+        assertEquals(pending, list[0].name)
+        assertEquals(listOf("alice", "bob"), list[0].reporters)
+        assertTrue(list[0].updatedAt > 0)
+    }
+
+    @Test
+    fun `unban removes the entry and lets the image be reported again`() {
+        val img = name("unban")
+        ReportStore.report(img, "admin", control = true)
+        assertTrue(ReportStore.isBanned(img))
+
+        assertTrue(ReportStore.unban(img))
+        assertFalse(ReportStore.isBanned(img))
+        // 解封后票数从零开始：再报一次只是普通一票，不会立刻又封
+        val again = ReportStore.report(img, "alice", control = false)
+        assertFalse(again.banned)
+        assertEquals(1, again.count)
+
+        // 再解一次就是"不在名单里"，不能假装成功（面板据此回 404）
+        assertFalse(ReportStore.unban(img))
+    }
+
+    @Test
+    fun `unban keeps the other pending votes intact`() {
+        val banned = name("unban-a")
+        val pending = name("unban-b")
+        ReportStore.report(banned, "admin", control = true)
+        ReportStore.report(pending, "alice", control = false)
+
+        ReportStore.unban(banned)
+
+        // 解封时不能把别人的累计票一起清掉
+        assertEquals(1, ReportStore.pending().size)
+        assertEquals(pending, ReportStore.pending()[0].name)
+    }
 }
