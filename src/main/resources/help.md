@@ -11,7 +11,7 @@
 | `/whoami` | auth | 当前客户端 IP 对应的用户名 |
 | `/history` | auth | 群聊记录；`?targetuser=<user>` 私聊记录，`&date=yyyy-MM-dd` 指定日期 |
 | `/conversations` | auth | `{today, names, last}`：侧边栏会话列表与各会话最后一条消息；**只回与当前用户相关的归档**（群聊日期档全部 + 私聊档只回自己参与的，别人的私聊连同 `last` 一起不返回 —— 否则会同时泄漏谁和谁在聊、又让前端给无关的人点亮红点）；`last` 每条为 `{time, by, at}`，`at` 是该条 @ 到的用户名数组（只回名字、不回正文），供侧边栏把红点升级成「@」胶囊 |
-| `/message` | auth | WebSocket：聊天/私聊（`sendTo` 参数），图片 `ImageB64:` 前缀，2 分钟内可撤回；带 `reply:{name,time,text}` 表示回复某条消息（服务端把引用摘要截到 200 字后随消息落盘并广播） |
+| `/message` | auth | WebSocket：聊天/私聊（`sendTo` 参数），图片 `ImageB64:` 前缀，2 分钟内可撤回；带 `reply:{name,time,text}` 表示回复某条消息（服务端把引用摘要截到 200 字后随消息落盘并广播）；`{"type":"report"}` 举报图片消息（见下方「图片举报」） |
 | `/clients` | — | 当前在线 WS 客户端列表 |
 | `/wsSever` | — | 纯文本服务信息（typo 路由，沿用） |
 | `/img/{*}` | auth | 聊天图片（按文件名在 `cache/picture/<用户名>/` 各子目录 → `cache/picture/` 根 → 旧 `cache/` 根依次查找） |
@@ -24,6 +24,24 @@
 | `/deleteAvatar`（POST） | auth | 恢复默认头像（首字 + 按名字取色），返回 `{ok,user}` |
 | `/migrateImages` | control | 聊天记录图片消息迁移（`ImageB64:` → `ImageRef:`） |
 | `/migratePictures` | control | 图片目录迁移（旧 `cache/<sha256>.<ext>` → `cache/picture/`） |
+
+### 图片举报
+
+聊天页鼠标悬停在**别人的图片**消息上会浮出「举报」按钮（自己的图不显示 —— 自己撤回即可）。上报的是
+「发送者 + 时间」，**不含图片文件名**：文件名由服务端回存档里查，客户端能指定文件名的话，报一个别人的
+名字就能删掉他的图。
+
+- 计数：**3 个不同用户**，或 **1 个 control 用户**（`Control.allowed()` 的 IP 前缀白名单，与 `/canControl`、
+  视频限速豁免同一份）。同一人重复举报只算一票。未达标时只回举报者本人 `{"type":"reported"}`（不广播，
+  谁举报了谁是隐私）。
+- 达标后：删掉 `cache/picture/` 目录下**所有**副本（同一张图可能被多人各存一份，也可能在旧布局里）→
+  把引用它的消息从**全部**存档里抹掉（同一张图在不同会话里发过几次就撤几条）→ 向相关会话广播 `del`
+  → 把 `<sha256>.<ext>` 记进 `cache/report/votes.json` 的 `banned` 名单。
+- 封禁后：`/img/<name>` 一律 404；`/savePicture` 403；`/pictures` 不列出；直播间里再发这张图（`ImageB64:`
+  重传或 `ImageRef:` 引用）都被拒。**名单跨重启保留**，否则票数每天归零、被撤的图第二天就回来了。
+- 已知限制：`/img` 响应带一年 `immutable`，举报前已经看过的客户端仍会从自己的 HTTP 缓存里画出这张图，
+  服务端收不回。真正让它消失的是被撤回的那条消息（页面不再有节点去请求它）；前端在收到图片的 `del`
+  帧时会顺手清掉本机 IndexedDB 里的副本。
 
 ## Control（控制）
 | 端点 | 鉴权 | 用法 |

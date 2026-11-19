@@ -39,6 +39,19 @@ object PictureStore {
     class Saved(val ref: String, val existed: Boolean)
 
     /**
+     * 保存的结果。
+     *
+     * 之前用 `Saved?` 表示成败，加了举报之后「失败」有两种互不相同的原因：
+     * 格式不对（图本身有问题）与**这张图已被举报封禁**（图没问题，但服务器不许它再进来）。
+     * 两者给用户的提示完全不同，混成一个 null 只能说一句含混的「无效图片」，故分开。
+     */
+    sealed class SaveResult {
+        class Ok(val saved: Saved) : SaveResult()
+        object Invalid : SaveResult()
+        object Banned : SaveResult()
+    }
+
+    /**
      * 当前请求对应的用户名，用作 `cache/picture/<用户名>/` 的目录名。
      *
      * 与 Ai / Prefs 用同一套净化规则（[AiHistory.sanitizeUser]）：userList.json 里有登记就用真名，
@@ -76,45 +89,78 @@ object PictureStore {
 
     /**
      * 解码 dataURL → 落盘（去重），返回引用与「是否本就存在」；
-     * 格式不合法或 mime 子类型不在白名单（svg 之类可执行脚本的）返回 null。
+     * 格式不合法或 mime 子类型不在白名单（svg 之类可执行脚本的）返回 [SaveResult.Invalid]，
+     * 内容哈希命中举报黑名单时返回 [SaveResult.Banned]。
      *
      * `user` 为 null 时落到 `cache/picture/` 根（迁移旧存档用：那些图不属于任何单个用户，
      * 留在根上由 [find] 兜底提供，也不会出现在任何人的「从缓存选取」列表里）。
      */
-    fun save(dataUrl: String, user: String? = null): Saved? {
-        val mimeMatch = Regex("^data:([a-z+/]+);base64,([A-Za-z0-9+/=]+)$").find(dataUrl) ?: return null
+    fun save(dataUrl: String, user: String? = null): SaveResult {
+        val mimeMatch = Regex("^data:([a-z+/]+);base64,([A-Za-z0-9+/=]+)$").find(dataUrl)
+            ?: return SaveResult.Invalid
         val mime = mimeMatch.groupValues[1]
-        if (!mime.startsWith("image/")) return null
+        if (!mime.startsWith("image/")) return SaveResult.Invalid
         val ext = mime.substringAfter('/', "")
-        if (ext !in SUBTYPES) return null
+        if (ext !in SUBTYPES) return SaveResult.Invalid
         val bytes = try {
             Base64.getDecoder().decode(mimeMatch.groupValues[2])
         } catch (e: Exception) {
-            return null
+            return SaveResult.Invalid
         }
-        if (bytes.isEmpty() || bytes.size > MAX_BYTES) return null
-        val (name, existed) = saveBytes(bytes, ext, user)
-        return Saved("ImageRef:/img/$name", existed)
+        if (bytes.isEmpty() || bytes.size > MAX_BYTES) return SaveResult.Invalid
+        return when (val r = saveBytes(bytes, ext, user)) {
+            null -> SaveResult.Banned
+            else -> SaveResult.Ok(Saved("ImageRef:/img/${r.first}", r.second))
+        }
     }
 
     /**
-     * 落盘图片字节到 `<目录>/<sha256>.<ext>`（同名即去重），返回 `"<sha256>.<ext>"` 与是否本就存在。
+     * 落盘图片字节到 `<目录>/<sha256>.<ext>`（同名即去重），返回 `"<sha256>.<ext>"` 与是否本就存在；
+     * 内容哈希落在举报黑名单里时返回 null（这张图已被撤下，谁都不许再存回来）。
      *
      * `user` 非空时目录是 `cache/picture/<用户名>/`，否则是 `cache/picture/` 根（迁移用）。
      * 文件名只由内容哈希决定，调用方无法影响路径。
      */
-    fun saveBytes(bytes: ByteArray, ext: String, user: String? = null): Pair<String, Boolean> {
+    fun saveBytes(bytes: ByteArray, ext: String, user: String? = null): Pair<String, Boolean>? {
         val hex = MessageDigest.getInstance("SHA-256").digest(bytes)
             .joinToString("") { "%02x".format(it) }
+        val name = "$hex.$ext"
+        // 先查黑名单再落盘：否则删掉的图会被任何一个人重新上传一次就复活
+        if (ReportStore.isBanned(name)) return null
         val dir = if (user == null) File(DIR).apply { if (!exists()) mkdirs() } else userDir(user)
-        val file = File(dir, "$hex.$ext")
+        val file = File(dir, name)
         val existed = file.exists()
         if (!existed) file.writeBytes(bytes)
-        return "$hex.$ext" to existed
+        return name to existed
     }
 
     /** mime 子类型是否可保存/可提供（`image/png` 的 `png` 部分） */
     fun isAllowedSubtype(ext: String): Boolean = ext in SUBTYPES
+
+    /**
+     * 把某个文件名在**所有**目录里的副本全部删掉，返回删掉的文件数（封禁时调用）。
+     *
+     * 必须扫全部位置：同一份内容可能被多个人各自存进自己的目录，也可能还躺在
+     * `cache/picture/` 根或更早的 `cache/` 根里（见 [find] 的三处兜底）。
+     * 只删发起举报的那个人目录里的那份，别人再从自己的图片库里发一次就复活了。
+     */
+    fun deleteEverywhere(name: String): Int {
+        if (!IMAGE_NAME.matches(name)) return 0
+        var removed = 0
+        val root = File(DIR)
+        // 根 + 每个用户子目录
+        val candidates = mutableListOf(File(root, name))
+        root.listFiles()?.forEach { sub -> if (sub.isDirectory) candidates.add(File(sub, name)) }
+        candidates.add(File("cache", name))
+        for (f in candidates) {
+            try {
+                if (f.isFile && f.delete()) removed++
+            } catch (e: Exception) {
+                Logger.error("deleteEverywhere failed on ${f.path}: ${e.message}")
+            }
+        }
+        return removed
+    }
 
     /**
      * 把旧版直接摊在 `cache/` 根下的 `<sha256>.<ext>` 搬进 `cache/picture/`。

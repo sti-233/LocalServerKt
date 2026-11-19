@@ -173,6 +173,57 @@ object Util {
     }
 
     /**
+     * 在全部存档里按「发送者 + 时间」找一条消息，返回 `(归档基名, Message)`；找不到返回 null。
+     *
+     * 用于举报：**不能让前端直接告诉服务端"这张图叫什么"** —— 那样随便报一个别人的
+     * 文件名就能把它删掉。前端只说"我举报张三 xx:xx:xx 那条"，由服务端自己去存档里
+     * 读出那条消息，再从它的 `ImageRef:` 里解析文件名，才是可信的。
+     */
+    fun findMessage(name: String, time: String): Pair<String, Message>? {
+        val dir = File("message")
+        val files = dir.listFiles { f -> f.isFile && f.name.startsWith("history_") && f.name.endsWith(".json") }
+            .orEmpty()
+        for (f in files) {
+            val base = f.name.removePrefix("history_").removeSuffix(".json")
+            val hit = readHistoryFile(f)?.firstOrNull { it.name == name && it.time == time } ?: continue
+            return base to hit
+        }
+        return null
+    }
+
+    /**
+     * 把所有引用某张图片的消息从**全部**存档里删掉（图片被举报封禁时调用），
+     * 返回被删的消息及其所在归档基名 `(base, Message)`。
+     *
+     * 为什么扫全部而不是只删被举报的那一条：图片按内容哈希命名，同一张图可能被同一个人
+     * 在不同会话里发过多次、也可能被别人转发。图已经从服务器删掉了，留着这些消息只会
+     * 显示一片裂图；而且「撤回该消息」的语义不该因为举报者只看到其中一条就只删那一条。
+     *
+     * 归档基名交给调用方解析成广播用的 `sendTo`：日期档（群聊）是 `""`，
+     * 私聊档 `A-B` 要用 [partnerIn] 找出说话人以外的那一方。
+     */
+    fun purgeImageRef(name: String): List<Pair<String, Message>> {
+        val needle = "ImageRef:/img/$name"
+        val removed = mutableListOf<Pair<String, Message>>()
+        val dir = File("message")
+        val files = dir.listFiles { f -> f.isFile && f.name.startsWith("history_") && f.name.endsWith(".json") }
+            .orEmpty()
+        for (f in files) {
+            val base = f.name.removePrefix("history_").removeSuffix(".json")
+            // 与 addHistory/delHistory 用同一把文件锁：边撤边有人在发消息时不能互相覆盖
+            synchronized(lockOf(f)) {
+                val list = readHistoryFile(f) ?: return@synchronized
+                val hit = list.filter { it.text == needle }
+                if (hit.isEmpty()) return@synchronized
+                val kept = list.filter { it.text != needle }
+                writeAtomic(f, prettyJson.encodeToString(kept.toMutableList()))
+                hit.forEach { removed.add(base to it) }
+            }
+        }
+        return removed
+    }
+
+    /**
      * 用户名是否可用（新增/改名时校验）。
      *
      * 挡住 `-`：它是私聊归档名的分隔符（`history_<排序后两人名>.json`）。名字里带它，

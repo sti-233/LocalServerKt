@@ -853,6 +853,15 @@
                 if (resp.sendTo === '') markRead('g:', resp.time);
                 else if (me && resp.name === me) markRead('p:' + resp.sendTo, resp.time);
             }
+            // 图片消息被撤回（含举报封禁）：本地缓存的字节也一并丢掉。
+            // 服务端那张已经删了、黑名单也拉上了，但 IndexedDB 里的副本是**各自浏览器**的，
+            // 留着它既占配额，又会在下次打开图片面板时闪出一张已经不存在了的图。
+            // 注意这只清本机缓存，别的客户端上的副本照旧（服务端管不到）。
+            if (typeof resp.text === 'string' && resp.text.indexOf('ImageRef:') === 0) {
+                const gone = resp.text.slice('ImageRef:'.length).replace(/^\/img\//, '');
+                forgetImg(gone);
+                dropFromPickList(gone);
+            }
             // unreadKeys 记的是"我确定有一条没看过"，万一被撤回的正是那一条，
             // 这个标记就过期了 —— 不清掉红点会一直亮着（时间比较那边已经看不到它了）。
             // 删掉后交给时间比较判断，最多漏掉"同一秒"那一种情况，比一直亮着好。
@@ -1136,6 +1145,9 @@
                     handleDelFrame(resp);
                 } else if (resp.type === 'presence') {
                     onPresence(resp);
+                } else if (resp.type === 'reported') {
+                    // 举报回执（还没凑够人数，或那张图已被撤下但没留下任何消息）
+                    showError(resp.text);
                 } else if (resp.type === 'err') {
                     showError(resp.text);
                 }
@@ -1780,6 +1792,21 @@
                 });
                 actions.appendChild(revokeBtn);
             }
+            // 举报：只挂在**别人的图片**消息上（自己发的图自己撤回就行；文字消息没有文件可删）。
+            // 计数在服务端累计（3 个不同用户或 1 个 control 用户），前端只发"举报 <谁> <哪一条>"，
+            // 不告诉服务端图片叫什么 —— 否则报个名字就能删别人的图。
+            if (isImage && !own) {
+                const reportBtn = document.createElement('button');
+                reportBtn.type = 'button';
+                reportBtn.className = 'danger';
+                reportBtn.textContent = '举报';
+                reportBtn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    closeMsgActions(box);
+                    reportMsg(sender, time);
+                });
+                actions.appendChild(reportBtn);
+            }
             bubble.appendChild(actions);
 
             col.appendChild(bubble);
@@ -2219,6 +2246,33 @@
                 websocket.send(json);
             } catch (e) {
                 showError('撤回失败：' + e.message);
+            }
+        }
+
+        /**
+         * 举报一条图片消息。
+         *
+         * 只发「发送者 + 时间」，图片文件名由服务端从存档里自己解析 —— 客户端若能指定
+         * 文件名，等于给了它一个「报谁的名字就删谁的图」的后门。
+         *
+         * 累计与封禁全在服务端：到阈值后服务端删图、从全部存档里抹掉引用它的消息，
+         * 再向相关会话广播 `del`，这边走的是和撤回完全一样的处理路径。
+         */
+        async function reportMsg(name, time) {
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                showError('连接已断开，正在重连，举报未提交');
+                return;
+            }
+            const user = document.getElementById('user').value;
+            // 二次确认：举报是**不可撤销**的（凑够人数就把图永久撤下并拉黑），误点代价太大
+            if (!window.confirm('确定举报这条图片消息吗？\n累计 3 个用户或 1 个管理员举报后，图片会被永久撤下。')) {
+                return;
+            }
+            const json = JSON.stringify({ type: 'report', name, time, text: 'unused', sendTo: user });
+            try {
+                websocket.send(json);
+            } catch (e) {
+                showError('举报失败：' + e.message);
             }
         }
 

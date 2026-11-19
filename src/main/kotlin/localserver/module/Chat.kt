@@ -278,6 +278,17 @@ object Chat {
                 call.respondText("image not found", status = HttpStatusCode.NotFound)
                 return@get
             }
+            // 被封禁的图一律不再提供：封禁时已经尽力删掉磁盘上的副本，这里是兜底 ——
+            // 删失败（文件被占用、只读盘）时也不能让它继续被任何人的 <img> 拉下来。
+            //
+            // 注意浏览器那层拦不住：/img 的响应带一年 immutable，举报前已经看过的客户端
+            // 仍会从自己的 HTTP 缓存里画出这张图，服务端没有任何办法回收。
+            // 真正让它"消失"的是被撤回的那条消息（前端不再有节点去请求它）。
+            if (ReportStore.isBanned(name)) {
+                call.response.header(HttpHeaders.CacheControl, "public, max-age=300")
+                call.respondText("image not found", status = HttpStatusCode.NotFound)
+                return@get
+            }
             val file = PictureStore.find(name)
             if (file == null) {
                 // 图片被删后文件名是内容哈希、永远不会再出现，但浏览器没有缓存头就会每次进页面
@@ -304,9 +315,13 @@ object Chat {
         get("/pictures") {
             val limit = (call.parameters["limit"]?.toIntOrNull() ?: 60).coerceIn(1, 200)
             val user = PictureStore.userOf(call.request.local.remoteAddress)
+            // 被封禁的图不列进「从缓存选取」：文件已经删了，列出来也是裂图，
+            // 点「发送」还会被服务端拒掉（见 handleSend 的 Banned 分支）
+            val bannedNow = ReportStore.banned().toSet()
             val files = PictureStore.userDir(user)
                 .listFiles { f -> f.isFile && PictureStore.IMAGE_NAME.matches(f.name) }
                 .orEmpty()
+                .filter { it.name !in bannedNow }
                 .sortedByDescending { it.lastModified() }
             val items = files.take(limit).map { f ->
                 buildJsonObject {
@@ -358,13 +373,22 @@ object Chat {
                 return@post
             }
             val user = PictureStore.userOf(call.request.local.remoteAddress)
-            val saved = PictureStore.save(dataUrl, user)
-            if (saved == null) {
-                call.respondText(
-                    """{"ok":false,"error":"无效图片：需为 data:image/(png|jpeg|webp|gif|bmp|avif);base64,，且不超过 10MB"}""",
-                    contentType = ContentType.Application.Json, status = HttpStatusCode.BadRequest
-                )
-                return@post
+            val saved = when (val r = PictureStore.save(dataUrl, user)) {
+                is PictureStore.SaveResult.Ok -> r.saved
+                PictureStore.SaveResult.Banned -> {
+                    call.respondText(
+                        """{"ok":false,"error":"这张图已被举报并撤下，不能再保存"}""",
+                        contentType = ContentType.Application.Json, status = HttpStatusCode.Forbidden
+                    )
+                    return@post
+                }
+                PictureStore.SaveResult.Invalid -> {
+                    call.respondText(
+                        """{"ok":false,"error":"无效图片：需为 data:image/(png|jpeg|webp|gif|bmp|avif);base64,，且不超过 10MB"}""",
+                        contentType = ContentType.Application.Json, status = HttpStatusCode.BadRequest
+                    )
+                    return@post
+                }
             }
             Logger.debug("savePicture: ${saved.ref} (existed=${saved.existed})")
             call.respondText(
@@ -533,23 +557,34 @@ object Chat {
                 .listFiles { f -> f.isFile && f.name.startsWith("history_") && f.name.endsWith(".json") }
                 .orEmpty()
             var migrated = 0
+            var dropped = 0
             for (f in files) {
                 val text = f.readText().trimStart('\uFEFF')
                 if (text.isBlank()) continue
                 val original = Util.historyJson.decodeFromString<MutableList<Message>>(text)
                 var changed = false
-                val result = original.map { m ->
+                val result = original.mapNotNull { m ->
                     if (m.text.startsWith("ImageB64:")) {
-                        PictureStore.save(m.text.removePrefix("ImageB64:"))?.let { saved ->
-                            changed = true
-                            migrated++
-                            Message(m.name, m.time, saved.ref)
-                        } ?: m // 解析不出 mime 保持原样
+                        when (val r = PictureStore.save(m.text.removePrefix("ImageB64:"))) {
+                            is PictureStore.SaveResult.Ok -> {
+                                changed = true
+                                migrated++
+                                Message(m.name, m.time, r.saved.ref)
+                            }
+                            // 被封禁的图（举报后又被这轮迁移碰到）：存档里那条直接删掉，
+                            // 否则迁移会把一张已经撤下的图重新落盘回来
+                            PictureStore.SaveResult.Banned -> {
+                                changed = true
+                                dropped++
+                                null
+                            }
+                            PictureStore.SaveResult.Invalid -> m // 解析不出 mime 保持原样
+                        }
                     } else m
                 }
                 if (changed) f.writeText(Util.prettyJson.encodeToString(result))
             }
-            call.respondText(Json.encodeToString(mapOf("files" to files.size, "migrated" to migrated)))
+            call.respondText(Json.encodeToString(mapOf("files" to files.size, "migrated" to migrated, "dropped" to dropped)))
         }
     }
 
@@ -621,6 +656,7 @@ object Chat {
                         } else {
                             err(me, current, "超过 2 分钟，无法撤回", json.sendTo)
                         }
+                        "report" -> handleReport(me, json, current)
                     }
                 }
             } catch (e: ClosedReceiveChannelException) {
@@ -706,15 +742,26 @@ object Chat {
 
         var imageRef: String? = null
         if (json.text.startsWith("ImageB64:")) {
-            val saved = PictureStore.save(json.text.removePrefix("ImageB64:"), PictureStore.userOf(me.ip))
-            if (saved == null) {
-                err(me, current, "图片消息无效：仅支持 png/jpeg/webp/gif/bmp/avif，且不超过 10MB", sendTo)
-                return
+            when (val r = PictureStore.save(json.text.removePrefix("ImageB64:"), PictureStore.userOf(me.ip))) {
+                is PictureStore.SaveResult.Ok -> imageRef = r.saved.ref
+                PictureStore.SaveResult.Banned -> {
+                    err(me, current, "这张图已被举报并撤下，不能再发送", sendTo)
+                    return
+                }
+                PictureStore.SaveResult.Invalid -> {
+                    err(me, current, "图片消息无效：仅支持 png/jpeg/webp/gif/bmp/avif，且不超过 10MB", sendTo)
+                    return
+                }
             }
-            imageRef = saved.ref
         } else if (json.text.startsWith("ImageRef:")) {
             // 只允许发自己的图 —— 别人的图连名字都不该被拿来转发
             val name = json.text.removePrefix("ImageRef:").substringAfterLast('/')
+            // 黑名单先判：封禁会删文件，但删失败（占用/只读盘）或迁移刚把它写回来时，
+            // 文件仍可能躺在磁盘上，那种情况下"文件存在"就当合法转发会把封禁绕过去
+            if (PictureStore.IMAGE_NAME.matches(name) && ReportStore.isBanned(name)) {
+                err(me, current, "这张图已被举报并撤下，不能再发送", sendTo)
+                return
+            }
             val cached = PictureStore.IMAGE_NAME.matches(name) &&
                 File(PictureStore.userDir(PictureStore.userOf(me.ip)), name).isFile
             if (!cached) {
@@ -747,6 +794,103 @@ object Chat {
             return
         }
         deliver(targetsFor(me, sendTo), Json.encodeToString(Content("send", current, now, textToSend, sendTo, reply)))
+    }
+
+    /**
+     * 一条 `report` 消息：举报某条图片消息。
+     *
+     * 前端只说「我举报 <发送者> <时间> 那条」，**不说图片文件名** —— 让客户端指定要删的
+     * 文件名，等于给它一个「报谁的名字就删谁的图」的后门。文件名一律由服务端从存档里
+     * 读出来的那条消息解析。
+     *
+     * 累计规则见 [ReportStore]：3 个不同用户，或 1 个 control 用户（[Control.allowed]
+     * 的 IP 前缀白名单，与 `/canControl`、视频限速豁免同一份判据）。
+     * 到底后：删盘上所有副本 → 把引用它的消息从全部存档里抹掉 → 广播 `del` → 记进黑名单
+     * （[PictureStore.saveBytes] 与 `/img` 都会挡住这张图）。
+     */
+    private fun handleReport(me: Client, json: Content, current: String) {
+        val sendTo = json.sendTo
+        // 只认「发送者 + 时间」定位消息；找不到就是过期视图（那条已经被撤回了）
+        val found = Util.findMessage(json.name, json.time)
+        if (found == null) {
+            err(me, current, "这条消息已经不存在了", sendTo)
+            return
+        }
+        val (base, msg) = found
+        // 私聊归档只有那两个人能举报：不然随便填个"某人 某时刻"就能报掉一场自己看不到的对话
+        if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(base) && Util.partnerIn(base, current) == null) {
+            err(me, current, "这条消息不属于你能看到的会话", sendTo)
+            return
+        }
+        // 文字消息没什么可举报的：本功能只管图片（图片有独立的文件可删、有哈希可永久封禁）
+        val imageName = msg.text.removePrefix("ImageRef:").substringAfterLast('/')
+            .takeIf { msg.text.startsWith("ImageRef:") && PictureStore.IMAGE_NAME.matches(it) }
+        if (imageName == null) {
+            err(me, current, "只能举报图片消息", sendTo)
+            return
+        }
+        // 自己发的图不必举报（自己撤回就行），允许的话就成了「一个人点三下封掉自己的图」，
+        // 平白占一份举报计数
+        if (msg.name == current) {
+            err(me, current, "不能举报自己发的图片，需要的话直接撤回", sendTo)
+            return
+        }
+
+        val control = runCatching { Control.allowed(me.ip) }.getOrDefault(false)
+        val result = ReportStore.report(imageName, current, control)
+        if (!result.banned) {
+            // 还没到阈值：只回给举报者本人，别广播（谁举报了谁是隐私）
+            deliver(listOf(me), Json.encodeToString(
+                Content("reported", current, Time.getCurrentTimeWithDate(), "已收到举报，正在核实", sendTo)
+            ))
+            return
+        }
+
+        // 到阈值了：删图 → 清存档 → 广播撤回
+        val removedFiles = PictureStore.deleteEverywhere(imageName)
+        val removedMsgs = runCatching { Util.purgeImageRef(imageName) }.getOrElse {
+            Logger.error("purgeImageRef failed for $imageName: ${it.message}")
+            emptyList()
+        }
+        Logger.debug("Image $imageName banned: files=$removedFiles messages=${removedMsgs.size}")
+        for ((archiveBase, m) in removedMsgs) {
+            deliver(
+                recipientsOfArchive(archiveBase, m.name),
+                Json.encodeToString(Content("del", m.name, m.time, m.text, sendToOfArchive(archiveBase, m.name)))
+            )
+        }
+        // 一条消息都没删掉（比如那张图只在缓存里、没发过）也要给个回执，否则点完没反应
+        if (removedMsgs.isEmpty()) {
+            deliver(listOf(me), Json.encodeToString(
+                Content("reported", current, Time.getCurrentTimeWithDate(), "该图片已被撤下", sendTo)
+            ))
+        }
+    }
+
+    /**
+     * 一封归档的所有在线读者：日期档是群聊（全体连接），私聊档只有那两个人。
+     *
+     * **不能用 [targetsFor]**：它的私聊分支是按「发起这次操作的人」算对方的，
+     * 举报者自己并不一定是那场对话的参与者 —— 拿举报者的 IP 去算，会漏发真正的当事人，
+     * 反而把撤回通知发给一个和这条消息无关的人。
+     */
+    private fun recipientsOfArchive(base: String, speaker: String): List<Client> {
+        if (Regex("\\d{4}-\\d{2}-\\d{2}").matches(base)) return clients.values.toList()
+        val other = Util.partnerIn(base, speaker) ?: return clients.values.toList()
+        return (clientsOfIpOf(speaker) + clientsOfIpOf(other)).distinctBy { it.id }
+    }
+
+    /** 某个用户名当前的所有连接；名字查不到（刚被删/改名）就退化为空，别抛 */
+    private fun clientsOfIpOf(name: String): List<Client> =
+        runCatching { clientsOf(Util.getUserIp(name)) }.getOrDefault(emptyList())
+
+    /**
+     * 从归档基名反推出广播用的 `sendTo`：日期档是群聊（`""`），
+     * 私聊档用 [Util.partnerIn] 找出说话人以外的那一方（名字里可能含 `-`，不能 split）。
+     */
+    private fun sendToOfArchive(base: String, speaker: String): String {
+        if (Regex("\\d{4}-\\d{2}-\\d{2}").matches(base)) return ""
+        return Util.partnerIn(base, speaker) ?: ""
     }
 
     /**
